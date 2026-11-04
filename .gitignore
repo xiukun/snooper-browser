@@ -1,0 +1,42 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+dist-ssr/
+*.local
+
+# env — real keys never leave the machine
+.env
+.env.*
+!.env.example
+
+# tooling caches
+.vite/
+coverage/
+*.tsbuildinfo
+
+# logs & os noise
+*.log
+logs/
+.DS_Store
+
+# editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# ---------------------------------------------------------------------------
+# excluded from the repository on purpose
+# ---------------------------------------------------------------------------
+# reverse-engineering reference material (design docs, ADRs, extracted sources)
+/doc/
+/app/doc/
+
+# third-party extension source kept only as a local reference
+/viitor_extracted/
+
+# MV3 capture prototype kept locally on purpose: it carries a hardcoded test
+# key and targets the non-existent `moss-live-1.0` realtime model, so it is
+# not part of the release. The web app captures tab audio via getDisplayMedia.
+/src/

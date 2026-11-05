@@ -1,12 +1,12 @@
 import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
-import { friendlyError } from '@/lib/errors'
-import { languageShort } from '@/lib/models'
-import { transcribeAudio, translateText } from '@/lib/moss'
-import { clamp, sleep, uid } from '@/lib/utils'
+import { friendlyError } from '@lib/errors'
+import { languageShort } from '@lib/models'
+import { transcribeAudio, translateText } from '@lib/moss'
+import { clamp, sleep, uid } from '@lib/utils'
 import { useSettings } from './useSettings'
-import { checkCaptureSupport, mapCaptureErrorToHint } from '@/lib/permissions'
-import type { AppConfig } from '@/lib/providers'
+import { checkCaptureSupport, mapCaptureErrorToHint } from '@lib/permissions'
+import type { AppConfig } from '@lib/providers'
 
 export interface SubtitleLine {
   id: string

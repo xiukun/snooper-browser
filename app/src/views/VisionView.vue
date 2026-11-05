@@ -20,7 +20,7 @@ import {
 import { useVision } from '@/composables/useVision'
 import { useSettings } from '@/composables/useSettings'
 import { initMarkdown, renderMarkdown } from '@/lib/markdown'
-import { formatBytes, formatClock } from '@/lib/utils'
+import { formatBytes, formatClock } from '@lib/utils'
 
 const {
   images,

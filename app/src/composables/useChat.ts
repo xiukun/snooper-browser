@@ -1,10 +1,10 @@
 import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
-import type { MossMessage } from '@/lib/models'
-import { fileToDataUrl, streamChat } from '@/lib/moss'
-import { resolveRoute } from '@/lib/providers'
-import { friendlyError } from '@/lib/errors'
-import { uid } from '@/lib/utils'
+import type { MossMessage } from '@lib/models'
+import { fileToDataUrl, streamChat } from '@lib/moss'
+import { resolveRoute } from '@lib/providers'
+import { friendlyError } from '@lib/errors'
+import { uid } from '@lib/utils'
 import { useSettings } from './useSettings'
 
 export interface ChatAttachment {

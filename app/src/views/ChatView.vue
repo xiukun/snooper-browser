@@ -20,7 +20,7 @@ import SnooperMark from '@/components/SnooperMark.vue'
 import { useChat } from '@/composables/useChat'
 import { useSettings } from '@/composables/useSettings'
 import { initMarkdown, renderMarkdown } from '@/lib/markdown'
-import { formatBytes, formatClock } from '@/lib/utils'
+import { formatBytes, formatClock } from '@lib/utils'
 
 const { messages, attachments, isStreaming, addFiles, removeAttachment, send, stop, clear } =
   useChat()

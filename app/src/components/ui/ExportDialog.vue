@@ -10,7 +10,7 @@ import {
   buildVtt,
   downloadBlob,
   type ExportSubtitleMode,
-} from '@/lib/export'
+} from '@lib/export'
 
 const props = defineProps<{
   open: boolean

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RTTS 服务商与能力配置</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div class="panel-container">
+    <header class="panel-header">
+      <div class="header-brand">
+        <div class="brand-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="22"></line>
+          </svg>
+        </div>
+        <div class="brand-info">
+          <h1 class="brand-title">RTTS 配置中心</h1>
+          <p class="brand-subtitle">多模态服务商与能力线路管理</p>
+        </div>
+      </div>
+      <div id="noticeBanner" class="notice-banner" role="status" aria-live="polite" hidden></div>
+    </header>
+
+    <main class="panel-main">
+      <!-- Section 1: Capability Routing -->
+      <section class="config-section" aria-labelledby="heading-routes">
+        <div class="section-header">
+          <h2 id="heading-routes" class="section-title">
+            <svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"></circle>
+              <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+            能力线路路由
+          </h2>
+          <span class="section-badge">各线路独立</span>
+        </div>
+        <p class="section-desc">对话、语音转写与视频实时分析分别绑定独立的服务商与模型。</p>
+
+        <div class="routes-grid">
+          <!-- Route: LLM -->
+          <div class="route-card" data-route="llm">
+            <div class="route-card-header">
+              <div class="route-tag route-tag-llm">LLM</div>
+              <div class="route-info">
+                <span class="route-name">对话与视觉</span>
+                <span class="route-desc">Chat · 图片理解 · 字幕翻译</span>
+              </div>
+            </div>
+            <div class="route-fields">
+              <div class="field-group">
+                <label for="route-llm-provider" class="field-label">服务商</label>
+                <select id="route-llm-provider" class="field-select"></select>
+              </div>
+              <div class="field-group">
+                <label for="route-llm-model" class="field-label">模型标识 (Model)</label>
+                <input id="route-llm-model" type="text" class="field-input" placeholder="例如 moss-vl-1.0 或 gpt-4o" spellcheck="false" autocomplete="off">
+              </div>
+            </div>
+          </div>
+
+          <!-- Route: Audio -->
+          <div class="route-card" data-route="audio">
+            <div class="route-card-header">
+              <div class="route-tag route-tag-audio">ASR</div>
+              <div class="route-info">
+                <span class="route-name">音频转写</span>
+                <span class="route-desc">麦克风与标签页音频分段语音识别</span>
+              </div>
+            </div>
+            <div class="route-fields">
+              <div class="field-group">
+                <label for="route-audio-provider" class="field-label">服务商</label>
+                <select id="route-audio-provider" class="field-select"></select>
+              </div>
+              <div class="field-group">
+                <label for="route-audio-model" class="field-label">模型标识 (Model)</label>
+                <input id="route-audio-model" type="text" class="field-input" placeholder="例如 moss-transcribe-1.0" spellcheck="false" autocomplete="off">
+              </div>
+            </div>
+          </div>
+
+          <!-- Route: Video (Reserved) -->
+          <div class="route-card route-card-reserved" data-route="video">
+            <div class="route-card-header">
+              <div class="route-tag route-tag-video">VIDEO</div>
+              <div class="route-info">
+                <span class="route-name">实时画面理解 <span class="badge-reserved">预留</span></span>
+                <span class="route-desc">低延迟视频画面帧分析（字幕翻译不经过此路）</span>
+              </div>
+            </div>
+            <div class="route-fields">
+              <div class="field-group">
+                <label for="route-video-provider" class="field-label">服务商</label>
+                <select id="route-video-provider" class="field-select"></select>
+              </div>
+              <div class="field-group">
+                <label for="route-video-model" class="field-label">模型标识 (Model)</label>
+                <input id="route-video-model" type="text" class="field-input" placeholder="例如 moss-vl-realtime-1.0" spellcheck="false" autocomplete="off">
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 2: Provider Profiles -->
+      <section class="config-section" aria-labelledby="heading-providers">
+        <div class="section-header">
+          <h2 id="heading-providers" class="section-title">
+            <svg class="section-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+              <line x1="6" y1="6" x2="6.01" y2="6"></line>
+              <line x1="6" y1="18" x2="6.01" y2="18"></line>
+            </svg>
+            服务商列表
+          </h2>
+          <button id="addProviderBtn" type="button" class="btn btn-secondary btn-sm" aria-label="添加新服务商">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            添加服务商
+          </button>
+        </div>
+        <p class="section-desc">配置 API 端点与凭据。保存前将向您明确请求所填域名的跨源访问权限。</p>
+
+        <div id="providersList" class="providers-list" role="list"></div>
+      </section>
+    </main>
+
+    <footer class="panel-footer">
+      <div class="footer-actions">
+        <button id="saveConfigBtn" type="button" class="btn btn-primary btn-save">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+            <polyline points="7 3 7 8 15 8"></polyline>
+          </svg>
+          保存配置并授权
+        </button>
+      </div>
+      <p class="footer-hint">注：点击保存将唤起 Chrome 原生权限确认框，按需授权服务商 API 地址。</p>
+    </footer>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { CircleCheck, ExternalLink, GitBranch, TriangleAlert } from '@lucide/vue'
 import SnooperMark from '@/components/SnooperMark.vue'
-import { BRAND } from '@/lib/brand'
+import { BRAND } from '@lib/brand'
 import type { NavItem } from '@/lib/navigation'
 import { useNavigation } from '@/composables/useNavigation'
 import { useSettings } from '@/composables/useSettings'

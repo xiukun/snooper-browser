@@ -1,4 +1,4 @@
-import type { SubtitleLine } from '@/composables/useRealtime'
+import type { SubtitleLine } from './types'
 import { languageLabel } from './models'
 
 /** Formats seconds into SRT timestamp format: HH:MM:SS,mmm */

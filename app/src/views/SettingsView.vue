@@ -24,14 +24,14 @@ import {
 } from '@lucide/vue'
 import FieldSelect from '@/components/ui/FieldSelect.vue'
 import { useSettings } from '@/composables/useSettings'
-import { BRAND } from '@/lib/brand'
+import { BRAND } from '@lib/brand'
 import {
   CAPABILITIES,
   MODEL_SUGGESTIONS,
   PROVIDER_PROTOCOLS,
   type CapabilityKey,
   type ProviderProfile,
-} from '@/lib/providers'
+} from '@lib/providers'
 
 const {
   settings,

@@ -31,8 +31,8 @@ import { useChat } from '@/composables/useChat'
 import { useVision } from '@/composables/useVision'
 import { useRealtime } from '@/composables/useRealtime'
 import { useSettings } from '@/composables/useSettings'
-import { languageLabel, LANGUAGES } from '@/lib/models'
-import { formatTime } from '@/lib/utils'
+import { languageLabel, LANGUAGES } from '@lib/models'
+import { formatTime } from '@lib/utils'
 
 const {
   engine,

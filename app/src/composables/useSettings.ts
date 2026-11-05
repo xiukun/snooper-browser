@@ -1,5 +1,5 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { listModels } from '@/lib/moss'
+import { listModels } from '@lib/moss'
 import {
   CAPABILITIES,
   type AppConfig,
@@ -16,8 +16,8 @@ import {
   parseExternalConfig,
   persistProviderConfig,
   resolveRoute,
-} from '@/lib/providers'
-import { STORAGE_KEYS } from '@/lib/brand'
+} from '@lib/providers'
+import { STORAGE_KEYS } from '@lib/brand'
 
 const settings = reactive<AppConfig>(loadProviderConfig())
 const syncingId = ref('')

@@ -1,9 +1,9 @@
 import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
-import { analyzeImages, fileToDataUrl } from '@/lib/moss'
-import { resolveRoute } from '@/lib/providers'
-import { friendlyError } from '@/lib/errors'
-import { uid } from '@/lib/utils'
+import { analyzeImages, fileToDataUrl } from '@lib/moss'
+import { resolveRoute } from '@lib/providers'
+import { friendlyError } from '@lib/errors'
+import { uid } from '@lib/utils'
 import { useSettings } from './useSettings'
 
 export interface VisionImage {

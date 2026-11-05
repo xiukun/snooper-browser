@@ -42,14 +42,31 @@
   const NOTES_KEY = 'snooper.notes.v1'
   const OBSIDIAN_KEY = 'snooper.obsidian-config.v1'
 
-  function loadNotes(): NoteDocument[] {
-    try {
-      const raw = localStorage.getItem(NOTES_KEY)
-      return raw ? JSON.parse(raw) : []
-    } catch { return [] }
+  function loadNotes(): Promise<NoteDocument[]> {
+    return (async () => {
+      // 1. Shared store — same key the in-page drawer writes to
+      try {
+        const got = await chrome.storage.local.get(NOTES_KEY)
+        const stored = got?.[NOTES_KEY]
+        if (Array.isArray(stored)) return stored as NoteDocument[]
+      } catch { /* ignore */ }
+      // 2. Legacy panel localStorage -> migrate into the shared store
+      try {
+        const raw = localStorage.getItem(NOTES_KEY)
+        if (raw) {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            try { await chrome.storage.local.set({ [NOTES_KEY]: parsed }) } catch { /* ignore */ }
+            return parsed as NoteDocument[]
+          }
+        }
+      } catch { /* ignore */ }
+      return []
+    })()
   }
 
   function saveNotes(next: NoteDocument[]) {
+    try { chrome.storage.local.set({ [NOTES_KEY]: next }) } catch { /* ignore */ }
     try { localStorage.setItem(NOTES_KEY, JSON.stringify(next)) } catch { /* ignore */ }
   }
 
@@ -101,7 +118,7 @@
     nextTab?.classList.add('active')
     nextTab?.setAttribute('aria-selected', 'true')
     document.getElementById(`panel-${tab}`)?.classList.add('active')
-    if (tab === 'notes') loadAndRenderNotes()
+    if (tab === 'notes') void loadAndRenderNotes()
   }
 
   tabNotes.addEventListener('click', () => switchTab('notes'))
@@ -120,8 +137,8 @@
   })
 
   /* ===== Notes ===== */
-  function loadAndRenderNotes() {
-    notes = loadNotes()
+  async function loadAndRenderNotes() {
+    notes = await loadNotes()
 
     notesList.textContent = ''
     if (notes.length === 0) {
@@ -190,7 +207,7 @@
         if (confirm('确定删除这篇笔记？')) {
           notes = notes.filter((n) => n.id !== note.id)
           saveNotes(notes)
-          loadAndRenderNotes()
+          void loadAndRenderNotes()
           showNotice('笔记已删除')
         }
       })
@@ -285,10 +302,10 @@
 
   /* ===== Init ===== */
   renderObsidianConfig()
-  loadAndRenderNotes()
+  void loadAndRenderNotes()
 
   // Keep the note counter fresh when the panel is reopened.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') loadAndRenderNotes()
+    if (document.visibilityState === 'visible') void loadAndRenderNotes()
   })
 })()

@@ -17,18 +17,40 @@
 
 import type { SubtitleLine, NoteEntry, NoteDocument } from './types'
 
-/* ===== Note persistence ===== */
+/* ===== Note persistence =====
+ * Notes live in chrome.storage.local so the in-page drawer and the side
+ * panel share one store. Page localStorage is kept as a legacy mirror and
+ * migrated into the shared store on first read.
+ */
 const NOTES_STORAGE_KEY = 'snooper.notes.v1'
 
-function loadNotes(): NoteDocument[] {
+async function loadNotes(): Promise<NoteDocument[]> {
+  // 1. Shared store (page + side panel)
+  try {
+    const got = await (chrome as any).storage.local.get(NOTES_STORAGE_KEY)
+    const stored = got?.[NOTES_STORAGE_KEY]
+    if (Array.isArray(stored)) return stored as NoteDocument[]
+  } catch { /* ignore */ }
+  // 2. Legacy page localStorage -> migrate into the shared store
   try {
     const raw = localStorage.getItem(NOTES_STORAGE_KEY)
-    if (raw) return JSON.parse(raw) as NoteDocument[]
+    if (raw) {
+      const parsed = JSON.parse(raw) as NoteDocument[]
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        try {
+          await (chrome as any).storage.local.set({ [NOTES_STORAGE_KEY]: parsed })
+        } catch { /* ignore */ }
+        return parsed
+      }
+    }
   } catch { /* ignore */ }
   return []
 }
 
-function saveNotes(notes: NoteDocument[]) {
+async function saveNotes(notes: NoteDocument[]) {
+  try {
+    await (chrome as any).storage.local.set({ [NOTES_STORAGE_KEY]: notes })
+  } catch { /* ignore */ }
   try {
     localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes))
   } catch { /* ignore */ }
@@ -374,11 +396,6 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
       padding: 2px 0;
     }
     .sub-row.history .sub-source { display: none; }
-
-    .sub-latency {
-      font-size: 10px; color: rgba(255,255,255,0.15);
-      position: absolute; right: 12px; bottom: 4px;
-    }
 
     /* === Streaming Subtitle (live, in-progress) === */
     #rtts-streaming-row {
@@ -1471,7 +1488,7 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
 
     // === Scrollable Subtitle Display (full history) ===
     const subs = session.subtitles || [];
-    const streaming = session.streamingSubtitle || _streamingSubtitle;
+    const streaming = session.streamingSubtitle;
 
     if (s === 'running' || subs.length > 0 || streaming) {
       subBox.classList.remove('hidden');
@@ -1499,15 +1516,6 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
           src.className = 'sub-source';
           src.textContent = sub.source;
           row.appendChild(src);
-        }
-
-        // Latency on last entry
-        if (sub === subs[subs.length - 1] && sub.latency) {
-          const lat = document.createElement('span');
-          lat.className = 'sub-latency';
-          lat.textContent = `${sub.latency}ms`;
-          (row as HTMLElement).style.position = 'relative';
-          row.appendChild(lat);
         }
 
         subRows.appendChild(row);
@@ -1567,10 +1575,7 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
 
   /* ===== Streaming Subtitle Rendering ===== */
 
-  let _streamingSubtitle: StreamingSubtitle | null = null;
-
   function renderStreaming(sub: StreamingSubtitle | null) {
-    _streamingSubtitle = sub;
     if (!sub || (!sub.partialTarget && !sub.source)) {
       streamingRow.classList.add('hidden');
       return;
@@ -1590,12 +1595,7 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
       streamingSource.style.display = 'none';
     }
 
-    // Latency label
-    if (sub.latency) {
-      streamingLabel.textContent = `${sub.latency}ms · 翻译中`;
-    } else {
-      streamingLabel.textContent = '翻译中';
-    }
+    streamingLabel.textContent = '翻译中';
 
     // Auto-scroll to show streaming row
     if (subScroll.scrollHeight - subScroll.scrollTop - subScroll.clientHeight < 100) {
@@ -1604,7 +1604,6 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
   }
 
   function clearStreaming() {
-    _streamingSubtitle = null;
     streamingRow.classList.add('hidden');
   }
 
@@ -2312,6 +2311,10 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
     }
 
     if (msg && msg.type === 'STREAMING_UPDATE') {
+      // Keep session as the single source of truth so a later full render()
+      // (e.g. from SESSION_UPDATE committing the final subtitle) never
+      // resurrects a stale streaming row -> no duplicate, no flash.
+      session.streamingSubtitle = msg.streamingSubtitle || null;
       if (msg.streamingSubtitle) {
         renderStreaming(msg.streamingSubtitle);
       } else {
@@ -2343,14 +2346,14 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
   buildLangPicker();
   initBarPosition();
 
-  // Load notes from localStorage
-  const savedNotes = loadNotes()
-  session.notes = savedNotes
-  if (savedNotes.length > 0) {
-    session.activeNoteId = savedNotes[0]!.id
-  }
-
   (async () => {
+    // Load notes from shared chrome.storage.local (syncs with side panel)
+    const savedNotes = await loadNotes()
+    session.notes = savedNotes
+    if (savedNotes.length > 0) {
+      session.activeNoteId = savedNotes[0]!.id
+    }
+
     const res: any = await bg('GET_SESSION');
     if (res.ok && res.session) {
       session = {

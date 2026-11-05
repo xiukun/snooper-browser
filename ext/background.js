@@ -403,7 +403,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           s.state = "idle";
           s.configSnapshot = null;
           s.streamId = "";
-          sendResponse({ ok: false, error: err.message });
+          s.streamingSubtitle = null;
+          pushSession(tabId);
+          const msg = err && err.message || String(err);
+          let friendly = msg;
+          if (/not been invoked|activeTab/i.test(msg)) {
+            friendly = "\u9700\u8981\u5148\u5B8C\u6210\u4E00\u6B21\u6388\u6743\uFF1A\u70B9\u51FB\u6D4F\u89C8\u5668\u5DE5\u5177\u680F\u7684 snooper \u56FE\u6807\uFF08\u5F39\u51FA\u7684\u9762\u677F\u53EF\u7ACB\u5373\u5173\u95ED\uFF09\uFF0C\u4E4B\u540E\u672C\u9875\u53EF\u76F4\u63A5\u4F7F\u7528";
+          } else if (/permission|Permission|not allowed|not permitted/i.test(msg)) {
+            friendly = "\u7F3A\u5C11\u5F55\u97F3\u6743\u9650\uFF1A\u8BF7\u786E\u8BA4\u6269\u5C55\u5DF2\u83B7\u5F97\u300C\u8BFB\u53D6\u548C\u66F4\u6539\u7F51\u7AD9\u6570\u636E\u300D\u6743\u9650\uFF0C\u7136\u540E\u91CD\u8BD5";
+          }
+          sendResponse({ ok: false, error: friendly });
         }
       }).catch((err) => {
         console.warn("[RTTS] START config error:", err.message);

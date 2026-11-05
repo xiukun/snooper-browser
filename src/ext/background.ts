@@ -567,7 +567,19 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
           s.state = 'idle';
           s.configSnapshot = null;
           s.streamId = '';
-          sendResponse({ ok: false, error: err.message });
+          s.streamingSubtitle = null;
+          pushSession(tabId);
+          const msg = (err && err.message) || String(err);
+          let friendly = msg;
+          // tabCapture requires the extension to have host permission for the
+          // tab. With <all_urls> host permissions this should never fire, but
+          // if it does (e.g. Chrome internal pages), guide the user clearly.
+          if (/not been invoked|activeTab/i.test(msg)) {
+            friendly = '需要先完成一次授权：点击浏览器工具栏的 snooper 图标（弹出的面板可立即关闭），之后本页可直接使用';
+          } else if (/permission|Permission|not allowed|not permitted/i.test(msg)) {
+            friendly = '缺少录音权限：请确认扩展已获得「读取和更改网站数据」权限，然后重试';
+          }
+          sendResponse({ ok: false, error: friendly });
         }
       }).catch((err) => {
         console.warn('[RTTS] START config error:', err.message);

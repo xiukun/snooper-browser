@@ -4,14 +4,35 @@
     const NOTES_KEY = "snooper.notes.v1";
     const OBSIDIAN_KEY = "snooper.obsidian-config.v1";
     function loadNotes() {
-      try {
-        const raw = localStorage.getItem(NOTES_KEY);
-        return raw ? JSON.parse(raw) : [];
-      } catch {
+      return (async () => {
+        try {
+          const got = await chrome.storage.local.get(NOTES_KEY);
+          const stored = got?.[NOTES_KEY];
+          if (Array.isArray(stored)) return stored;
+        } catch {
+        }
+        try {
+          const raw = localStorage.getItem(NOTES_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              try {
+                await chrome.storage.local.set({ [NOTES_KEY]: parsed });
+              } catch {
+              }
+              return parsed;
+            }
+          }
+        } catch {
+        }
         return [];
-      }
+      })();
     }
     function saveNotes(next) {
+      try {
+        chrome.storage.local.set({ [NOTES_KEY]: next });
+      } catch {
+      }
       try {
         localStorage.setItem(NOTES_KEY, JSON.stringify(next));
       } catch {
@@ -62,7 +83,7 @@
       nextTab?.classList.add("active");
       nextTab?.setAttribute("aria-selected", "true");
       document.getElementById(`panel-${tab}`)?.classList.add("active");
-      if (tab === "notes") loadAndRenderNotes();
+      if (tab === "notes") void loadAndRenderNotes();
     }
     tabNotes.addEventListener("click", () => switchTab("notes"));
     tabObsidian.addEventListener("click", () => switchTab("obsidian"));
@@ -76,8 +97,8 @@
         showNotice("\u5F53\u524D\u9875\u9762\u6CA1\u6709 snooper \u60AC\u6D6E\u680F\uFF0C\u8BF7\u5237\u65B0\u9875\u9762\u540E\u70B9\u51FB\u9875\u9762\u4E0A\u7684 \u2699", true);
       }
     });
-    function loadAndRenderNotes() {
-      notes = loadNotes();
+    async function loadAndRenderNotes() {
+      notes = await loadNotes();
       notesList.textContent = "";
       if (notes.length === 0) {
         const empty = document.createElement("p");
@@ -138,7 +159,7 @@
           if (confirm("\u786E\u5B9A\u5220\u9664\u8FD9\u7BC7\u7B14\u8BB0\uFF1F")) {
             notes = notes.filter((n) => n.id !== note.id);
             saveNotes(notes);
-            loadAndRenderNotes();
+            void loadAndRenderNotes();
             showNotice("\u7B14\u8BB0\u5DF2\u5220\u9664");
           }
         });
@@ -221,9 +242,9 @@
       showNotice("Obsidian \u8BBE\u7F6E\u5DF2\u4FDD\u5B58");
     });
     renderObsidianConfig();
-    loadAndRenderNotes();
+    void loadAndRenderNotes();
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") loadAndRenderNotes();
+      if (document.visibilityState === "visible") void loadAndRenderNotes();
     });
   })();
 })();

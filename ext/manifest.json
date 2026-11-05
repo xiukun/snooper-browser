@@ -30,12 +30,7 @@
     "sidePanel"
   ],
   "host_permissions": [
-    "https://*/*",
-    "http://*/*"
-  ],
-  "optional_host_permissions": [
-    "https://*/*",
-    "http://*/*"
+    "<all_urls>"
   ],
   "web_accessible_resources": [
     {

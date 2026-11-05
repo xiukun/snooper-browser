@@ -1,15 +1,34 @@
 (() => {
   // src/ext/content.ts
   var NOTES_STORAGE_KEY = "snooper.notes.v1";
-  function loadNotes() {
+  async function loadNotes() {
+    try {
+      const got = await chrome.storage.local.get(NOTES_STORAGE_KEY);
+      const stored = got?.[NOTES_STORAGE_KEY];
+      if (Array.isArray(stored)) return stored;
+    } catch {
+    }
     try {
       const raw = localStorage.getItem(NOTES_STORAGE_KEY);
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          try {
+            await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: parsed });
+          } catch {
+          }
+          return parsed;
+        }
+      }
     } catch {
     }
     return [];
   }
-  function saveNotes(notes) {
+  async function saveNotes(notes) {
+    try {
+      await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes });
+    } catch {
+    }
     try {
       localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
     } catch {
@@ -307,11 +326,6 @@
       padding: 2px 0;
     }
     .sub-row.history .sub-source { display: none; }
-
-    .sub-latency {
-      font-size: 10px; color: rgba(255,255,255,0.15);
-      position: absolute; right: 12px; bottom: 4px;
-    }
 
     /* === Streaming Subtitle (live, in-progress) === */
     #rtts-streaming-row {
@@ -1340,7 +1354,7 @@
       recordBtn.setAttribute("data-tip", recordLabel);
       updateLangLabel();
       const subs = session.subtitles || [];
-      const streaming = session.streamingSubtitle || _streamingSubtitle;
+      const streaming = session.streamingSubtitle;
       if (s === "running" || subs.length > 0 || streaming) {
         subBox.classList.remove("hidden");
         const hasContent = subs.length > 0 || !!streaming;
@@ -1360,13 +1374,6 @@
             src.className = "sub-source";
             src.textContent = sub.source;
             row.appendChild(src);
-          }
-          if (sub === subs[subs.length - 1] && sub.latency) {
-            const lat = document.createElement("span");
-            lat.className = "sub-latency";
-            lat.textContent = `${sub.latency}ms`;
-            row.style.position = "relative";
-            row.appendChild(lat);
           }
           subRows.appendChild(row);
         });
@@ -1409,9 +1416,7 @@
       }
       chatEl.scrollTop = chatEl.scrollHeight;
     }
-    let _streamingSubtitle = null;
     function renderStreaming(sub) {
-      _streamingSubtitle = sub;
       if (!sub || !sub.partialTarget && !sub.source) {
         streamingRow.classList.add("hidden");
         return;
@@ -1425,17 +1430,12 @@
       } else {
         streamingSource.style.display = "none";
       }
-      if (sub.latency) {
-        streamingLabel.textContent = `${sub.latency}ms \xB7 \u7FFB\u8BD1\u4E2D`;
-      } else {
-        streamingLabel.textContent = "\u7FFB\u8BD1\u4E2D";
-      }
+      streamingLabel.textContent = "\u7FFB\u8BD1\u4E2D";
       if (subScroll.scrollHeight - subScroll.scrollTop - subScroll.clientHeight < 100) {
         subScroll.scrollTop = subScroll.scrollHeight;
       }
     }
     function clearStreaming() {
-      _streamingSubtitle = null;
       streamingRow.classList.add("hidden");
     }
     let subBoxAutoPosition = true;
@@ -2067,6 +2067,7 @@
         return;
       }
       if (msg && msg.type === "STREAMING_UPDATE") {
+        session.streamingSubtitle = msg.streamingSubtitle || null;
         if (msg.streamingSubtitle) {
           renderStreaming(msg.streamingSubtitle);
         } else {
@@ -2094,12 +2095,12 @@
     });
     buildLangPicker();
     initBarPosition();
-    const savedNotes = loadNotes();
-    session.notes = savedNotes;
-    if (savedNotes.length > 0) {
-      session.activeNoteId = savedNotes[0].id;
-    }
     (async () => {
+      const savedNotes = await loadNotes();
+      session.notes = savedNotes;
+      if (savedNotes.length > 0) {
+        session.activeNoteId = savedNotes[0].id;
+      }
       const res = await bg("GET_SESSION");
       if (res.ok && res.session) {
         session = {

@@ -1,4 +1,4 @@
-import { AudioLines, MessagesSquare, ScanEye, Settings2 } from 'lucide-vue-next'
+import { AudioLines, MessagesSquare, ScanEye, Settings2 } from '@lucide/vue'
 import type { Component } from 'vue'
 
 export interface NavItem {

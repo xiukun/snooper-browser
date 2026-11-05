@@ -21,7 +21,7 @@ import {
   Trash2,
   Video,
   X,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import FieldSelect from '@/components/ui/FieldSelect.vue'
 import { useSettings } from '@/composables/useSettings'
 import { BRAND } from '@/lib/brand'
@@ -468,6 +468,12 @@ const canRemoveSelected = computed(() => providers.value.length > 1)
               <div class="min-w-0">
                 <div class="flex items-center gap-1.5">
                   <h3 class="text-[12.5px] font-medium text-mist-100">{{ capability.label }}</h3>
+                  <span
+                    v-if="capability.key === 'video'"
+                    class="chip py-0 text-[9.5px] text-amber-glow"
+                  >
+                    实验性
+                  </span>
                 </div>
                 <p class="mt-0.5 text-[10.5px] leading-relaxed text-mist-500">
                   {{ capability.description }}
@@ -512,7 +518,7 @@ const canRemoveSelected = computed(() => providers.value.length > 1)
         </div>
 
         <p class="px-1 text-[10.5px] leading-relaxed text-mist-600">
-          字幕链路 = 音频转写（AUDIO）+ 上下文翻译（LLM）；视频路由用于低延迟画面理解，可单独指向支持实时的中转。
+          字幕链路 = 音频转写（AUDIO）+ 上下文翻译（LLM）；视频路由（实验性）为后续低延迟画面理解预留，当前版本尚无视图消费。
         </p>
       </section>
 

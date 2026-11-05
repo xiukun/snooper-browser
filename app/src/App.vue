@@ -9,7 +9,6 @@ import SettingsView from '@/views/SettingsView.vue'
 import TranslateView from '@/views/TranslateView.vue'
 import VisionView from '@/views/VisionView.vue'
 import { useNavigation } from '@/composables/useNavigation'
-import { initMarkdown } from '@/lib/markdown'
 import { NAV_ITEMS, type ViewKey } from '@/lib/navigation'
 
 const { activeView, setView } = useNavigation()
@@ -43,7 +42,6 @@ function onKeydown(event: KeyboardEvent) {
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
-  void initMarkdown()
 })
 
 onBeforeUnmount(() => {

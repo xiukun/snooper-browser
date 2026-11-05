@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   Camera,
@@ -16,10 +16,10 @@ import {
   Trash2,
   Upload,
   X,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import { useVision } from '@/composables/useVision'
 import { useSettings } from '@/composables/useSettings'
-import { renderMarkdown } from '@/lib/markdown'
+import { initMarkdown, renderMarkdown } from '@/lib/markdown'
 import { formatBytes, formatClock } from '@/lib/utils'
 
 const {
@@ -52,6 +52,10 @@ const history = computed(() => runs.value.slice(1))
 function renderContent(content: string) {
   return renderMarkdown(content)
 }
+
+onMounted(() => {
+  void initMarkdown()
+})
 
 function pickFiles() {
   fileInput.value?.click()

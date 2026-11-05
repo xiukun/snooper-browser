@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   ArrowUp,
@@ -15,11 +15,11 @@ import {
   Square,
   Trash2,
   X,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import SnooperMark from '@/components/SnooperMark.vue'
 import { useChat } from '@/composables/useChat'
 import { useSettings } from '@/composables/useSettings'
-import { renderMarkdown } from '@/lib/markdown'
+import { initMarkdown, renderMarkdown } from '@/lib/markdown'
 import { formatBytes, formatClock } from '@/lib/utils'
 
 const { messages, attachments, isStreaming, addFiles, removeAttachment, send, stop, clear } =
@@ -63,6 +63,10 @@ const showEmpty = computed(() => messages.value.length === 0)
 function renderContent(content: string) {
   return renderMarkdown(content)
 }
+
+onMounted(() => {
+  void initMarkdown()
+})
 
 function autoGrow() {
   const el = composerEl.value

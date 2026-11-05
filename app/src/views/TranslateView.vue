@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   ArrowLeftRight,
@@ -21,7 +21,7 @@ import {
   Users,
   Waves,
   X,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import FieldSelect from '@/components/ui/FieldSelect.vue'
 import { useNavigation } from '@/composables/useNavigation'
 import { useRealtime } from '@/composables/useRealtime'
@@ -50,6 +50,8 @@ const {
   startMic,
   startTabAudio,
   stopCapture,
+  pauseVisualiser,
+  resumeVisualiser,
   loadMediaFile,
   clearMedia,
 } = useRealtime()
@@ -95,6 +97,14 @@ watch(
     })
   },
 )
+
+onActivated(() => {
+  resumeVisualiser()
+})
+
+onDeactivated(() => {
+  pauseVisualiser()
+})
 
 function swapLanguages() {
   if (sourceLang.value === 'auto') {

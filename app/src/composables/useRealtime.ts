@@ -84,8 +84,14 @@ let audioContext: AudioContext | null = null
 let analyser: AnalyserNode | null = null
 let waveformFrame = 0
 let recorder: MediaRecorder | null = null
-let processing = false
+let analyserBuffer: Uint8Array<ArrayBuffer> | null = null
+let visualiserPaused = false
 let warnedTranscribe = false
+let warnedOverflow = false
+
+const MAX_SEGMENT_QUEUE = 3
+const segmentQueue: Blob[] = []
+let draining = false
 
 function pushSubtitle(source: string, target: string, speaker: string, latency: number) {
   subtitles.value.push({
@@ -139,11 +145,22 @@ function bindAnalyser(mediaStream: MediaStream) {
   analyser.fftSize = 1024
   analyser.smoothingTimeConstant = 0.82
   source.connect(analyser)
-  const buffer = new Uint8Array(analyser.fftSize)
+  analyserBuffer = new Uint8Array(analyser.fftSize)
+  visualiserPaused = false
+  startWaveformLoop()
+}
 
+function startWaveformLoop() {
+  if (!analyser || !analyserBuffer || visualiserPaused) return
+  cancelAnimationFrame(waveformFrame)
+  const node = analyser
+  const buffer = analyserBuffer
   const loop = () => {
-    if (!analyser) return
-    analyser.getByteTimeDomainData(buffer)
+    if (!analyser || !analyserBuffer || visualiserPaused) {
+      waveformFrame = 0
+      return
+    }
+    node.getByteTimeDomainData(buffer)
     let sum = 0
     for (const sample of buffer) {
       const normalized = (sample - 128) / 128
@@ -156,10 +173,23 @@ function bindAnalyser(mediaStream: MediaStream) {
   waveformFrame = requestAnimationFrame(loop)
 }
 
+function pauseVisualiser() {
+  visualiserPaused = true
+  cancelAnimationFrame(waveformFrame)
+  waveformFrame = 0
+}
+
+function resumeVisualiser() {
+  visualiserPaused = false
+  startWaveformLoop()
+}
+
 function detachAnalyser() {
   cancelAnimationFrame(waveformFrame)
   waveformFrame = 0
+  visualiserPaused = false
   analyser = null
+  analyserBuffer = null
   if (audioContext) {
     void audioContext.close().catch(() => undefined)
     audioContext = null
@@ -174,14 +204,39 @@ function startRecorder(mediaStream: MediaStream) {
     : 'audio/webm'
   recorder = new MediaRecorder(mediaStream, { mimeType })
   recorder.ondataavailable = (event) => {
-    void handleSegment(event.data)
+    enqueueSegment(event.data)
   }
   recorder.start(6000)
 }
 
-async function handleSegment(blob: Blob) {
-  if (!isRunning.value || engine.value !== 'moss' || processing || blob.size < 2400) return
-  processing = true
+function enqueueSegment(blob: Blob) {
+  if (!isRunning.value || engine.value !== 'moss' || blob.size < 2400) return
+  segmentQueue.push(blob)
+  if (segmentQueue.length > MAX_SEGMENT_QUEUE) {
+    segmentQueue.shift()
+    if (!warnedOverflow) {
+      warnedOverflow = true
+      toast.error('处理速度跟不上，已跳过部分音频片段')
+    }
+  }
+  void drainSegments()
+}
+
+async function drainSegments() {
+  if (draining) return
+  draining = true
+  try {
+    while (segmentQueue.length > 0 && isRunning.value && engine.value === 'moss') {
+      const blob = segmentQueue.shift()
+      if (!blob) continue
+      await processSegment(blob)
+    }
+  } finally {
+    draining = false
+  }
+}
+
+async function processSegment(blob: Blob) {
   const started = performance.now()
   const { settings } = useSettings()
   try {
@@ -202,8 +257,6 @@ async function handleSegment(blob: Blob) {
       warnedTranscribe = true
       toast.error(`实时听写失败：${message}`)
     }
-  } finally {
-    processing = false
   }
 }
 
@@ -300,6 +353,7 @@ function stop() {
   window.clearInterval(demoTimer)
   clockTimer = undefined
   demoTimer = undefined
+  segmentQueue.length = 0
   stopCapture()
 }
 
@@ -310,6 +364,7 @@ function reset() {
   error.value = ''
   demoCursor = 0
   warnedTranscribe = false
+  warnedOverflow = false
 }
 
 function loadMediaFile(file: File) {
@@ -364,6 +419,8 @@ export function useRealtime() {
     startMic,
     startTabAudio,
     stopCapture,
+    pauseVisualiser,
+    resumeVisualiser,
     loadMediaFile,
     clearMedia,
   }

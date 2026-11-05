@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { AudioLines, Database, GitBranch, Sparkles, Video } from 'lucide-vue-next'
+import { AudioLines, Database, GitBranch, Sparkles, Video } from '@lucide/vue'
 import SnooperMark from '@/components/SnooperMark.vue'
 import { useSettings } from '@/composables/useSettings'
 import { BRAND } from '@/lib/brand'

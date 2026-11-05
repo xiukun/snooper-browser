@@ -269,31 +269,37 @@ async function typewriter(text: string, onDelta?: ChatOptions['onDelta'], signal
 }
 
 /**
- * Unified streaming entry. Tries the native SSE channel once per model, then
- * remembers unsupported models and falls back to a local typewriter so the UI
- * keeps the same incremental feel.
+ * Unified streaming entry. Probes the native SSE channel once per
+ * provider+model (`baseUrl::model`), caches the verdict, and falls back to a
+ * local typewriter so the UI keeps the same incremental feel. A generic HTTP
+ * 400 only earns a one-off non-streaming retry for that request — it must not
+ * poison the probe cache.
  */
 export async function streamChat(options: ChatOptions): Promise<string> {
   const config = options.config ?? loadProviderConfig()
-  const model = options.model ?? resolveRoute(config, options.capability ?? 'llm').model
+  const route = resolveRoute(config, options.capability ?? 'llm', options.model)
+  const model = options.model ?? route.model
+  const probeKey = `${route.baseUrl}::${model}`
   const capability = readStreamCapability()
 
-  if (options.simulateStream !== true && capability[model] !== false) {
+  if (options.simulateStream !== true && capability[probeKey] !== false) {
     try {
       const text = await nativeStream(options)
-      capability[model] = true
+      capability[probeKey] = true
       writeStreamCapability(capability)
       return text
     } catch (error) {
       if (isAbortError(error)) throw error
       const message = error instanceof Error ? error.message.toLowerCase() : ''
-      const unsupported =
-        message.includes('stream') ||
-        message.includes('invalid_field_value') ||
-        (error instanceof MossError && error.status === 400)
-      if (!unsupported) throw error
-      capability[model] = false
-      writeStreamCapability(capability)
+      const streamSpecific =
+        message.includes('stream') || message.includes('invalid_field_value')
+      if (streamSpecific) {
+        capability[probeKey] = false
+        writeStreamCapability(capability)
+      } else if (!(error instanceof MossError && error.status === 400)) {
+        throw error
+      }
+      // 无法归因的 400：仅本次请求回退非流式重试，不写入探针缓存。
     }
   }
 

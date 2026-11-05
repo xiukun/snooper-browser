@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { CircleCheck, ExternalLink, GitBranch, TriangleAlert } from 'lucide-vue-next'
+import { CircleCheck, ExternalLink, GitBranch, TriangleAlert } from '@lucide/vue'
 import SnooperMark from '@/components/SnooperMark.vue'
 import { BRAND } from '@/lib/brand'
 import type { NavItem } from '@/lib/navigation'

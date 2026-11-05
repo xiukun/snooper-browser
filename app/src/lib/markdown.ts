@@ -34,20 +34,7 @@ md.renderer.rules.link_open = (tokens, index, options, _env, self) => {
 let highlighter: HighlighterCore | null = null
 let initPromise: Promise<void> | null = null
 
-const LOADED_LANGS = [
-  'typescript',
-  'javascript',
-  'vue',
-  'python',
-  'json',
-  'bash',
-  'html',
-  'css',
-  'sql',
-  'go',
-  'rust',
-  'markdown',
-]
+const LOADED_LANGS = ['typescript', 'javascript', 'python', 'json', 'markdown']
 
 function normalizeLang(lang: string) {
   const map: Record<string, string> = {
@@ -75,15 +62,8 @@ export function initMarkdown(): Promise<void> {
         langs: [
           import('shiki/langs/typescript.mjs'),
           import('shiki/langs/javascript.mjs'),
-          import('shiki/langs/vue.mjs'),
           import('shiki/langs/python.mjs'),
           import('shiki/langs/json.mjs'),
-          import('shiki/langs/bash.mjs'),
-          import('shiki/langs/html.mjs'),
-          import('shiki/langs/css.mjs'),
-          import('shiki/langs/sql.mjs'),
-          import('shiki/langs/go.mjs'),
-          import('shiki/langs/rust.mjs'),
           import('shiki/langs/markdown.mjs'),
         ],
         engine: createJavaScriptRegexEngine(),

@@ -258,8 +258,13 @@ export function resolveRoute(
   modelOverride?: string,
 ): ResolvedRoute {
   const route = config.routes[capability] ?? DEFAULT_CONFIG.routes[capability]
-  const provider = getProvider(config, route.providerId) ?? config.providers[0]
-  if (!provider) throw new Error('尚未配置任何服务商，请先在「能力设置」中添加。')
+  const provider = getProvider(config, route.providerId)
+  if (!provider) {
+    if (config.providers.length === 0) {
+      throw new Error('尚未配置任何服务商，请先在「能力设置」中添加。')
+    }
+    throw new Error(`能力「${capability}」绑定的服务商不存在或已被删除，请在「能力设置」中重新选择。`)
+  }
   const baseUrl = provider.baseUrl.trim()
   const apiKey = provider.apiKey.trim()
   if (!baseUrl) throw new Error(`服务商「${provider.name}」缺少 Base URL。`)

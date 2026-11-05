@@ -1,4 +1,4 @@
-import { AudioLines, MessagesSquare, ScanEye, Settings2 } from '@lucide/vue'
+import { AudioLines, Image as ImageIcon, MessagesSquare, ScanEye, Settings2 } from '@lucide/vue'
 import type { Component } from 'vue'
 
 export interface NavItem {
@@ -10,7 +10,7 @@ export interface NavItem {
   shortcut: string
 }
 
-export type ViewKey = 'translate' | 'chat' | 'vision' | 'settings'
+export type ViewKey = 'translate' | 'chat' | 'vision' | 'image' | 'settings'
 
 export const NAV_ITEMS: readonly NavItem[] = [
   {
@@ -36,6 +36,14 @@ export const NAV_ITEMS: readonly NavItem[] = [
     subtitle: 'OCR、图表与代码截图，上传即分析',
     icon: ScanEye,
     shortcut: '3',
+  },
+  {
+    key: 'image',
+    label: '图像生成',
+    title: '图像生成',
+    subtitle: '文字/SVG/Logo 创作，翻译内容一键配图',
+    icon: ImageIcon,
+    shortcut: '5',
   },
   {
     key: 'settings',

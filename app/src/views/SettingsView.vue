@@ -9,6 +9,7 @@ import {
   Eye,
   EyeOff,
   GitBranch,
+  Image,
   KeyRound,
   LoaderCircle,
   MessagesSquare,
@@ -89,6 +90,12 @@ const capabilityMeta: Record<
   },
   video: {
     icon: Video,
+    accent: 'text-amber-glow',
+    dot: 'bg-amber-glow',
+    ring: 'border-amber-glow/25 bg-amber-glow/[0.05]',
+  },
+  image: {
+    icon: Image as typeof MessagesSquare,
     accent: 'text-amber-glow',
     dot: 'bg-amber-glow',
     ring: 'border-amber-glow/25 bg-amber-glow/[0.05]',

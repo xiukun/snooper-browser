@@ -10,5 +10,8 @@
     "dev:app": "cd app && pnpm dev",
     "build:app": "cd app && pnpm build",
     "type-check": "cd app && pnpm exec vue-tsc -b --force"
+  },
+  "dependencies": {
+    "docx": "^9.15.2"
   }
 }

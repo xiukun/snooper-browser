@@ -1,287 +1,229 @@
 (() => {
-  // src/lib/utils.ts
-  function uid(prefix = "id") {
-    return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
-  }
-
   // src/ext/sidepanel/panel.ts
   (() => {
-    let currentConfig = {
-      providers: [
-        {
-          id: "moss-official",
-          name: "MOSS \u5B98\u65B9",
-          baseUrl: "https://api.mosi.cn/v1",
-          apiKey: "",
-          protocol: "moss",
-          note: "\u5B98\u65B9 MOSS \u7F51\u5173",
-          models: [],
-          lastSyncedAt: null,
-          status: "unknown",
-          lastError: ""
-        }
-      ],
-      routes: {
-        llm: { providerId: "moss-official", model: "moss-vl-1.0" },
-        audio: { providerId: "moss-official", model: "moss-transcribe-1.0" },
-        video: { providerId: "moss-official", model: "moss-vl-realtime-1.0" }
+    const NOTES_KEY = "snooper.notes.v1";
+    const OBSIDIAN_KEY = "snooper.obsidian-config.v1";
+    function loadNotes() {
+      try {
+        const raw = localStorage.getItem(NOTES_KEY);
+        return raw ? JSON.parse(raw) : [];
+      } catch {
+        return [];
       }
-    };
+    }
+    function saveNotes(next) {
+      try {
+        localStorage.setItem(NOTES_KEY, JSON.stringify(next));
+      } catch {
+      }
+    }
+    function loadObsidianConfig() {
+      try {
+        const raw = localStorage.getItem(OBSIDIAN_KEY);
+        if (raw) return JSON.parse(raw);
+      } catch {
+      }
+      return { enabled: false, vaultPath: "", apiPort: 27124, apiKey: "", noteFolder: "snooper-notes" };
+    }
+    function saveObsidianConfig(config) {
+      try {
+        localStorage.setItem(OBSIDIAN_KEY, JSON.stringify(config));
+      } catch {
+      }
+    }
+    let obsidianCfg = { enabled: false, vaultPath: "", apiPort: 27124, apiKey: "", noteFolder: "snooper-notes" };
+    let notes = [];
     const noticeBanner = document.getElementById("noticeBanner");
-    const providersList = document.getElementById("providersList");
-    const addProviderBtn = document.getElementById("addProviderBtn");
+    const tabNotes = document.getElementById("tab-notes");
+    const tabObsidian = document.getElementById("tab-obsidian");
+    const notesList = document.getElementById("notes-list");
+    const notesRefreshBtn = document.getElementById("notes-refresh-btn");
+    const openPageConfigBtn = document.getElementById("open-page-config");
+    const obsidianEnabled = document.getElementById("obsidian-enabled");
+    const obsidianPort = document.getElementById("obsidian-port");
+    const obsidianFolder = document.getElementById("obsidian-folder");
+    const obsidianKey = document.getElementById("obsidian-key");
     const saveConfigBtn = document.getElementById("saveConfigBtn");
-    const routeLlmProvider = document.getElementById("route-llm-provider");
-    const routeLlmModel = document.getElementById("route-llm-model");
-    const routeAudioProvider = document.getElementById("route-audio-provider");
-    const routeAudioModel = document.getElementById("route-audio-model");
-    const routeVideoProvider = document.getElementById("route-video-provider");
-    const routeVideoModel = document.getElementById("route-video-model");
     function showNotice(text, isError = false) {
-      if (!noticeBanner) return;
       noticeBanner.textContent = text;
       noticeBanner.className = `notice-banner ${isError ? "error" : "success"}`;
       noticeBanner.hidden = false;
       setTimeout(() => {
         noticeBanner.hidden = true;
-      }, 5e3);
+      }, 4e3);
     }
-    async function loadConfig() {
+    function switchTab(tab) {
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        btn.classList.remove("active");
+        btn.setAttribute("aria-selected", "false");
+      });
+      document.querySelectorAll(".tab-content").forEach((content) => content.classList.remove("active"));
+      const nextTab = document.getElementById(`tab-${tab}`);
+      nextTab?.classList.add("active");
+      nextTab?.setAttribute("aria-selected", "true");
+      document.getElementById(`panel-${tab}`)?.classList.add("active");
+      if (tab === "notes") loadAndRenderNotes();
+    }
+    tabNotes.addEventListener("click", () => switchTab("notes"));
+    tabObsidian.addEventListener("click", () => switchTab("obsidian"));
+    openPageConfigBtn?.addEventListener("click", async () => {
       try {
-        const res = await chrome.runtime.sendMessage({ target: "background", type: "GET_CONFIG" });
-        if (res && res.ok && res.config) {
-          currentConfig = res.config;
-        }
-      } catch (err) {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) throw new Error("\u6CA1\u6709\u6D3B\u52A8\u6807\u7B7E\u9875");
+        await chrome.tabs.sendMessage(tab.id, { type: "OPEN_PAGE_SETTINGS" });
+        showNotice("\u5DF2\u6253\u5F00\u9875\u9762\u914D\u7F6E");
+      } catch {
+        showNotice("\u5F53\u524D\u9875\u9762\u6CA1\u6709 snooper \u60AC\u6D6E\u680F\uFF0C\u8BF7\u5237\u65B0\u9875\u9762\u540E\u70B9\u51FB\u9875\u9762\u4E0A\u7684 \u2699", true);
       }
-      renderAll();
-    }
-    function syncFormToConfig() {
-      currentConfig.routes.llm.providerId = routeLlmProvider.value;
-      currentConfig.routes.llm.model = routeLlmModel.value.trim();
-      currentConfig.routes.audio.providerId = routeAudioProvider.value;
-      currentConfig.routes.audio.model = routeAudioModel.value.trim();
-      currentConfig.routes.video.providerId = routeVideoProvider.value;
-      currentConfig.routes.video.model = routeVideoModel.value.trim();
-      const cards = providersList.querySelectorAll(".provider-card");
-      cards.forEach((card, idx) => {
-        const id = card.getAttribute("data-id");
-        const provider = currentConfig.providers.find((p) => p.id === id);
-        if (!provider) return;
-        const nameInput = card.querySelector(".provider-name");
-        const urlInput = card.querySelector(".provider-url");
-        const keyInput = card.querySelector(".provider-key");
-        const protocolSelect = card.querySelector(".provider-protocol");
-        const noteInput = card.querySelector(".provider-note");
-        if (nameInput) provider.name = nameInput.value.trim();
-        if (urlInput) provider.baseUrl = urlInput.value.trim();
-        if (keyInput) provider.apiKey = keyInput.value.trim();
-        if (protocolSelect) provider.protocol = protocolSelect.value;
-        if (noteInput) provider.note = noteInput.value.trim();
-      });
-    }
-    function renderRoutes() {
-      const providers = currentConfig.providers || [];
-      const populateSelect = (selectEl, selectedId) => {
-        selectEl.textContent = "";
-        if (providers.length === 0) {
-          const opt = document.createElement("option");
-          opt.value = "";
-          opt.textContent = "\u6682\u65E0\u53EF\u7528\u670D\u52A1\u5546";
-          selectEl.appendChild(opt);
-          return;
-        }
-        providers.forEach((p) => {
-          const opt = document.createElement("option");
-          opt.value = p.id;
-          opt.textContent = p.name || "\u672A\u547D\u540D\u670D\u52A1\u5546";
-          if (p.id === selectedId) opt.selected = true;
-          selectEl.appendChild(opt);
-        });
-      };
-      populateSelect(routeLlmProvider, currentConfig.routes.llm.providerId);
-      routeLlmModel.value = currentConfig.routes.llm.model || "";
-      populateSelect(routeAudioProvider, currentConfig.routes.audio.providerId);
-      routeAudioModel.value = currentConfig.routes.audio.model || "";
-      populateSelect(routeVideoProvider, currentConfig.routes.video.providerId);
-      routeVideoModel.value = currentConfig.routes.video.model || "";
-    }
-    function renderProviders() {
-      providersList.textContent = "";
-      const providers = currentConfig.providers || [];
-      providers.forEach((p, index) => {
-        const card = document.createElement("div");
-        card.className = "provider-card";
-        card.setAttribute("data-id", p.id);
-        const header = document.createElement("div");
-        header.className = "provider-card-header";
-        const titleWrap = document.createElement("div");
-        titleWrap.className = "provider-title-wrap";
-        const idxSpan = document.createElement("span");
-        idxSpan.className = "provider-index";
-        idxSpan.textContent = `#${index + 1}`;
-        const nameDisplay = document.createElement("strong");
-        nameDisplay.style.fontSize = "13px";
-        nameDisplay.textContent = p.name || "\u65B0\u670D\u52A1\u5546";
-        titleWrap.appendChild(idxSpan);
-        titleWrap.appendChild(nameDisplay);
-        header.appendChild(titleWrap);
-        if (providers.length > 1) {
-          const deleteBtn = document.createElement("button");
-          deleteBtn.type = "button";
-          deleteBtn.className = "btn-danger-ghost";
-          deleteBtn.title = "\u5220\u9664\u6B64\u670D\u52A1\u5546";
-          deleteBtn.setAttribute("aria-label", `\u5220\u9664\u670D\u52A1\u5546 ${p.name}`);
-          deleteBtn.innerHTML = `
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-          </svg>
-        `;
-          deleteBtn.addEventListener("click", () => {
-            syncFormToConfig();
-            currentConfig.providers = currentConfig.providers.filter((item) => item.id !== p.id);
-            ["llm", "audio", "video"].forEach((k) => {
-              if (!currentConfig.providers.some((item) => item.id === currentConfig.routes[k].providerId)) {
-                currentConfig.routes[k].providerId = currentConfig.providers[0].id;
-              }
-            });
-            renderAll();
-          });
-          header.appendChild(deleteBtn);
-        }
-        card.appendChild(header);
-        const grid = document.createElement("div");
-        grid.className = "form-grid";
-        const fgName = document.createElement("div");
-        fgName.className = "field-group";
-        fgName.innerHTML = `
-        <label class="field-label">\u670D\u52A1\u5546\u540D\u79F0</label>
-        <input type="text" class="field-input provider-name" value="${escapeHtml(p.name)}" placeholder="\u4F8B\u5982 MOSS \u5B98\u65B9" spellcheck="false" autocomplete="off">
-      `;
-        grid.appendChild(fgName);
-        const fgProto = document.createElement("div");
-        fgProto.className = "field-group";
-        fgProto.innerHTML = `
-        <label class="field-label">\u534F\u8BAE\u7C7B\u578B</label>
-        <select class="field-select provider-protocol">
-          <option value="moss" ${p.protocol === "moss" ? "selected" : ""}>MOSS \u539F\u751F</option>
-          <option value="openai" ${p.protocol === "openai" ? "selected" : ""}>OpenAI \u517C\u5BB9\u4E2D\u8F6C</option>
-        </select>
-      `;
-        grid.appendChild(fgProto);
-        const fgUrl = document.createElement("div");
-        fgUrl.className = "field-group full";
-        fgUrl.innerHTML = `
-        <label class="field-label">Base URL</label>
-        <input type="text" class="field-input provider-url" value="${escapeHtml(p.baseUrl)}" placeholder="https://api.mosi.cn/v1" spellcheck="false" autocomplete="off">
-      `;
-        grid.appendChild(fgUrl);
-        const fgKey = document.createElement("div");
-        fgKey.className = "field-group full";
-        const keyWrapId = `pw_${p.id}`;
-        fgKey.innerHTML = `
-        <label class="field-label">API Key (\u5BC6\u94A5)</label>
-        <div class="password-wrap">
-          <input id="${keyWrapId}" type="password" class="field-input provider-key" value="${escapeHtml(p.apiKey)}" placeholder="sk-..." spellcheck="false" autocomplete="off">
-          <button type="button" class="toggle-pw-btn" title="\u663E\u793A/\u9690\u85CF\u5BC6\u94A5" aria-label="\u663E\u793A\u6216\u9690\u85CFAPI Key">
-            <svg class="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-              <circle cx="12" cy="12" r="3"></circle>
-            </svg>
-          </button>
-        </div>
-      `;
-        grid.appendChild(fgKey);
-        const toggleBtn = fgKey.querySelector(".toggle-pw-btn");
-        const keyInput = fgKey.querySelector(".provider-key");
-        toggleBtn.addEventListener("click", () => {
-          if (keyInput.type === "password") {
-            keyInput.type = "text";
-            toggleBtn.title = "\u9690\u85CF\u5BC6\u94A5";
-          } else {
-            keyInput.type = "password";
-            toggleBtn.title = "\u663E\u793A\u5BC6\u94A5";
-          }
-        });
-        const fgNote = document.createElement("div");
-        fgNote.className = "field-group full";
-        fgNote.innerHTML = `
-        <label class="field-label">\u5907\u6CE8\u8BF4\u660E (\u53EF\u9009)</label>
-        <input type="text" class="field-input provider-note" value="${escapeHtml(p.note || "")}" placeholder="\u4F8B\u5982 \u5907\u7528\u4E2D\u8F6C\u8D26\u53F7" spellcheck="false" autocomplete="off">
-      `;
-        grid.appendChild(fgNote);
-        card.appendChild(grid);
-        providersList.appendChild(card);
-      });
-    }
-    function escapeHtml(str) {
-      return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
-    }
-    function renderAll() {
-      renderProviders();
-      renderRoutes();
-    }
-    addProviderBtn.addEventListener("click", () => {
-      syncFormToConfig();
-      const newP = {
-        id: uid("prov"),
-        name: `\u670D\u52A1\u5546 ${currentConfig.providers.length + 1}`,
-        baseUrl: "https://api.openai.com/v1",
-        apiKey: "",
-        protocol: "openai",
-        note: "",
-        models: [],
-        lastSyncedAt: null,
-        status: "unknown",
-        lastError: ""
-      };
-      currentConfig.providers.push(newP);
-      renderAll();
     });
-    saveConfigBtn.addEventListener("click", async () => {
-      syncFormToConfig();
-      const originsMap = /* @__PURE__ */ new Set();
-      for (const p of currentConfig.providers) {
-        const urlStr = p.baseUrl.trim();
-        if (!urlStr) continue;
-        try {
-          const parsed = new URL(urlStr);
-          if (parsed.protocol === "https:" || parsed.protocol === "http:") {
-            originsMap.add(`${parsed.origin}/*`);
-          }
-        } catch (e) {
-        }
-      }
-      const origins = Array.from(originsMap);
-      if (origins.length === 0) {
-        showNotice("\u8BF7\u81F3\u5C11\u914D\u7F6E\u4E00\u4E2A\u6709\u6548\u7684\u670D\u52A1\u5546 Base URL (http/https)", true);
+    function loadAndRenderNotes() {
+      notes = loadNotes();
+      notesList.textContent = "";
+      if (notes.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "empty-hint";
+        empty.textContent = "\u6682\u65E0\u7B14\u8BB0\u3002\u5728\u9875\u9762\u6D6E\u5C42\u70B9\u51FB\u300C\u8BB0\u7B14\u8BB0\u300D\u6216\u300C\u751F\u6210\u914D\u56FE\u300D\u5373\u53EF\u6DFB\u52A0\u3002";
+        notesList.appendChild(empty);
         return;
       }
-      try {
-        const granted = await chrome.permissions.request({ origins });
-        if (!granted) {
-          showNotice(`\u5DF2\u53D6\u6D88\u6216\u62D2\u7EDD\u6388\u6743\u7F51\u7EDC\u8BBF\u95EE\u6743\u9650 (${origins.join(", ")})\u3002\u914D\u7F6E\u672A\u4FDD\u5B58\u3002`, true);
-          return;
-        }
-      } catch (permErr) {
-        console.warn("chrome.permissions.request warning:", permErr);
-      }
-      try {
-        const res = await chrome.runtime.sendMessage({
-          target: "background",
-          type: "SAVE_CONFIG",
-          config: currentConfig
+      const sorted = [...notes].sort((a, b) => b.updatedAt - a.updatedAt);
+      sorted.forEach((note) => {
+        const card = document.createElement("div");
+        card.className = "note-card";
+        const header = document.createElement("div");
+        header.className = "note-card-header";
+        const title = document.createElement("span");
+        title.className = "note-card-title";
+        title.textContent = note.title || "\u672A\u547D\u540D\u7B14\u8BB0";
+        const count = document.createElement("span");
+        count.className = "note-card-count";
+        count.textContent = `${note.entries.length} \u6761`;
+        header.appendChild(title);
+        header.appendChild(count);
+        card.appendChild(header);
+        const meta = document.createElement("div");
+        meta.className = "note-card-meta";
+        const date = new Date(note.updatedAt).toLocaleString("zh-CN", {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit"
         });
-        if (res && res.ok) {
-          showNotice("\u914D\u7F6E\u5DF2\u6210\u529F\u4FDD\u5B58\u5E76\u540C\u6B65\u81F3\u6269\u5C55\u540E\u53F0\u3002");
-        } else {
-          showNotice("\u4FDD\u5B58\u5931\u8D25: " + (res?.error || "\u672A\u77E5\u9519\u8BEF"), true);
+        meta.textContent = `\u66F4\u65B0\u4E8E ${date}`;
+        card.appendChild(meta);
+        if (note.entries.length > 0) {
+          const preview = document.createElement("div");
+          preview.className = "note-card-preview";
+          const last = note.entries[note.entries.length - 1];
+          preview.textContent = last.text || last.target || last.source || "(\u7A7A)";
+          card.appendChild(preview);
         }
-      } catch (err) {
-        showNotice("\u901A\u4FE1\u9519\u8BEF: " + err.message, true);
+        const actions = document.createElement("div");
+        actions.className = "note-card-actions";
+        const exportBtn = document.createElement("button");
+        exportBtn.type = "button";
+        exportBtn.className = "btn btn-ghost btn-xs";
+        exportBtn.textContent = "\u5BFC\u51FA Markdown";
+        exportBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          exportNote(note);
+        });
+        actions.appendChild(exportBtn);
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "btn btn-danger-ghost btn-xs";
+        delBtn.textContent = "\u5220\u9664";
+        delBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (confirm("\u786E\u5B9A\u5220\u9664\u8FD9\u7BC7\u7B14\u8BB0\uFF1F")) {
+            notes = notes.filter((n) => n.id !== note.id);
+            saveNotes(notes);
+            loadAndRenderNotes();
+            showNotice("\u7B14\u8BB0\u5DF2\u5220\u9664");
+          }
+        });
+        actions.appendChild(delBtn);
+        card.appendChild(actions);
+        notesList.appendChild(card);
+      });
+    }
+    function exportNote(note) {
+      const lines = [
+        `# ${note.title}`,
+        "",
+        `- **\u521B\u5EFA\u65F6\u95F4**\uFF1A${new Date(note.createdAt).toLocaleString("zh-CN")}`,
+        `- **\u6761\u76EE\u6570**\uFF1A${note.entries.length}`,
+        "",
+        "---",
+        ""
+      ];
+      for (const entry of note.entries) {
+        const time = new Date(entry.at).toLocaleTimeString("zh-CN");
+        switch (entry.type) {
+          case "subtitle":
+            lines.push(`### \u5B57\u5E55 ${time}`);
+            if (entry.target) lines.push(`**\u8BD1\u6587**\uFF1A${entry.target}`);
+            if (entry.source) lines.push(`**\u539F\u6587**\uFF1A${entry.source}`);
+            lines.push("");
+            break;
+          case "text":
+            lines.push(`### \u7B14\u8BB0 ${time}`);
+            lines.push(entry.text || "");
+            lines.push("");
+            break;
+          case "screenshot":
+            lines.push(`### \u622A\u56FE ${time}`);
+            lines.push(entry.text || "\u622A\u56FE");
+            if (entry.imageUrl) lines.push(`![](${entry.imageUrl})`);
+            lines.push("");
+            break;
+          case "image":
+            lines.push(`### \u914D\u56FE ${time}`);
+            lines.push(entry.text || entry.source || "");
+            if (entry.imageUrl) lines.push(`![](${entry.imageUrl})`);
+            lines.push("");
+            break;
+          case "svg":
+            lines.push(`### SVG ${time}`);
+            lines.push(entry.text || entry.source || "");
+            if (entry.svg) lines.push("```svg\n" + entry.svg + "\n```");
+            lines.push("");
+            break;
+        }
       }
+      lines.push("", "---", "*\u7531 snooper-browser \u751F\u6210*");
+      const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${note.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_")}.md`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2e3);
+      showNotice("\u7B14\u8BB0\u5DF2\u5BFC\u51FA");
+    }
+    notesRefreshBtn.addEventListener("click", loadAndRenderNotes);
+    function renderObsidianConfig() {
+      obsidianCfg = loadObsidianConfig();
+      obsidianEnabled.checked = obsidianCfg.enabled;
+      obsidianPort.value = String(obsidianCfg.apiPort);
+      obsidianFolder.value = obsidianCfg.noteFolder;
+      obsidianKey.value = obsidianCfg.apiKey;
+    }
+    function syncObsidianForm() {
+      obsidianCfg.enabled = obsidianEnabled.checked;
+      obsidianCfg.apiPort = parseInt(obsidianPort.value, 10) || 27124;
+      obsidianCfg.noteFolder = obsidianFolder.value.trim() || "snooper-notes";
+      obsidianCfg.apiKey = obsidianKey.value.trim();
+      saveObsidianConfig(obsidianCfg);
+    }
+    saveConfigBtn.addEventListener("click", () => {
+      syncObsidianForm();
+      showNotice("Obsidian \u8BBE\u7F6E\u5DF2\u4FDD\u5B58");
     });
-    loadConfig();
+    renderObsidianConfig();
+    loadAndRenderNotes();
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") loadAndRenderNotes();
+    });
   })();
 })();

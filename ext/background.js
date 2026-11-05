@@ -2,7 +2,6 @@
 var CONFIG_KEY = "snooper.extension.config.v1";
 var SESSION_RECOVERY_KEY = "snooper.extension.sessions.v1";
 var OFFSCREEN_PATH = "offscreen.html";
-var CONTENT_SCRIPT_FILE = "content.js";
 var FS_BRIDGE_FILE = "fullscreen-bridge.js";
 var DEFAULT_CONFIG = {
   providers: [
@@ -22,7 +21,8 @@ var DEFAULT_CONFIG = {
   routes: {
     llm: { providerId: "moss-official", model: "moss-vl-1.0" },
     audio: { providerId: "moss-official", model: "moss-transcribe-1.0" },
-    video: { providerId: "moss-official", model: "moss-vl-realtime-1.0" }
+    video: { providerId: "moss-official", model: "moss-vl-realtime-1.0" },
+    image: { providerId: "moss-official", model: "moss-image-sft-1.0" }
   }
 };
 var sessions = /* @__PURE__ */ new Map();
@@ -198,12 +198,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   switch (message.type) {
-    /* ---------- Config (side panel only) ---------- */
+    /* ---------- Config (in-page settings modal + side panel) ---------- */
+    // Both surfaces are trusted extension contexts: the content script runs in
+    // an isolated world that page scripts cannot reach, and `sender.tab` proves
+    // the message came from an injected content script rather than the page.
     case "GET_CONFIG": {
-      if (!isSidePanel) {
-        sendResponse({ ok: false, error: "\u4EC5\u914D\u7F6E\u9762\u677F\u53EF\u8BFB\u53D6\u914D\u7F6E" });
-        return false;
-      }
       loadConfig().then((config) => {
         sendResponse({ ok: true, config });
       }).catch((err) => {
@@ -212,15 +211,110 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     case "SAVE_CONFIG": {
-      if (!isSidePanel) {
-        sendResponse({ ok: false, error: "\u4EC5\u914D\u7F6E\u9762\u677F\u53EF\u4FEE\u6539\u914D\u7F6E" });
-        return false;
-      }
       saveConfig(message.config).then(() => {
         sendResponse({ ok: true });
       }).catch((err) => {
         sendResponse({ ok: false, error: err.message });
       });
+      return true;
+    }
+    /* ---------- Connection test (in-page settings modal) ---------- */
+    case "TEST_CONNECTION": {
+      (async () => {
+        try {
+          const config = message.config || await loadConfig();
+          const provider = Array.isArray(config.providers) ? config.providers[0] : null;
+          if (!provider?.baseUrl) throw new Error("\u8BF7\u5148\u586B\u5199 Base URL");
+          let origin;
+          try {
+            origin = new URL(provider.baseUrl).origin;
+          } catch {
+            throw new Error("Base URL \u683C\u5F0F\u65E0\u6548");
+          }
+          const res = await fetch(`${origin}${new URL(provider.baseUrl).pathname.replace(/\/+$/, "")}/models`, {
+            headers: provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}
+          });
+          const text = await res.text().catch(() => "");
+          if (!res.ok) {
+            let detail = "";
+            try {
+              const parsed = JSON.parse(text);
+              detail = parsed.error?.message || "";
+            } catch {
+              detail = text.slice(0, 160);
+            }
+            throw new Error(`HTTP ${res.status}${detail ? ` \xB7 ${detail}` : ""}`);
+          }
+          let ids = [];
+          try {
+            const payload = JSON.parse(text);
+            ids = (payload.data || []).map((item) => item.id).filter(Boolean);
+          } catch {
+            throw new Error("\u8FD4\u56DE\u5185\u5BB9\u4E0D\u662F\u6709\u6548\u7684\u6A21\u578B\u5217\u8868");
+          }
+          sendResponse({ ok: true, count: ids.length, models: ids.slice(0, 60) });
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message || "\u8FDE\u63A5\u5931\u8D25" });
+        }
+      })();
+      return true;
+    }
+    /* ---------- In-page image generation ---------- */
+    case "GENERATE_IMAGE": {
+      (async () => {
+        try {
+          const config = await loadConfig();
+          const route = config.routes.image;
+          const provider = config.providers.find((p) => p.id === route?.providerId) || config.providers[0];
+          if (!provider?.apiKey) {
+            throw new Error("\u5C1A\u672A\u914D\u7F6E API Key\uFF0C\u8BF7\u70B9\u51FB\u9875\u9762\u60AC\u6D6E\u680F\u7684 \u2699 \u5728\u9875\u9762\u5185\u914D\u7F6E");
+          }
+          const prompt = String(message.prompt || "").trim();
+          if (!prompt) throw new Error("\u63D0\u793A\u8BCD\u4E0D\u80FD\u4E3A\u7A7A");
+          if (prompt.length > 4e3) throw new Error("\u63D0\u793A\u8BCD\u8FC7\u957F\uFF08\u6700\u591A 4000 \u5B57\uFF09");
+          const baseUrl = provider.baseUrl.replace(/\/+$/, "");
+          const body = {
+            model: route?.model || "moss-image-sft-1.0",
+            prompt,
+            n: 1,
+            size: message.size || "1024x1024",
+            prompt_enhance: true,
+            output_watermark: { enabled: false }
+          };
+          const negative = String(message.negativePrompt || "").trim();
+          if (negative) body.negative_prompt = negative;
+          const res = await fetch(`${baseUrl}/images/generations`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${provider.apiKey}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+          });
+          const text = await res.text().catch(() => "");
+          if (!res.ok) {
+            let detail = "";
+            try {
+              const parsed = JSON.parse(text);
+              detail = parsed.error?.message || "";
+            } catch {
+              detail = text.slice(0, 200);
+            }
+            throw new Error(`\u751F\u56FE\u5931\u8D25 HTTP ${res.status}${detail ? ` \xB7 ${detail}` : ""}`);
+          }
+          let images = [];
+          try {
+            const payload = JSON.parse(text);
+            images = (payload.data || []).map((item) => item.url || (item.b64_json ? `data:image/png;base64,${item.b64_json}` : "")).filter(Boolean);
+          } catch {
+            throw new Error("\u751F\u56FE\u63A5\u53E3\u8FD4\u56DE\u5185\u5BB9\u65E0\u6CD5\u89E3\u6790");
+          }
+          if (!images.length) throw new Error("\u751F\u56FE\u63A5\u53E3\u6CA1\u6709\u8FD4\u56DE\u56FE\u7247");
+          sendResponse({ ok: true, images, model: route?.model || "moss-image-sft-1.0" });
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message || "\u751F\u56FE\u5931\u8D25" });
+        }
+      })();
       return true;
     }
     /* ---------- Session (content script) ---------- */
@@ -266,15 +360,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       loadConfig().then(async (config) => {
         const hasKey = config.providers.some((p) => p.apiKey && p.apiKey.trim().length > 0);
         if (!hasKey) {
-          throw new Error("\u5C1A\u672A\u914D\u7F6E API Key\uFF0C\u8BF7\u5148\u5728\u4FA7\u680F\u300C\u670D\u52A1\u5546\u914D\u7F6E\u300D\u4E2D\u586B\u5165\u6709\u6548\u7684\u5BC6\u94A5");
+          throw new Error("\u5C1A\u672A\u914D\u7F6E API Key\u3002\u8BF7\u70B9\u51FB\u9875\u9762\u60AC\u6D6E\u680F\u7684 \u2699 \u6309\u94AE\uFF0C\u5728\u9875\u9762\u5185\u586B\u5165\u5BC6\u94A5\u540E\u91CD\u8BD5");
         }
         const audioRoute = config.routes.audio;
         const audioProvider = config.providers.find((p) => p.id === audioRoute.providerId);
         if (!audioProvider || !audioProvider.apiKey) {
-          throw new Error(`\u97F3\u9891\u8F6C\u5199\u670D\u52A1\u5546\u300C${audioProvider?.name || "\u672A\u914D\u7F6E"}\u300D\u7F3A\u5C11 API Key`);
+          throw new Error(`\u97F3\u9891\u8F6C\u5199\u670D\u52A1\u5546\u300C${audioProvider?.name || "\u672A\u914D\u7F6E"}\u300D\u7F3A\u5C11 API Key\uFF0C\u8BF7\u70B9\u51FB \u2699 \u5728\u9875\u9762\u5185\u914D\u7F6E`);
         }
         if (!audioRoute.model) {
-          throw new Error("\u97F3\u9891\u8F6C\u5199\u672A\u9009\u62E9\u6A21\u578B");
+          throw new Error("\u97F3\u9891\u8F6C\u5199\u672A\u9009\u62E9\u6A21\u578B\uFF0C\u8BF7\u70B9\u51FB\u60AC\u6D6E\u680F\u7684 \u2699 \u5728\u9875\u9762\u5185\u914D\u7F6E");
         }
         s.configSnapshot = JSON.parse(JSON.stringify(config));
         console.log("[RTTS] START:", tabId, "gen:", s.generation, "lang:", s.sourceLang, "\u2192", s.targetLang);
@@ -394,8 +488,64 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.sidePanel.open({ tabId }).then(() => {
         sendResponse({ ok: true });
       }).catch(() => {
-        sendResponse({ ok: false, error: "\u8BF7\u70B9\u51FB\u6D4F\u89C8\u5668\u5DE5\u5177\u680F\u7684 RTTS \u56FE\u6807\u6253\u5F00\u914D\u7F6E\u9762\u677F" });
+        sendResponse({ ok: false, error: "\u8BF7\u70B9\u51FB\u6D4F\u89C8\u5668\u5DE5\u5177\u680F\u7684 snooper-browser \u56FE\u6807\u6253\u5F00\u914D\u7F6E\u9762\u677F" });
       });
+      return true;
+    }
+    case "OPEN_IMAGE_GEN": {
+      chrome.sidePanel.open({ tabId }).then(() => {
+        try {
+          sessionStorage.setItem("snooper.image-gen-prompt", message.prompt || "");
+        } catch {
+        }
+        sendResponse({ ok: true });
+      }).catch(() => {
+        sendResponse({ ok: false, error: "\u8BF7\u70B9\u51FB\u6D4F\u89C8\u5668\u5DE5\u5177\u680F\u56FE\u6807\u6253\u5F00\u914D\u7F6E\u9762\u677F" });
+      });
+      return true;
+    }
+    case "CAPTURE_SCREENSHOT": {
+      chrome.tabs.captureVisibleTab(null, { format: "png" }).then((dataUrl) => {
+        sendResponse({ ok: true, dataUrl });
+      }).catch((err) => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+    case "EXPORT_TO_OBSIDIAN": {
+      const content = message.content || "";
+      const title = message.title || `snooper-\u7B14\u8BB0-${Date.now()}`;
+      if (!content) {
+        sendResponse({ ok: false, error: "\u6CA1\u6709\u5185\u5BB9\u53EF\u5BFC\u51FA" });
+        return false;
+      }
+      const oc = message.obsidianConfig || {};
+      const obsidianPort = oc.apiPort || 27124;
+      const obsidianApiKey = oc.apiKey || "";
+      const noteFolder = (oc.noteFolder || "snooper-notes").replace(/^\/+|\/+$/g, "");
+      const fileName = `${title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_")}.md`;
+      (async () => {
+        try {
+          const res = await fetch(`http://localhost:${obsidianPort}/vault/${noteFolder}/${encodeURIComponent(fileName)}`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "text/markdown",
+              ...obsidianApiKey ? { Authorization: `Bearer ${obsidianApiKey}` } : {}
+            },
+            body: content
+          });
+          if (res.ok) {
+            sendResponse({ ok: true });
+          } else {
+            sendResponse({ ok: false, error: `Obsidian API \u8FD4\u56DE ${res.status}` });
+          }
+        } catch (err) {
+          sendResponse({
+            ok: false,
+            error: "\u65E0\u6CD5\u8FDE\u63A5\u5230 Obsidian\u3002\u8BF7\u786E\u4FDD\uFF1A1) Obsidian \u6B63\u5728\u8FD0\u884C 2) \u5DF2\u5B89\u88C5 Obsidian Local REST API \u63D2\u4EF6 3) \u63D2\u4EF6\u5DF2\u542F\u7528\u3002"
+          });
+        }
+      })();
       return true;
     }
     default:
@@ -483,12 +633,6 @@ chrome.action.onClicked.addListener((tab) => {
     world: "MAIN"
   }).catch((err) => {
     console.warn("[RTTS] FS bridge injection error:", err.message);
-  });
-  chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    files: [CONTENT_SCRIPT_FILE]
-  }).catch((err) => {
-    console.warn("[RTTS] content script injection error:", err.message);
   });
   chrome.sidePanel.open({ tabId: tab.id }).catch((err) => {
     console.warn("[RTTS] sidePanel.open error:", err.message);

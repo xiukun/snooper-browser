@@ -6,9 +6,11 @@ import {
   AudioLines,
   Camera,
   Clock3,
+  Copy,
   Download,
   Film,
   Gauge,
+  ImagePlus,
   Languages,
   LoaderCircle,
   Mic,
@@ -28,6 +30,7 @@ import FieldSelect from '@/components/ui/FieldSelect.vue'
 import ExportDialog from '@/components/ui/ExportDialog.vue'
 import { useNavigation } from '@/composables/useNavigation'
 import { useChat } from '@/composables/useChat'
+import { useImagePrompt } from '@/composables/useImagePrompt'
 import { useVision } from '@/composables/useVision'
 import { useRealtime } from '@/composables/useRealtime'
 import { useSettings } from '@/composables/useSettings'
@@ -65,6 +68,7 @@ const { isConfigured, audioRoute } = useSettings()
 const { setView } = useNavigation()
 const { injectContext } = useChat()
 const { injectImageDataUrl } = useVision()
+const { setPendingPrompt } = useImagePrompt()
 const showExport = ref(false)
 const videoRef = ref<HTMLVideoElement | null>(null)
 
@@ -114,6 +118,27 @@ function parseSubtitleLine(index: number) {
   injectContext(prompt)
   void nextTick(() => {
     setView('chat')
+  })
+}
+
+function triggerImageGen(line: { target?: string; source?: string }) {
+  const text = line.target || line.source || ''
+  if (!text) {
+    toast.error('没有可配图的文本')
+    return
+  }
+  // Set pending prompt for ImageView and switch to it
+  setPendingPrompt(text)
+  setView('image')
+}
+
+function copySubtitle(line: { target?: string; source?: string }) {
+  const text = line.target || line.source || ''
+  if (!text) return
+  navigator.clipboard.writeText(text).then(() => {
+    toast.success('译文已复制')
+  }).catch(() => {
+    toast.error('复制失败')
   })
 }
 
@@ -556,14 +581,33 @@ function onMediaPicked(event: Event) {
                       {{ line.speaker }}
                     </span>
                     <span class="text-[9.5px] text-mist-600">{{ line.latency }} ms</span>
-                    <button
-                      type="button"
-                      class="ml-auto inline-flex items-center gap-1 rounded-md border border-white/8 bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-mist-500 opacity-0 transition-opacity group-hover:opacity-100 hover:border-iris-400/40 hover:text-iris-200"
-                      @click.stop="parseSubtitleLine(index)"
-                    >
-                      <Sparkles class="h-2.5 w-2.5" />
-                      解析
-                    </button>
+                    <div class="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1 rounded-md border border-white/8 bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-mist-500 hover:border-aqua-400/40 hover:text-aqua-200"
+                        @click.stop="triggerImageGen(line)"
+                        title="配图"
+                      >
+                        <ImagePlus class="h-2.5 w-2.5" />
+                      </button>
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1 rounded-md border border-white/8 bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-mist-500 hover:border-amber-400/40 hover:text-amber-200"
+                        @click.stop="copySubtitle(line)"
+                        title="复制译文"
+                      >
+                        <Copy class="h-2.5 w-2.5" />
+                      </button>
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1 rounded-md border border-white/8 bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-mist-500 hover:border-iris-400/40 hover:text-iris-200"
+                        @click.stop="parseSubtitleLine(index)"
+                        title="解析"
+                      >
+                        <Sparkles class="h-2.5 w-2.5" />
+                        解析
+                      </button>
+                    </div>
                   </div>
                   <p class="mt-0.5 truncate text-[11px] text-mist-500">{{ line.source }}</p>
                   <p class="mt-0.5 text-[12.5px] leading-relaxed text-mist-100">{{ line.target }}</p>

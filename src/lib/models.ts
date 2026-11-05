@@ -94,6 +94,50 @@ export const MODEL_CATALOG: ModelInfo[] = [
     kind: 'image',
     blurb: '图像生成提示词增强',
   },
+  {
+    id: 'moss-image-sft-1.0',
+    label: 'MOSS-Image SFT',
+    kind: 'image',
+    blurb: '官方文生图，中英文文字渲染/布局控制，限时免费',
+    badge: '免费 · 推荐',
+  },
+  {
+    id: 'moss-image-base-1.0',
+    label: 'MOSS-Image Base',
+    kind: 'image',
+    blurb: '基础文生图模型，适合风格化与微调，限时免费',
+    badge: '免费',
+  },
+  {
+    id: 'moss-image-sft-1.0-2026-10-09',
+    label: 'MOSS-Image SFT (快照)',
+    kind: 'image',
+    blurb: '锁定版本的 SFT 快照，保证结果可复现',
+  },
+  {
+    id: 'moss-image-base-1.0-2026-10-09',
+    label: 'MOSS-Image Base (快照)',
+    kind: 'image',
+    blurb: '锁定版本的 Base 快照，保证结果可复现',
+  },
+  {
+    id: 'black-forest-labs/FLUX.1-schnell',
+    label: 'FLUX.1-schnell',
+    kind: 'image',
+    blurb: '第三方中转模型：最快开源生图，1-4步推理（非 MOSS 官方）',
+  },
+  {
+    id: 'stabilityai/stable-diffusion-3.5-medium',
+    label: 'SD 3.5 Medium',
+    kind: 'image',
+    blurb: '第三方中转模型：质量与速度均衡（非 MOSS 官方）',
+  },
+  {
+    id: 'stabilityai/stable-diffusion-xl-base-1.0',
+    label: 'SDXL 1.0',
+    kind: 'image',
+    blurb: '第三方中转模型：高分辨率生成（非 MOSS 官方）',
+  },
 ]
 
 export const LANGUAGES = [

@@ -2,7 +2,7 @@ import { ref } from 'vue'
 import { STORAGE_KEYS } from '@lib/brand'
 import type { ViewKey } from '@/lib/navigation'
 
-const VALID: ViewKey[] = ['translate', 'chat', 'vision', 'settings']
+const VALID: ViewKey[] = ['translate', 'chat', 'vision', 'image', 'settings']
 
 function readStoredView(): ViewKey {
   try {

@@ -39,6 +39,7 @@ const DEFAULT_CONFIG: AppConfig = {
     llm: { providerId: 'moss-official', model: 'moss-vl-1.0' },
     audio: { providerId: 'moss-official', model: 'moss-transcribe-1.0' },
     video: { providerId: 'moss-official', model: 'moss-vl-realtime-1.0' },
+    image: { providerId: 'moss-official', model: 'moss-image-sft-1.0' },
   },
 };
 
@@ -334,12 +335,11 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
   }
 
   switch (message.type) {
-    /* ---------- Config (side panel only) ---------- */
+    /* ---------- Config (in-page settings modal + side panel) ---------- */
+    // Both surfaces are trusted extension contexts: the content script runs in
+    // an isolated world that page scripts cannot reach, and `sender.tab` proves
+    // the message came from an injected content script rather than the page.
     case 'GET_CONFIG': {
-      if (!isSidePanel) {
-        sendResponse({ ok: false, error: '仅配置面板可读取配置' });
-        return false;
-      }
       loadConfig().then((config) => {
         sendResponse({ ok: true, config });
       }).catch((err) => {
@@ -349,15 +349,119 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
     }
 
     case 'SAVE_CONFIG': {
-      if (!isSidePanel) {
-        sendResponse({ ok: false, error: '仅配置面板可修改配置' });
-        return false;
-      }
       saveConfig(message.config).then(() => {
         sendResponse({ ok: true });
       }).catch((err) => {
         sendResponse({ ok: false, error: err.message });
       });
+      return true; // async
+    }
+
+    /* ---------- Connection test (in-page settings modal) ---------- */
+    case 'TEST_CONNECTION': {
+      (async () => {
+        try {
+          const config: AppConfig = message.config || (await loadConfig());
+          const provider = Array.isArray(config.providers) ? config.providers[0] : null;
+          if (!provider?.baseUrl) throw new Error('请先填写 Base URL');
+          let origin: string;
+          try {
+            origin = new URL(provider.baseUrl).origin;
+          } catch {
+            throw new Error('Base URL 格式无效');
+          }
+          const res = await fetch(`${origin}${new URL(provider.baseUrl).pathname.replace(/\/+$/, '')}/models`, {
+            headers: provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {},
+          });
+          const text = await res.text().catch(() => '');
+          if (!res.ok) {
+            let detail = '';
+            try {
+              const parsed = JSON.parse(text) as { error?: { message?: string } };
+              detail = parsed.error?.message || '';
+            } catch {
+              detail = text.slice(0, 160);
+            }
+            throw new Error(`HTTP ${res.status}${detail ? ` · ${detail}` : ''}`);
+          }
+          let ids: string[] = [];
+          try {
+            const payload = JSON.parse(text) as { data?: Array<{ id?: string }> };
+            ids = (payload.data || []).map((item) => item.id).filter(Boolean) as string[];
+          } catch {
+            throw new Error('返回内容不是有效的模型列表');
+          }
+          sendResponse({ ok: true, count: ids.length, models: ids.slice(0, 60) });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err.message || '连接失败' });
+        }
+      })();
+      return true; // async
+    }
+
+    /* ---------- In-page image generation ---------- */
+    case 'GENERATE_IMAGE': {
+      (async () => {
+        try {
+          const config: AppConfig = await loadConfig();
+          const route = config.routes.image;
+          const provider =
+            config.providers.find((p) => p.id === route?.providerId) || config.providers[0];
+          if (!provider?.apiKey) {
+            throw new Error('尚未配置 API Key，请点击页面悬浮栏的 ⚙ 在页面内配置');
+          }
+          const prompt = String(message.prompt || '').trim();
+          if (!prompt) throw new Error('提示词不能为空');
+          if (prompt.length > 4000) throw new Error('提示词过长（最多 4000 字）');
+
+          const baseUrl = provider.baseUrl.replace(/\/+$/, '');
+          const body: Record<string, unknown> = {
+            model: route?.model || 'moss-image-sft-1.0',
+            prompt,
+            n: 1,
+            size: message.size || '1024x1024',
+            prompt_enhance: true,
+            output_watermark: { enabled: false },
+          };
+          const negative = String(message.negativePrompt || '').trim();
+          if (negative) body.negative_prompt = negative;
+
+          const res = await fetch(`${baseUrl}/images/generations`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${provider.apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(body),
+          });
+          const text = await res.text().catch(() => '');
+          if (!res.ok) {
+            let detail = '';
+            try {
+              const parsed = JSON.parse(text) as { error?: { message?: string } };
+              detail = parsed.error?.message || '';
+            } catch {
+              detail = text.slice(0, 200);
+            }
+            throw new Error(`生图失败 HTTP ${res.status}${detail ? ` · ${detail}` : ''}`);
+          }
+          let images: string[] = [];
+          try {
+            const payload = JSON.parse(text) as {
+              data?: Array<{ url?: string; b64_json?: string }>;
+            };
+            images = (payload.data || [])
+              .map((item) => item.url || (item.b64_json ? `data:image/png;base64,${item.b64_json}` : ''))
+              .filter(Boolean);
+          } catch {
+            throw new Error('生图接口返回内容无法解析');
+          }
+          if (!images.length) throw new Error('生图接口没有返回图片');
+          sendResponse({ ok: true, images, model: route?.model || 'moss-image-sft-1.0' });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err.message || '生图失败' });
+        }
+      })();
       return true; // async
     }
 
@@ -413,16 +517,16 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         // Pre-check: verify at least one provider has API key
         const hasKey = config.providers.some((p) => p.apiKey && p.apiKey.trim().length > 0);
         if (!hasKey) {
-          throw new Error('尚未配置 API Key，请先在侧栏「服务商配置」中填入有效的密钥');
+          throw new Error('尚未配置 API Key。请点击页面悬浮栏的 ⚙ 按钮，在页面内填入密钥后重试');
         }
         // Pre-check: audio route must resolve
         const audioRoute = config.routes.audio;
         const audioProvider = config.providers.find((p) => p.id === audioRoute.providerId);
         if (!audioProvider || !audioProvider.apiKey) {
-          throw new Error(`音频转写服务商「${audioProvider?.name || '未配置'}」缺少 API Key`);
+          throw new Error(`音频转写服务商「${audioProvider?.name || '未配置'}」缺少 API Key，请点击 ⚙ 在页面内配置`);
         }
         if (!audioRoute.model) {
-          throw new Error('音频转写未选择模型');
+          throw new Error('音频转写未选择模型，请点击悬浮栏的 ⚙ 在页面内配置');
         }
 
         s.configSnapshot = JSON.parse(JSON.stringify(config));
@@ -571,8 +675,72 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
       chrome.sidePanel.open({ tabId }).then(() => {
         sendResponse({ ok: true });
       }).catch(() => {
-        sendResponse({ ok: false, error: '请点击浏览器工具栏的 RTTS 图标打开配置面板' });
+        sendResponse({ ok: false, error: '请点击浏览器工具栏的 snooper-browser 图标打开配置面板' });
       });
+      return true;
+    }
+
+    case 'OPEN_IMAGE_GEN': {
+      // Forward prompt to image gen — open side panel with image gen context
+      chrome.sidePanel.open({ tabId }).then(() => {
+        // Store prompt in sessionStorage for the side panel to pick up
+        try {
+          sessionStorage.setItem('snooper.image-gen-prompt', message.prompt || '');
+        } catch { /* ignore */ }
+        sendResponse({ ok: true });
+      }).catch(() => {
+        sendResponse({ ok: false, error: '请点击浏览器工具栏图标打开配置面板' });
+      });
+      return true;
+    }
+
+    case 'CAPTURE_SCREENSHOT': {
+      // Use chrome.tabs.captureVisibleTab for screenshot
+      chrome.tabs.captureVisibleTab(null, { format: 'png' }).then((dataUrl) => {
+        sendResponse({ ok: true, dataUrl });
+      }).catch((err) => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+
+    case 'EXPORT_TO_OBSIDIAN': {
+      const content = message.content || '';
+      const title = message.title || `snooper-笔记-${Date.now()}`;
+      if (!content) {
+        sendResponse({ ok: false, error: '没有内容可导出' });
+        return false;
+      }
+
+      // Use config sent from content script, or fall back to defaults
+      const oc = message.obsidianConfig || {};
+      const obsidianPort = oc.apiPort || 27124;
+      const obsidianApiKey = oc.apiKey || '';
+      const noteFolder = (oc.noteFolder || 'snooper-notes').replace(/^\/+|\/+$/g, '');
+      const fileName = `${title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '_')}.md`;
+
+      (async () => {
+        try {
+          const res = await fetch(`http://localhost:${obsidianPort}/vault/${noteFolder}/${encodeURIComponent(fileName)}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'text/markdown',
+              ...(obsidianApiKey ? { Authorization: `Bearer ${obsidianApiKey}` } : {}),
+            },
+            body: content,
+          });
+          if (res.ok) {
+            sendResponse({ ok: true });
+          } else {
+            sendResponse({ ok: false, error: `Obsidian API 返回 ${res.status}` });
+          }
+        } catch (err: any) {
+          sendResponse({
+            ok: false,
+            error: '无法连接到 Obsidian。请确保：1) Obsidian 正在运行 2) 已安装 Obsidian Local REST API 插件 3) 插件已启用。',
+          });
+        }
+      })();
       return true;
     }
 
@@ -688,7 +856,7 @@ chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: any) => {
 /* ===== Action Click ===== */
 
 chrome.action.onClicked.addListener((tab: any) => {
-  // 1. Inject MAIN-world fullscreen bridge (needs MAIN to intercept requestFullscreen)
+  // Inject MAIN-world fullscreen bridge (needs MAIN to intercept requestFullscreen)
   chrome.scripting.executeScript({
     target: { tabId: tab.id },
     files: [FS_BRIDGE_FILE],
@@ -697,15 +865,7 @@ chrome.action.onClicked.addListener((tab: any) => {
     console.warn('[RTTS] FS bridge injection error:', err.message);
   });
 
-  // 2. Inject ISOLATED-world content script (floating pill + subtitles)
-  chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    files: [CONTENT_SCRIPT_FILE],
-  }).catch((err: any) => {
-    console.warn('[RTTS] content script injection error:', err.message);
-  });
-
-  // 3. Open side panel for configuration
+  // Open side panel for configuration
   chrome.sidePanel.open({ tabId: tab.id }).catch((err: any) => {
     console.warn('[RTTS] sidePanel.open error:', err.message);
   });

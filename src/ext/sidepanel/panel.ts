@@ -1,352 +1,294 @@
 /**
- * RTTS Extension Sidepanel Controller — TypeScript
- * Compliant with Chrome MV3 CSP, zero dependencies, pure vanilla JS.
+ * snooper-browser Side Panel — notes history + Obsidian integration.
  *
- * Imports shared types from src/lib/providers.ts for config schema consistency.
+ * Provider / key configuration lives in the in-page settings modal (the ⚙
+ * button in the page toolbar). This panel never touches credentials.
  */
 
-import type { AppConfig, ProviderProfile } from '../../lib/providers'
-import { uid } from '../../lib/utils'
-
 (() => {
-  let currentConfig: AppConfig = {
-    providers: [
-      {
-        id: 'moss-official',
-        name: 'MOSS 官方',
-        baseUrl: 'https://api.mosi.cn/v1',
-        apiKey: '',
-        protocol: 'moss',
-        note: '官方 MOSS 网关',
-        models: [],
-        lastSyncedAt: null,
-        status: 'unknown',
-        lastError: ''
-      }
-    ],
-    routes: {
-      llm: { providerId: 'moss-official', model: 'moss-vl-1.0' },
-      audio: { providerId: 'moss-official', model: 'moss-transcribe-1.0' },
-      video: { providerId: 'moss-official', model: 'moss-vl-realtime-1.0' }
-    }
-  };
+  /* ===== Types ===== */
+  interface NoteEntry {
+    id: string
+    type: 'subtitle' | 'image' | 'svg' | 'screenshot' | 'text' | 'summary'
+    at: number
+    source?: string
+    target?: string
+    imageUrl?: string
+    svg?: string
+    text?: string
+    speaker?: string
+    sourceLang?: string
+    targetLang?: string
+  }
 
-  const noticeBanner = document.getElementById('noticeBanner')!;
-  const providersList = document.getElementById('providersList')!;
-  const addProviderBtn = document.getElementById('addProviderBtn')!;
-  const saveConfigBtn = document.getElementById('saveConfigBtn')!;
+  interface NoteDocument {
+    id: string
+    title: string
+    createdAt: number
+    updatedAt: number
+    entries: NoteEntry[]
+    sessionInfo?: { source: string; mediaName?: string; duration?: number }
+  }
 
-  const routeLlmProvider = document.getElementById('route-llm-provider') as HTMLSelectElement;
-  const routeLlmModel = document.getElementById('route-llm-model') as HTMLInputElement;
-  const routeAudioProvider = document.getElementById('route-audio-provider') as HTMLSelectElement;
-  const routeAudioModel = document.getElementById('route-audio-model') as HTMLInputElement;
-  const routeVideoProvider = document.getElementById('route-video-provider') as HTMLSelectElement;
-  const routeVideoModel = document.getElementById('route-video-model') as HTMLInputElement;
+  interface ObsidianConfig {
+    enabled: boolean
+    vaultPath: string
+    apiPort: number
+    apiKey: string
+    noteFolder: string
+  }
 
+  /* ===== Persistence ===== */
+  const NOTES_KEY = 'snooper.notes.v1'
+  const OBSIDIAN_KEY = 'snooper.obsidian-config.v1'
+
+  function loadNotes(): NoteDocument[] {
+    try {
+      const raw = localStorage.getItem(NOTES_KEY)
+      return raw ? JSON.parse(raw) : []
+    } catch { return [] }
+  }
+
+  function saveNotes(next: NoteDocument[]) {
+    try { localStorage.setItem(NOTES_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+  }
+
+  function loadObsidianConfig(): ObsidianConfig {
+    try {
+      const raw = localStorage.getItem(OBSIDIAN_KEY)
+      if (raw) return JSON.parse(raw)
+    } catch { /* ignore */ }
+    return { enabled: false, vaultPath: '', apiPort: 27124, apiKey: '', noteFolder: 'snooper-notes' }
+  }
+
+  function saveObsidianConfig(config: ObsidianConfig) {
+    try { localStorage.setItem(OBSIDIAN_KEY, JSON.stringify(config)) } catch { /* ignore */ }
+  }
+
+  let obsidianCfg: ObsidianConfig = { enabled: false, vaultPath: '', apiPort: 27124, apiKey: '', noteFolder: 'snooper-notes' }
+  let notes: NoteDocument[] = []
+
+  /* ===== DOM refs ===== */
+  const noticeBanner = document.getElementById('noticeBanner')!
+  const tabNotes = document.getElementById('tab-notes')!
+  const tabObsidian = document.getElementById('tab-obsidian')!
+  const notesList = document.getElementById('notes-list')!
+  const notesRefreshBtn = document.getElementById('notes-refresh-btn')!
+  const openPageConfigBtn = document.getElementById('open-page-config') as HTMLButtonElement | null
+
+  const obsidianEnabled = document.getElementById('obsidian-enabled') as HTMLInputElement
+  const obsidianPort = document.getElementById('obsidian-port') as HTMLInputElement
+  const obsidianFolder = document.getElementById('obsidian-folder') as HTMLInputElement
+  const obsidianKey = document.getElementById('obsidian-key') as HTMLInputElement
+  const saveConfigBtn = document.getElementById('saveConfigBtn')!
+
+  /* ===== Utilities ===== */
   function showNotice(text: string, isError = false) {
-    if (!noticeBanner) return;
-    noticeBanner.textContent = text;
-    noticeBanner.className = `notice-banner ${isError ? 'error' : 'success'}`;
-    noticeBanner.hidden = false;
-    setTimeout(() => {
-      noticeBanner.hidden = true;
-    }, 5000);
+    noticeBanner.textContent = text
+    noticeBanner.className = `notice-banner ${isError ? 'error' : 'success'}`
+    noticeBanner.hidden = false
+    setTimeout(() => { noticeBanner.hidden = true }, 4000)
   }
 
-  async function loadConfig() {
+  /* ===== Tabs ===== */
+  function switchTab(tab: string) {
+    document.querySelectorAll('.tab-btn').forEach((btn) => {
+      btn.classList.remove('active')
+      btn.setAttribute('aria-selected', 'false')
+    })
+    document.querySelectorAll('.tab-content').forEach((content) => content.classList.remove('active'))
+    const nextTab = document.getElementById(`tab-${tab}`)
+    nextTab?.classList.add('active')
+    nextTab?.setAttribute('aria-selected', 'true')
+    document.getElementById(`panel-${tab}`)?.classList.add('active')
+    if (tab === 'notes') loadAndRenderNotes()
+  }
+
+  tabNotes.addEventListener('click', () => switchTab('notes'))
+  tabObsidian.addEventListener('click', () => switchTab('obsidian'))
+
+  /* ===== Open the in-page settings modal ===== */
+  openPageConfigBtn?.addEventListener('click', async () => {
     try {
-      const res = await chrome.runtime.sendMessage({ target: 'background', type: 'GET_CONFIG' });
-      if (res && res.ok && res.config) {
-        currentConfig = res.config;
-      }
-    } catch (err) {
-      // Background might be waking up or fallback to default
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (!tab?.id) throw new Error('没有活动标签页')
+      await chrome.tabs.sendMessage(tab.id, { type: 'OPEN_PAGE_SETTINGS' })
+      showNotice('已打开页面配置')
+    } catch {
+      showNotice('当前页面没有 snooper 悬浮栏，请刷新页面后点击页面上的 ⚙', true)
     }
-    renderAll();
-  }
+  })
 
-  function syncFormToConfig() {
-    // Read route selections
-    currentConfig.routes.llm.providerId = routeLlmProvider.value;
-    currentConfig.routes.llm.model = routeLlmModel.value.trim();
+  /* ===== Notes ===== */
+  function loadAndRenderNotes() {
+    notes = loadNotes()
 
-    currentConfig.routes.audio.providerId = routeAudioProvider.value;
-    currentConfig.routes.audio.model = routeAudioModel.value.trim();
+    notesList.textContent = ''
+    if (notes.length === 0) {
+      const empty = document.createElement('p')
+      empty.className = 'empty-hint'
+      empty.textContent = '暂无笔记。在页面浮层点击「记笔记」或「生成配图」即可添加。'
+      notesList.appendChild(empty)
+      return
+    }
 
-    currentConfig.routes.video.providerId = routeVideoProvider.value;
-    currentConfig.routes.video.model = routeVideoModel.value.trim();
+    const sorted = [...notes].sort((a, b) => b.updatedAt - a.updatedAt)
+    sorted.forEach((note) => {
+      const card = document.createElement('div')
+      card.className = 'note-card'
 
-    // Read provider cards DOM
-    const cards = providersList.querySelectorAll('.provider-card');
-    cards.forEach((card, idx) => {
-      const id = card.getAttribute('data-id');
-      const provider = currentConfig.providers.find(p => p.id === id);
-      if (!provider) return;
+      const header = document.createElement('div')
+      header.className = 'note-card-header'
 
-      const nameInput = card.querySelector('.provider-name') as HTMLInputElement;
-      const urlInput = card.querySelector('.provider-url') as HTMLInputElement;
-      const keyInput = card.querySelector('.provider-key') as HTMLInputElement;
-      const protocolSelect = card.querySelector('.provider-protocol') as HTMLSelectElement;
-      const noteInput = card.querySelector('.provider-note') as HTMLInputElement;
+      const title = document.createElement('span')
+      title.className = 'note-card-title'
+      title.textContent = note.title || '未命名笔记'
 
-      if (nameInput) provider.name = nameInput.value.trim();
-      if (urlInput) provider.baseUrl = urlInput.value.trim();
-      if (keyInput) provider.apiKey = keyInput.value.trim();
-      if (protocolSelect) provider.protocol = protocolSelect.value as 'moss' | 'openai';
-      if (noteInput) provider.note = noteInput.value.trim();
-    });
-  }
+      const count = document.createElement('span')
+      count.className = 'note-card-count'
+      count.textContent = `${note.entries.length} 条`
 
-  function renderRoutes() {
-    const providers = currentConfig.providers || [];
-    const populateSelect = (selectEl: HTMLSelectElement, selectedId: string) => {
-      selectEl.textContent = '';
-      if (providers.length === 0) {
-        const opt = document.createElement('option');
-        opt.value = '';
-        opt.textContent = '暂无可用服务商';
-        selectEl.appendChild(opt);
-        return;
-      }
-      providers.forEach(p => {
-        const opt = document.createElement('option');
-        opt.value = p.id;
-        opt.textContent = p.name || '未命名服务商';
-        if (p.id === selectedId) opt.selected = true;
-        selectEl.appendChild(opt);
-      });
-    };
+      header.appendChild(title)
+      header.appendChild(count)
+      card.appendChild(header)
 
-    populateSelect(routeLlmProvider, currentConfig.routes.llm.providerId);
-    routeLlmModel.value = currentConfig.routes.llm.model || '';
+      const meta = document.createElement('div')
+      meta.className = 'note-card-meta'
+      const date = new Date(note.updatedAt).toLocaleString('zh-CN', {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      })
+      meta.textContent = `更新于 ${date}`
+      card.appendChild(meta)
 
-    populateSelect(routeAudioProvider, currentConfig.routes.audio.providerId);
-    routeAudioModel.value = currentConfig.routes.audio.model || '';
-
-    populateSelect(routeVideoProvider, currentConfig.routes.video.providerId);
-    routeVideoModel.value = currentConfig.routes.video.model || '';
-  }
-
-  function renderProviders() {
-    providersList.textContent = '';
-    const providers = currentConfig.providers || [];
-
-    providers.forEach((p, index) => {
-      const card = document.createElement('div');
-      card.className = 'provider-card';
-      card.setAttribute('data-id', p.id);
-
-      const header = document.createElement('div');
-      header.className = 'provider-card-header';
-
-      const titleWrap = document.createElement('div');
-      titleWrap.className = 'provider-title-wrap';
-
-      const idxSpan = document.createElement('span');
-      idxSpan.className = 'provider-index';
-      idxSpan.textContent = `#${index + 1}`;
-
-      const nameDisplay = document.createElement('strong');
-      nameDisplay.style.fontSize = '13px';
-      nameDisplay.textContent = p.name || '新服务商';
-
-      titleWrap.appendChild(idxSpan);
-      titleWrap.appendChild(nameDisplay);
-      header.appendChild(titleWrap);
-
-      if (providers.length > 1) {
-        const deleteBtn = document.createElement('button');
-        deleteBtn.type = 'button';
-        deleteBtn.className = 'btn-danger-ghost';
-        deleteBtn.title = '删除此服务商';
-        deleteBtn.setAttribute('aria-label', `删除服务商 ${p.name}`);
-        deleteBtn.innerHTML = `
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-          </svg>
-        `;
-        deleteBtn.addEventListener('click', () => {
-          syncFormToConfig();
-          currentConfig.providers = currentConfig.providers.filter(item => item.id !== p.id);
-          // Ensure routes still point to a valid provider
-          (['llm', 'audio', 'video'] as const).forEach(k => {
-            if (!currentConfig.providers.some(item => item.id === currentConfig.routes[k].providerId)) {
-              currentConfig.routes[k].providerId = currentConfig.providers[0].id;
-            }
-          });
-          renderAll();
-        });
-        header.appendChild(deleteBtn);
+      if (note.entries.length > 0) {
+        const preview = document.createElement('div')
+        preview.className = 'note-card-preview'
+        const last = note.entries[note.entries.length - 1]
+        preview.textContent = last.text || last.target || last.source || '(空)'
+        card.appendChild(preview)
       }
 
-      card.appendChild(header);
+      const actions = document.createElement('div')
+      actions.className = 'note-card-actions'
 
-      const grid = document.createElement('div');
-      grid.className = 'form-grid';
+      const exportBtn = document.createElement('button')
+      exportBtn.type = 'button'
+      exportBtn.className = 'btn btn-ghost btn-xs'
+      exportBtn.textContent = '导出 Markdown'
+      exportBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        exportNote(note)
+      })
+      actions.appendChild(exportBtn)
 
-      // Name field
-      const fgName = document.createElement('div');
-      fgName.className = 'field-group';
-      fgName.innerHTML = `
-        <label class="field-label">服务商名称</label>
-        <input type="text" class="field-input provider-name" value="${escapeHtml(p.name)}" placeholder="例如 MOSS 官方" spellcheck="false" autocomplete="off">
-      `;
-      grid.appendChild(fgName);
-
-      // Protocol select
-      const fgProto = document.createElement('div');
-      fgProto.className = 'field-group';
-      fgProto.innerHTML = `
-        <label class="field-label">协议类型</label>
-        <select class="field-select provider-protocol">
-          <option value="moss" ${p.protocol === 'moss' ? 'selected' : ''}>MOSS 原生</option>
-          <option value="openai" ${p.protocol === 'openai' ? 'selected' : ''}>OpenAI 兼容中转</option>
-        </select>
-      `;
-      grid.appendChild(fgProto);
-
-      // Base URL
-      const fgUrl = document.createElement('div');
-      fgUrl.className = 'field-group full';
-      fgUrl.innerHTML = `
-        <label class="field-label">Base URL</label>
-        <input type="text" class="field-input provider-url" value="${escapeHtml(p.baseUrl)}" placeholder="https://api.mosi.cn/v1" spellcheck="false" autocomplete="off">
-      `;
-      grid.appendChild(fgUrl);
-
-      // API Key with password visibility toggle
-      const fgKey = document.createElement('div');
-      fgKey.className = 'field-group full';
-      const keyWrapId = `pw_${p.id}`;
-      fgKey.innerHTML = `
-        <label class="field-label">API Key (密钥)</label>
-        <div class="password-wrap">
-          <input id="${keyWrapId}" type="password" class="field-input provider-key" value="${escapeHtml(p.apiKey)}" placeholder="sk-..." spellcheck="false" autocomplete="off">
-          <button type="button" class="toggle-pw-btn" title="显示/隐藏密钥" aria-label="显示或隐藏API Key">
-            <svg class="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-              <circle cx="12" cy="12" r="3"></circle>
-            </svg>
-          </button>
-        </div>
-      `;
-      grid.appendChild(fgKey);
-
-      // Bind show/hide password toggle
-      const toggleBtn = fgKey.querySelector('.toggle-pw-btn') as HTMLButtonElement;
-      const keyInput = fgKey.querySelector('.provider-key') as HTMLInputElement;
-      toggleBtn.addEventListener('click', () => {
-        if (keyInput.type === 'password') {
-          keyInput.type = 'text';
-          toggleBtn.title = '隐藏密钥';
-        } else {
-          keyInput.type = 'password';
-          toggleBtn.title = '显示密钥';
+      const delBtn = document.createElement('button')
+      delBtn.type = 'button'
+      delBtn.className = 'btn btn-danger-ghost btn-xs'
+      delBtn.textContent = '删除'
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        if (confirm('确定删除这篇笔记？')) {
+          notes = notes.filter((n) => n.id !== note.id)
+          saveNotes(notes)
+          loadAndRenderNotes()
+          showNotice('笔记已删除')
         }
-      });
+      })
+      actions.appendChild(delBtn)
 
-      // Note
-      const fgNote = document.createElement('div');
-      fgNote.className = 'field-group full';
-      fgNote.innerHTML = `
-        <label class="field-label">备注说明 (可选)</label>
-        <input type="text" class="field-input provider-note" value="${escapeHtml(p.note || '')}" placeholder="例如 备用中转账号" spellcheck="false" autocomplete="off">
-      `;
-      grid.appendChild(fgNote);
-
-      card.appendChild(grid);
-      providersList.appendChild(card);
-    });
+      card.appendChild(actions)
+      notesList.appendChild(card)
+    })
   }
 
-  function escapeHtml(str: string): string {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
+  function exportNote(note: NoteDocument) {
+    const lines = [
+      `# ${note.title}`,
+      '',
+      `- **创建时间**：${new Date(note.createdAt).toLocaleString('zh-CN')}`,
+      `- **条目数**：${note.entries.length}`,
+      '',
+      '---',
+      '',
+    ]
 
-  function renderAll() {
-    renderProviders();
-    renderRoutes();
-  }
-
-  // Add provider
-  addProviderBtn.addEventListener('click', () => {
-    syncFormToConfig();
-    const newP: ProviderProfile = {
-      id: uid('prov'),
-      name: `服务商 ${currentConfig.providers.length + 1}`,
-      baseUrl: 'https://api.openai.com/v1',
-      apiKey: '',
-      protocol: 'openai',
-      note: '',
-      models: [],
-      lastSyncedAt: null,
-      status: 'unknown',
-      lastError: ''
-    };
-    currentConfig.providers.push(newP);
-    renderAll();
-  });
-
-  // Save config with explicit permissions request
-  saveConfigBtn.addEventListener('click', async () => {
-    syncFormToConfig();
-
-    // Collect unique HTTPS origins from all provider Base URLs
-    const originsMap = new Set<string>();
-    for (const p of currentConfig.providers) {
-      const urlStr = p.baseUrl.trim();
-      if (!urlStr) continue;
-      try {
-        const parsed = new URL(urlStr);
-        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
-          originsMap.add(`${parsed.origin}/*`);
-        }
-      } catch (e) {
-        // ignore invalid url during origin extraction, handled by backend or validation
+    for (const entry of note.entries) {
+      const time = new Date(entry.at).toLocaleTimeString('zh-CN')
+      switch (entry.type) {
+        case 'subtitle':
+          lines.push(`### 字幕 ${time}`)
+          if (entry.target) lines.push(`**译文**：${entry.target}`)
+          if (entry.source) lines.push(`**原文**：${entry.source}`)
+          lines.push('')
+          break
+        case 'text':
+          lines.push(`### 笔记 ${time}`)
+          lines.push(entry.text || '')
+          lines.push('')
+          break
+        case 'screenshot':
+          lines.push(`### 截图 ${time}`)
+          lines.push(entry.text || '截图')
+          if (entry.imageUrl) lines.push(`![](${entry.imageUrl})`)
+          lines.push('')
+          break
+        case 'image':
+          lines.push(`### 配图 ${time}`)
+          lines.push(entry.text || entry.source || '')
+          if (entry.imageUrl) lines.push(`![](${entry.imageUrl})`)
+          lines.push('')
+          break
+        case 'svg':
+          lines.push(`### SVG ${time}`)
+          lines.push(entry.text || entry.source || '')
+          if (entry.svg) lines.push('```svg\n' + entry.svg + '\n```')
+          lines.push('')
+          break
       }
     }
 
-    const origins = Array.from(originsMap);
-    if (origins.length === 0) {
-      showNotice('请至少配置一个有效的服务商 Base URL (http/https)', true);
-      return;
-    }
+    lines.push('', '---', '*由 snooper-browser 生成*')
 
-    try {
-      // Direct permission request from user click
-      const granted = await chrome.permissions.request({ origins });
-      if (!granted) {
-        showNotice(`已取消或拒绝授权网络访问权限 (${origins.join(', ')})。配置未保存。`, true);
-        return;
-      }
-    } catch (permErr) {
-      // If permissions API is not available (e.g. non-extension preview or standalone mode), proceed or show notice
-      console.warn('chrome.permissions.request warning:', permErr);
-    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${note.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '_')}.md`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 2000)
+    showNotice('笔记已导出')
+  }
 
-    // Send SAVE_CONFIG to background
-    try {
-      const res = await chrome.runtime.sendMessage({
-        target: 'background',
-        type: 'SAVE_CONFIG',
-        config: currentConfig
-      });
-      if (res && res.ok) {
-        showNotice('配置已成功保存并同步至扩展后台。');
-      } else {
-        showNotice('保存失败: ' + (res?.error || '未知错误'), true);
-      }
-    } catch (err: any) {
-      showNotice('通信错误: ' + err.message, true);
-    }
-  });
+  notesRefreshBtn.addEventListener('click', loadAndRenderNotes)
 
-  // Initial load
-  loadConfig();
-})();
+  /* ===== Obsidian ===== */
+  function renderObsidianConfig() {
+    obsidianCfg = loadObsidianConfig()
+    obsidianEnabled.checked = obsidianCfg.enabled
+    obsidianPort.value = String(obsidianCfg.apiPort)
+    obsidianFolder.value = obsidianCfg.noteFolder
+    obsidianKey.value = obsidianCfg.apiKey
+  }
+
+  function syncObsidianForm() {
+    obsidianCfg.enabled = obsidianEnabled.checked
+    obsidianCfg.apiPort = parseInt(obsidianPort.value, 10) || 27124
+    obsidianCfg.noteFolder = obsidianFolder.value.trim() || 'snooper-notes'
+    obsidianCfg.apiKey = obsidianKey.value.trim()
+    saveObsidianConfig(obsidianCfg)
+  }
+
+  saveConfigBtn.addEventListener('click', () => {
+    syncObsidianForm()
+    showNotice('Obsidian 设置已保存')
+  })
+
+  /* ===== Init ===== */
+  renderObsidianConfig()
+  loadAndRenderNotes()
+
+  // Keep the note counter fresh when the panel is reopened.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') loadAndRenderNotes()
+  })
+})()

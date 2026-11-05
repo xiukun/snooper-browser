@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "RTTS - 实时多模态智能翻译",
-  "version": "0.3.0",
-  "description": "实时网页音视频双语字幕与 AI 伴学 - 每标签页独立会话",
+  "name": "snooper-browser",
+  "version": "0.5.0",
+  "description": "实时翻译 · 智能笔记 · AI 图像创作 — 浏览器内一站式工作台",
   "action": {
-    "default_title": "RTTS - 点击开启当前页面的实时翻译浮层"
+    "default_title": "snooper-browser — 点击打开笔记与集成面板"
   },
   "background": {
     "service_worker": "background.js",
@@ -13,6 +13,14 @@
   "side_panel": {
     "default_path": "sidepanel/index.html"
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "world": "ISOLATED"
+    }
+  ],
   "permissions": [
     "activeTab",
     "scripting",
@@ -20,6 +28,10 @@
     "tabCapture",
     "offscreen",
     "sidePanel"
+  ],
+  "host_permissions": [
+    "https://*/*",
+    "http://*/*"
   ],
   "optional_host_permissions": [
     "https://*/*",

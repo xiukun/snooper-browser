@@ -101,12 +101,14 @@ function safeRoute(capability: CapabilityKey) {
 const llmRoute = computed(() => safeRoute('llm'))
 const audioRoute = computed(() => safeRoute('audio'))
 const videoRoute = computed(() => safeRoute('video'))
+const imageRoute = computed(() => safeRoute('image'))
 const isConfigured = computed(() => Boolean(llmRoute.value))
 const maskedKey = computed(() => maskSecret(settings.providers[0]?.apiKey ?? ''))
 const routeModels = computed(() => ({
   llm: settings.routes.llm.model,
   audio: settings.routes.audio.model,
   video: settings.routes.video.model,
+  image: settings.routes.image.model,
 }))
 
 function addProvider(partial: Partial<ProviderProfile> = {}) {
@@ -230,6 +232,7 @@ export function useSettings() {
     llmRoute,
     audioRoute,
     videoRoute,
+    imageRoute,
     routeModels,
     syncingId,
     verifyError,

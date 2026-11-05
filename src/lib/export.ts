@@ -1,4 +1,4 @@
-import type { SubtitleLine } from './types'
+import type { SubtitleLine, NoteDocument } from './types'
 import { languageLabel } from './models'
 
 /** Formats seconds into SRT timestamp format: HH:MM:SS,mmm */
@@ -148,4 +148,184 @@ export function downloadBlob(filename: string, content: string, mimeType = 'text
   link.click()
   document.body.removeChild(link)
   setTimeout(() => URL.revokeObjectURL(url), 2000)
+}
+
+/* ===== Note-based exports ===== */
+
+/** Build a Markdown document from a NoteDocument. */
+export function buildNoteMarkdown(note: NoteDocument): string {
+  const lines = [
+    `# ${note.title}`,
+    '',
+    `- **创建时间**：${new Date(note.createdAt).toLocaleString('zh-CN')}`,
+    `- **条目数**：${note.entries.length}`,
+    '',
+    '---',
+    '',
+  ]
+
+  for (const entry of note.entries) {
+    const time = new Date(entry.at).toLocaleTimeString('zh-CN')
+    switch (entry.type) {
+      case 'subtitle':
+        lines.push(`### 字幕 ${time}`)
+        if (entry.target) lines.push(`**译文**：${entry.target}`)
+        if (entry.source) lines.push(`**原文**：${entry.source}`)
+        lines.push('')
+        break
+      case 'image':
+        lines.push(`### 配图 ${time}`)
+        lines.push(`**描述**：${entry.text || entry.source || ''}`)
+        if (entry.imageUrl) lines.push(`![](${entry.imageUrl})`)
+        lines.push('')
+        break
+      case 'screenshot':
+        lines.push(`### 截图 ${time}`)
+        lines.push(`**截图**：${entry.text || ''}`)
+        if (entry.imageUrl) lines.push(`![](${entry.imageUrl})`)
+        lines.push('')
+        break
+      case 'text':
+        lines.push(`### 笔记 ${time}`)
+        lines.push(entry.text || '')
+        lines.push('')
+        break
+      case 'summary':
+        lines.push(`### 摘要 ${time}`)
+        lines.push(entry.text || '')
+        lines.push('')
+        break
+    }
+  }
+
+  lines.push('---', '*由 snooper-browser 生成*')
+  return lines.join('\n')
+}
+
+/**
+ * Build a DOCX document buffer from a NoteDocument.
+ * Requires the `docx` npm package (pnpm add docx).
+ */
+export async function buildNoteDocx(note: NoteDocument): Promise<Blob | null> {
+  try {
+    // Dynamic import handled by the app's bundler — docx is a dependency of app/
+    const { Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel, PageBreak } = await import('docx')
+
+    const children: any[] = [
+      new Paragraph({
+        text: note.title,
+        heading: HeadingLevel.TITLE,
+      }),
+      new Paragraph({
+        text: `创建时间：${new Date(note.createdAt).toLocaleString('zh-CN')}  ·  条目数：${note.entries.length}`,
+        spacing: { after: 200 },
+      }),
+      new Paragraph({
+        children: [new PageBreak()],
+      }),
+    ]
+
+    for (const entry of note.entries) {
+      const time = new Date(entry.at).toLocaleTimeString('zh-CN')
+      switch (entry.type) {
+        case 'subtitle': {
+          children.push(
+            new Paragraph({
+              text: `字幕 ${time}`,
+              heading: HeadingLevel.HEADING_3,
+            }),
+          )
+          if (entry.target) {
+            children.push(
+              new Paragraph({
+                text: `译文：${entry.target}`,
+                spacing: { after: 60 },
+              }),
+            )
+          }
+          if (entry.source) {
+            children.push(
+              new Paragraph({
+                children: [new TextRun({ text: `原文：${entry.source}`, italics: true })],
+                spacing: { after: 120 },
+              }),
+            )
+          }
+          break
+        }
+        case 'text': {
+          children.push(
+            new Paragraph({
+              text: `笔记 ${time}`,
+              heading: HeadingLevel.HEADING_3,
+            }),
+            new Paragraph({
+              text: entry.text || '',
+              spacing: { after: 120 },
+            }),
+          )
+          break
+        }
+        case 'screenshot':
+        case 'image': {
+          children.push(
+            new Paragraph({
+              text: entry.type === 'screenshot' ? `截图 ${time}` : `配图 ${time}`,
+              heading: HeadingLevel.HEADING_3,
+            }),
+          )
+          if (entry.text) {
+            children.push(
+              new Paragraph({
+                text: entry.text,
+                spacing: { after: 60 },
+              }),
+            )
+          }
+          if (entry.imageUrl) {
+            try {
+              const response = await fetch(entry.imageUrl)
+              const blob = await response.blob()
+              const buffer = await blob.arrayBuffer()
+              const imgType = blob.type === 'image/png' ? 'png' : blob.type === 'image/jpeg' || blob.type === 'image/jpg' ? 'jpg' : 'png'
+              children.push(
+                new ImageRun({
+                  type: imgType,
+                  data: buffer,
+                  transformation: { width: 400, height: 300 },
+                }),
+              )
+            } catch {
+              children.push(
+                new Paragraph({
+                  text: '[图片嵌入失败]',
+                  spacing: { after: 120 },
+                }),
+              )
+            }
+          }
+          children.push(new Paragraph({ spacing: { after: 120 } }))
+          break
+        }
+      }
+    }
+
+    const doc = new Document({
+      title: note.title,
+      description: '由 snooper-browser 生成',
+      styles: {
+        default: {
+          document: {
+            run: { font: 'Inter, -apple-system, sans-serif', size: 22 },
+          },
+        },
+      },
+      sections: [{ children }],
+    })
+
+    return await Packer.toBlob(doc)
+  } catch {
+    console.warn('[snooper] DOCX export unavailable — docx package not installed or failed to load')
+    return null
+  }
 }

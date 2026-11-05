@@ -500,3 +500,231 @@ export async function blobToDataUrl(blob: Blob): Promise<string> {
     reader.readAsDataURL(blob)
   })
 }
+
+/* ===== Image Generation ===== */
+
+export interface GenerateImageOptions {
+  prompt: string
+  config?: AppConfig
+  model?: string
+  /** Negative prompt (MOSS-Image supports up to 4000 chars). */
+  negativePrompt?: string
+  /** Use the provider's built-in prompt enhancer (MOSS-Image `prompt_enhance`). */
+  enhance?: boolean
+  /** Seed for reproducible generation. */
+  seed?: number
+  /** Number of inference steps (MOSS-Image: 1–100, default 50). */
+  numInferenceSteps?: number
+  /** Classifier-free guidance scale (MOSS-Image: 0–10). */
+  guidanceScale?: number
+  /** Disable the visible watermark (MOSS-Image `output_watermark.enabled=false`). */
+  noWatermark?: boolean
+  n?: number
+  size?: string
+  signal?: AbortSignal
+}
+
+export interface GenerateImageResult {
+  images: string[]  // URLs or base64 data URIs
+  created: number
+  model: string
+}
+
+/**
+ * Generate an image via OpenAI-compatible /v1/images/generations endpoint.
+ * Optimised for the MOSS-Image models (`moss-image-sft-1.0` etc.) which are
+ * currently free in beta. Also works with any provider that speaks the OpenAI
+ * image API (FLUX, SD3.5, SDXL through a relay).
+ *
+ * MOSS-Image specifics handled here:
+ * - `n` is capped at 1 (the endpoint only supports a single image).
+ * - `response_format` is always omitted so MOSS returns its native `url`.
+ * - `output_watermark: { enabled: false }` removes the default watermark.
+ * - Generations are synchronous and slow (20–25s); no automatic retry is
+ *   attempted because a timed-out request may still be billed.
+ */
+export async function generateImage(options: GenerateImageOptions): Promise<GenerateImageResult> {
+  const config = options.config ?? loadProviderConfig()
+  const route = resolveRoute(config, 'image', options.model)
+  const baseUrl = route.baseUrl.replace(/\/+$/, '')
+
+  const body: Record<string, unknown> = {
+    model: route.model,
+    prompt: options.prompt,
+    n: Math.min(1, Math.max(1, options.n ?? 1)),
+    size: options.size ?? '1024x1024',
+  }
+
+  if (options.negativePrompt?.trim()) body.negative_prompt = options.negativePrompt.trim()
+  if (typeof options.enhance === 'boolean') body.prompt_enhance = options.enhance
+  if (typeof options.seed === 'number' && Number.isFinite(options.seed)) body.seed = options.seed
+  if (typeof options.numInferenceSteps === 'number') {
+    body.num_inference_steps = Math.min(100, Math.max(1, Math.round(options.numInferenceSteps)))
+  }
+  if (typeof options.guidanceScale === 'number') body.guidance_scale = options.guidanceScale
+  if (options.noWatermark) body.output_watermark = { enabled: false }
+
+  const res = await fetch(`${baseUrl}/images/generations`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${route.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: options.signal,
+  })
+
+  if (!res.ok) throw await readError(res)
+
+  const payload = (await res.json()) as {
+    created?: number
+    data?: Array<{ url?: string; b64_json?: string }>
+  }
+
+  const data = payload.data ?? []
+  if (data.length === 0) {
+    throw new MossError('生图接口返回了空结果', 502, 'empty_images')
+  }
+
+  const images: string[] = data.map((item) => {
+    if (item.b64_json) return `data:image/png;base64,${item.b64_json}`
+    return item.url ?? ''
+  }).filter(Boolean)
+
+  if (images.length === 0) {
+    throw new MossError('生图接口未返回图片数据', 502, 'no_image_data')
+  }
+
+  return {
+    images,
+    created: payload.created ?? Math.floor(Date.now() / 1000),
+    model: route.model,
+  }
+}
+
+/**
+ * Generate SVG code via the LLM route. The LLM writes a complete, self-contained
+ * SVG that renders the requested subject. Returns the raw SVG markup string.
+ */
+export async function generateSvg(
+  subject: string,
+  options: { config?: AppConfig; signal?: AbortSignal; style?: string } = {},
+): Promise<string> {
+  const config = options.config ?? loadProviderConfig()
+  const style = options.style ?? 'minimalist, clean, modern'
+
+  const output = await completeChat({
+    config,
+    capability: 'llm',
+    signal: options.signal,
+    temperature: 0.2,
+    maxTokens: 4096,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: [
+              `你是一个 SVG 设计师。根据以下描述，生成一个纯 SVG 代码。`,
+              `风格：${style}`,
+              `要求：`,
+              `- 输出仅包含 \`\`\`svg...\`\`\` 代码块，不要其他解释`,
+              `- SVG 必须是自包含的，使用 viewBox`,
+              `- 使用 800x600 尺寸`,
+              `- 适合作为 Logo 或品牌标识`,
+              `- 使用渐变、阴影等现代设计元素`,
+              `- 保持简洁，易于缩放`,
+              ``,
+              `描述：${subject}`,
+            ].join('\n'),
+          },
+        ],
+      },
+    ],
+  })
+
+  // Extract SVG from markdown code block
+  const svgMatch = output.match(/```svg\s*([\s\S]*?)```/) || output.match(/```xml\s*([\s\S]*?)```/)
+  if (svgMatch) return svgMatch[1].trim()
+
+  // If no code block found but the output contains <svg>, extract it
+  const svgTagMatch = output.match(/<svg[\s\S]*?<\/svg>/)
+  if (svgTagMatch) return svgTagMatch[0]
+
+  throw new MossError('LLM 未能生成有效的 SVG 代码', 502, 'invalid_svg')
+}
+
+/* ===== Obsidian Export ===== */
+
+export interface ObsidianConfig {
+  enabled: boolean
+  vaultPath: string
+  apiPort: number
+  apiKey: string
+  noteFolder: string
+}
+
+const OBSIDIAN_CONFIG_KEY = 'snooper.obsidian-config.v1'
+
+export function loadObsidianConfig(): ObsidianConfig {
+  try {
+    const raw = localStorage.getItem(OBSIDIAN_CONFIG_KEY)
+    if (raw) return JSON.parse(raw) as ObsidianConfig
+  } catch { /* ignore */ }
+  return {
+    enabled: false,
+    vaultPath: '',
+    apiPort: 27124,
+    apiKey: '',
+    noteFolder: 'snooper-notes',
+  }
+}
+
+export function saveObsidianConfig(config: ObsidianConfig) {
+  try {
+    localStorage.setItem(OBSIDIAN_CONFIG_KEY, JSON.stringify(config))
+  } catch { /* ignore */ }
+}
+
+/**
+ * Export a Markdown string to Obsidian via the Obsidian Local REST API plugin.
+ * Falls back to a file download if the API is unreachable.
+ */
+export async function exportToObsidian(
+  content: string,
+  title: string,
+  config?: ObsidianConfig,
+): Promise<{ ok: boolean; method: 'rest-api' | 'download'; error?: string }> {
+  const cfg = config ?? loadObsidianConfig()
+  const fileName = `${title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '_')}.md`
+  const folder = cfg.noteFolder.replace(/^\/+|\/+$/g, '')
+
+  if (cfg.enabled && cfg.apiPort > 0) {
+    try {
+      const res = await fetch(`http://localhost:${cfg.apiPort}/vault/${folder}/${encodeURIComponent(fileName)}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'text/markdown',
+          ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
+        },
+        body: content,
+      })
+      if (res.ok) return { ok: true, method: 'rest-api' }
+      return { ok: false, method: 'rest-api', error: `Obsidian API 返回 ${res.status}` }
+    } catch (err: any) {
+      // Fall through to download fallback
+      console.warn('[snooper] Obsidian REST API unreachable, falling back to download:', err.message)
+    }
+  }
+
+  // Fallback: download as .md file
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(url), 2000)
+  return { ok: true, method: 'download' }
+}

@@ -3,7 +3,7 @@ import { uid } from './utils'
 import { STORAGE_KEYS } from './brand'
 
 export type ProviderProtocol = 'moss' | 'openai'
-export type CapabilityKey = 'llm' | 'audio' | 'video'
+export type CapabilityKey = 'llm' | 'audio' | 'video' | 'image'
 export type ProviderStatus = 'unknown' | 'ok' | 'error'
 
 export interface ProviderProfile {
@@ -60,6 +60,13 @@ export const CAPABILITIES: readonly CapabilityMeta[] = [
     description: '低延迟视频画面理解；独立于音频与 LLM 路由。',
     fallbackModel: 'moss-vl-realtime-1.0',
   },
+  {
+    key: 'image',
+    label: '图像 · 生成与创作',
+    short: 'IMAGE',
+    description: '文本/翻译驱动的 AI 图像生成与 SVG 矢量创作。',
+    fallbackModel: 'moss-image-sft-1.0',
+  },
 ] as const
 
 export const PROVIDER_PROTOCOLS: readonly { value: ProviderProtocol; label: string; hint: string }[] = [
@@ -82,6 +89,15 @@ export const MODEL_SUGGESTIONS: Record<CapabilityKey, string[]> = {
   ),
   audio: MODEL_CATALOG.filter((model) => model.kind === 'audio').map((model) => model.id),
   video: ['moss-vl-realtime-1.0', 'moss-vl-1.0'],
+  image: [
+    'moss-image-sft-1.0',
+    'moss-image-base-1.0',
+    'moss-image-sft-1.0-2026-10-09',
+    'moss-image-base-1.0-2026-10-09',
+    'black-forest-labs/FLUX.1-schnell',
+    'stabilityai/stable-diffusion-3.5-medium',
+    'stabilityai/stable-diffusion-xl-base-1.0',
+  ],
 }
 
 const CONFIG_KEY = STORAGE_KEYS.providerConfig
@@ -123,6 +139,7 @@ function parseStoredConfig(raw: string | null): AppConfig | null {
         llm: { ...DEFAULT_CONFIG.routes.llm, ...parsed.routes?.llm },
         audio: { ...DEFAULT_CONFIG.routes.audio, ...parsed.routes?.audio },
         video: { ...DEFAULT_CONFIG.routes.video, ...parsed.routes?.video },
+        image: { ...DEFAULT_CONFIG.routes.image, ...parsed.routes?.image },
       },
     }
   } catch {
@@ -169,6 +186,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     llm: { providerId: 'moss-official', model: 'moss-vl-1.0' },
     audio: { providerId: 'moss-official', model: 'moss-transcribe-1.0' },
     video: { providerId: 'moss-official', model: 'moss-vl-realtime-1.0' },
+    image: { providerId: 'moss-official', model: 'moss-image-sft-1.0' },
   },
 }
 
@@ -183,6 +201,7 @@ export function createDefaultConfig(): AppConfig {
       llm: { ...DEFAULT_CONFIG.routes.llm },
       audio: { ...DEFAULT_CONFIG.routes.audio },
       video: { ...DEFAULT_CONFIG.routes.video },
+      image: { ...DEFAULT_CONFIG.routes.image },
     },
   }
 }
@@ -224,6 +243,7 @@ function fromLegacy(legacy: LegacyConfig): AppConfig {
       llm: { providerId: provider.id, model: legacy.chatModel || legacy.visionModel || 'moss-vl-1.0' },
       audio: { providerId: provider.id, model: legacy.transcribeModel || 'moss-transcribe-1.0' },
       video: { providerId: provider.id, model: legacy.realtimeModel || 'moss-vl-realtime-1.0' },
+      image: { providerId: provider.id, model: 'moss-image-sft-1.0' },
     },
   }
 }
@@ -260,6 +280,7 @@ export function loadProviderConfig(): AppConfig {
       llm: { ...DEFAULT_CONFIG.routes.llm },
       audio: { ...DEFAULT_CONFIG.routes.audio },
       video: { ...DEFAULT_CONFIG.routes.video },
+      image: { ...DEFAULT_CONFIG.routes.image },
     },
   }
 }

@@ -8,7 +8,8 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@lib/*": ["../src/lib/*"]
+      "@lib/*": ["../src/lib/*"],
+      "docx": ["./node_modules/docx"]
     },
 
     /* Linting */

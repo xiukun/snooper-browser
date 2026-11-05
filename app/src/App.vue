@@ -5,6 +5,7 @@ import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AppTopbar from '@/components/layout/AppTopbar.vue'
 import MobileTabBar from '@/components/layout/MobileTabBar.vue'
 import ChatView from '@/views/ChatView.vue'
+import ImageView from '@/views/ImageView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import TranslateView from '@/views/TranslateView.vue'
 import VisionView from '@/views/VisionView.vue'
@@ -23,6 +24,7 @@ const VIEWS: Record<ViewKey, unknown> = {
   translate: TranslateView,
   chat: ChatView,
   vision: VisionView,
+  image: ImageView,
   settings: SettingsView,
 }
 

@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Shanghai
+    versioning-strategy: increase
+    open-pull-requests-limit: 5
+    # Minor and patch releases land as a single grouped PR; majors stay
+    # separate and are reviewed by hand against the gates in README.
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Deliberate pin (README "Version policy" / AGENTS.md §3.1):
+      # vue-tsc 3.3.x resolves `typescript/lib/tsc`, which TypeScript 7 no
+      # longer exports. Lift this only once vue-tsc declares TS 7 support
+      # and `pnpm exec vue-tsc -b --force` passes.
+      - dependency-name: typescript
+        versions: [">=7"]
+      # The types must match the Node major used for the build (22).
+      # Node 26 types would let vite.config.ts reference APIs that do not
+      # exist on the runtime.
+      - dependency-name: "@types/node"
+        versions: [">=23"]

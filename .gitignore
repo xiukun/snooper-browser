@@ -40,3 +40,7 @@ logs/
 # key and targets the non-existent `moss-live-1.0` realtime model, so it is
 # not part of the release. The web app captures tab audio via getDisplayMedia.
 /src/
+
+# local agent instructions (kept out of the public repo by decision)
+/AGENTS.md
+/CLAUDE.md

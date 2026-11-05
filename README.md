@@ -5,125 +5,137 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-7c5cff.svg)](./LICENSE)
 [![Vue 3](https://img.shields.io/badge/Vue-3.5-3ee6d5.svg)](https://vuejs.org)
 [![Vite](https://img.shields.io/badge/Vite-8-9c85ff.svg)](https://vite.dev)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-7ef2e4.svg)](https://tailwindcss.com)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind-4-7ef2e4.svg)](https://tailwindcss.com)
 
-snooper 是一个完全运行在浏览器里的开源多模态工作台：抓取任意标签页或麦克风的音频做**实时双语字幕**，用**对话**理解内容，用**图像理解**看清画面。没有后端，没有内置密钥，服务商由你自己接入。
+English · [简体中文](./README.zh-CN.md)
 
-## 功能特性
+snooper is an open-source multimodal workspace that runs entirely in the browser. Capture tab or microphone audio for real-time bilingual subtitles, question a vision model about what is on screen, and route every capability to whichever provider you trust. No backend, no bundled keys, no telemetry.
 
-### 实时互译
+## Features
 
-- 麦克风与**标签页音频**双来源采集：网页视频、直播、会议都能直接听。
-- 6 秒分段上行 → 语音转写（ASR）→ 结合上下文翻译，字幕按句流式出现。
-- 原视频**不会被静音**，字幕与画面同时存在。
-- 任意语言对（中 / 英 / 日 / 韩 / 法 / 德 / 西 / 俄 / 阿 / 葡），切换后下一条生效。
-- 内置演示信号，无需 Key 即可预览完整字幕动效。
+### Real-time subtitles
 
-### 智能对话
+- Two audio sources: microphone, or tab audio through `getDisplayMedia({ audio: true })`.
+- The original playback is **never muted** — subtitles and video coexist.
+- 6-second segments → speech-to-text → context-aware translation → subtitles appear line by line.
+- Ten language pairs (zh / en / ja / ko / fr / de / es / ru / ar / pt); switching applies to the next line.
+- Built-in demo stream, so the subtitle animation can be reviewed without any key.
 
-- 多模态问答：文字、图片、代码一起丢进来。
-- Markdown 渲染 + Shiki 代码高亮，流式输出可随时停止。
-- 历史自动压缩为单轮上下文，适配只接受单条 user 消息的模型。
-- 拖拽、粘贴、文件选择三种附图方式。
+### Chat
 
-### 图像理解
+- Multimodal input: text, images and code in the same thread.
+- Markdown rendering with Shiki highlighting; streaming output can be stopped at any time.
+- History is flattened into a single user message, which is what single-turn models require.
+- Attach images by drag-and-drop, paste, or file picker.
 
-- 上传 / 拖拽 / 粘贴截图，最多 10 张，单图 20MB。
-- 6 种预设：全面描述、文字提取、图表解读、代码识别、图文翻译、商品分析。
-- 结果以 Markdown 呈现，支持历史归档与图片灯箱。
+### Image understanding
 
-### 服务商管理
+- Up to 10 images per run, 20 MB each, compressed in-browser before upload.
+- Six presets: full description, text extraction, chart reading, code reading, image translation, product analysis.
+- Markdown results, run history, and a lightbox for the source images.
 
-- **多家服务商并存**：官方网关、第三方中转、私有化地址各自独立保存。
-- **三条能力独立路由**：`LLM`（对话 / 视觉 / 翻译）、`音频`（ASR）、`视频`（实时画面）可以指向不同服务商与模型。
-- 一键调用 `GET /models` **拉取模型列表**，并按服务商缓存、显示状态与错误。
-- 任意 OpenAI 兼容中转可用；MOSS 原生协议内置支持。
-- 所有配置与密钥仅保存在浏览器 `localStorage`。
+### Provider management
 
-## 快速开始
+- **Multiple providers side by side**: official gateway, third-party relay, or a self-hosted endpoint, each with its own base URL and key.
+- **Three independent capability routes**: `LLM` (chat / vision / translation), `Audio` (ASR) and `Video` (low-latency frame understanding) may point at different providers and models.
+- **Model discovery** via `GET /models`, cached per provider with status and the raw error message.
+- Works with any OpenAI-compatible relay; the MOSS protocol is built in.
+- Configuration and keys live only in `localStorage`.
+
+## Quick start
 
 ```bash
 cd app
 pnpm install
-cp .env.example .env.local   # 可选，留空也能在应用内配置
+cp .env.example .env.local   # optional — the app can be configured in the UI
 pnpm dev                     # http://localhost:5173
 ```
 
-生产构建：
+Production build:
 
 ```bash
 pnpm build
 pnpm preview
 ```
 
-### 环境变量
+### Environment variables
 
-| 变量 | 必填 | 说明 |
+| Variable | Required | Purpose |
 | --- | --- | --- |
-| `VITE_MOSS_API_KEY` | 否 | 首次启动时预填到默认服务商的 Key，留空则手动填写 |
-| `VITE_MOSS_BASE_URL` | 否 | 默认服务商地址，默认 `https://api.mosi.cn/v1` |
+| `VITE_MOSS_API_KEY` | No | Pre-fills the key of the default provider on first launch |
+| `VITE_MOSS_BASE_URL` | No | Base URL of the default provider (defaults to `https://api.mosi.cn/v1`) |
 
-两者都只是**开发期便利**：正式使用时把 Key 写进应用内设置即可，不需要重新构建。
+Both are **development conveniences only**. Regular users add providers in the app; changing them does not require a rebuild. `.env.local` is git-ignored — never commit a real key.
 
-## 配置模型
+## Configuration
 
-1. 打开「能力设置 → 服务商」，填写名称、Base URL、API Key，选择协议（MOSS 原生 / OpenAI 兼容）。
-2. 点击「拉取模型」，调用 `GET {baseUrl}/models` 并缓存结果；失败时错误会显示在该服务商卡片下。
-3. 在「能力路由」中分别为 **LLM / 音频 / 视频** 选择服务商与模型 ID。模型输入框支持下拉补全，也可以直接手填。
-4. 对话、图片理解、字幕翻译共用 `LLM` 路由；字幕的听写部分走 `音频` 路由。
+1. Open **Settings → Providers**, fill in a name, base URL and API key, then pick a protocol (`MOSS native` or `OpenAI compatible`).
+2. Click **Fetch models** to call `GET {baseUrl}/models`. Results are cached; failures are shown verbatim on the provider card.
+3. In **Capability routes**, choose a provider and model for **LLM / Audio / Video**. The model field autocompletes from the fetched list but accepts free text, because many relays do not implement `/models`.
+4. Chat, image understanding and subtitle translation share the `LLM` route; the listening half of the subtitle pipeline uses the `Audio` route.
 
-> 密钥只写入本机 `localStorage`，请求从浏览器直连你配置的服务商。若部署到公网并希望隐藏密钥，请自行加一层服务端代理。
+> Keys are written to `localStorage` and requests go straight from your browser to the provider you configured. If you deploy this publicly and need to hide the key, put a proxy in front of it.
 
-## 技术栈
+## Tech stack
 
-| 层 | 选型 |
-| --- | --- |
-| 框架 | Vue 3.5（`<script setup lang="ts">`） |
-| 构建 | Vite 8 + TypeScript 6 |
-| 样式 | Tailwind CSS v4（自定义设计 token） |
-| 图标 / 反馈 | lucide-vue-next · vue-sonner |
-| 渲染 | markdown-it + Shiki |
-| 状态 | Composition API（模块级单例 composable） |
+| Layer | Choice | Why this and not the alternative |
+| --- | --- | --- |
+| Framework | Vue 3.5 (`<script setup lang="ts">`) | One reactive store per capability, no router, no SSR — a single-page tool does not need a meta-framework. |
+| Build | Vite 8 | Native ESM dev server; the only build-time plugin is Vue's. |
+| Language | TypeScript 6, `strict` + `noUnusedLocals` | Catches the whole class of "renamed a field and forgot a call site" bugs in the config/routing layer. |
+| Styling | Tailwind CSS 4 (design tokens in `main.css`) | Tokens are the design system; no component library to fight against. |
+| Icons | `@lucide/vue` | Tree-shaken imports, consistent stroke weight. |
+| Markdown | `markdown-it` + Shiki | Shiki ships the TextMate grammar, so code rendered in chat looks like an editor, not a `<pre>`. It loads lazily on the first markdown view with five core languages. |
+| Toasts | `vue-sonner` | Two lines of integration, accessible by default. |
 
-## 项目结构
+### Version policy
+
+- Dependencies track the latest release, **with one deliberate exception**: TypeScript is pinned to the latest 6.x. `vue-tsc` 3.3.x resolves `typescript/lib/tsc`, which TypeScript 7 no longer exports — running `vue-tsc` against TS 7 fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`. Revisit when `vue-tsc` ships TS 7 support.
+- `@types/node` tracks the Node major used for the build (currently 22), not the newest published types.
+- `lucide-vue-next` was replaced by `@lucide/vue` after the former was deprecated upstream.
+- Updates arrive weekly through Dependabot; majors are reviewed by hand. The check is always the same: `pnpm exec vue-tsc -b --force && pnpm build`.
+
+## Project structure
 
 ```
 app/
 ├── index.html
 ├── public/favicon.svg
 └── src/
-    ├── assets/main.css        # 设计 token、玻璃拟态、Markdown 排版
-    ├── components/            # 品牌标记、布局壳、通用表单
+    ├── assets/main.css        # design tokens, glass surfaces, markdown typography
+    ├── components/            # brand mark, layout shell, form primitives
     ├── composables/
-    │   ├── useRealtime.ts     # 采集 → 分段 → 转写 → 翻译 → 字幕
-    │   ├── useChat.ts         # 对话流与附件
-    │   ├── useVision.ts       # 图像分析
-    │   ├── useSettings.ts     # 服务商 CRUD、路由、/models 同步
+    │   ├── useRealtime.ts     # capture → segment → transcribe → translate → subtitles
+    │   ├── useChat.ts         # conversation and attachments
+    │   ├── useVision.ts       # image analysis
+    │   ├── useSettings.ts     # provider CRUD, routes, /models sync
     │   └── useNavigation.ts
     ├── lib/
-    │   ├── providers.ts       # 配置模型、默认值、迁移、resolveRoute
-    │   ├── moss.ts            # OpenAI 兼容客户端（流式降级、转写、视觉）
-    │   ├── models.ts          # 消息类型、模型目录、语言表
-    │   ├── markdown.ts        # Shiki 高亮
-    │   ├── navigation.ts      # 视图与快捷键定义
-    │   └── brand.ts           # 品牌与存储键
+    │   ├── providers.ts       # config model, defaults, migration, resolveRoute
+    │   ├── moss.ts            # OpenAI-compatible client: streaming fallback, ASR, vision
+    │   ├── models.ts          # message types, model catalogue, languages
+    │   ├── markdown.ts        # Shiki highlighting
+    │   ├── navigation.ts      # views and keyboard shortcuts
+    │   └── brand.ts           # brand and storage keys
     └── views/                 # Translate / Chat / Vision / Settings
 ```
 
-## 浏览器支持
+## Browser support
 
-- Chrome / Edge 116+（`tabCapture` 需要用户手势触发）。
-- 麦克风采集需要 `getUserMedia` 权限；标签页音频需要共享授权。
-- Safari / Firefox 可运行对话与图像功能，音频采集能力有限。
+- Chrome / Edge 116+ for tab audio and screen capture.
+- Microphone capture needs `getUserMedia` permission; tab audio needs an explicit share grant.
+- Safari and Firefox run chat and image understanding; audio capture support is limited.
 
-## 隐私
+## Privacy
 
-- 无后端、无遥测、无账号体系。
-- 音频仅以 6 秒片段发送给你为 `音频` 路由选择的服务商；图片以 base64 发送给 `LLM` 路由的服务商。
-- 服务商地址、密钥、模型选择只存在浏览器本地。
+- No backend, no analytics, no accounts.
+- Audio is sent in 6-second segments to the provider behind your `Audio` route; images are sent as base64 to the provider behind your `LLM` route.
+- Provider URLs, keys and model choices stay in the browser. See [SECURITY.md](./SECURITY.md) for the threat model.
 
-## 开源协议
+## Contributing
+
+Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request. Security issues should follow [SECURITY.md](./SECURITY.md) instead of the public tracker.
+
+## License
 
 [MIT](./LICENSE) © 2026 snooper-browser contributors
-
-参与贡献请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)，安全问题请按 [SECURITY.md](./SECURITY.md) 私下报告。

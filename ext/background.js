@@ -182,6 +182,61 @@ function pushStreamingUpdate(tabId) {
   }).catch(() => {
   });
 }
+async function askLLM({ question, images, context, config, sourceLang, targetLang }) {
+  const route = config.routes.llm;
+  const provider = config.providers.find((p) => p.id === route.providerId);
+  if (!provider || !provider.apiKey) {
+    throw new Error("\u5C1A\u672A\u914D\u7F6E LLM \u670D\u52A1\u5546\uFF0C\u8BF7\u70B9\u51FB\u9875\u9762\u60AC\u6D6E\u680F\u7684 \u2699 \u586B\u5165 API Key");
+  }
+  if (!route.model) {
+    throw new Error("\u672A\u9009\u62E9 LLM \u6A21\u578B\uFF0C\u8BF7\u70B9\u51FB\u9875\u9762\u60AC\u6D6E\u680F\u7684 \u2699 \u914D\u7F6E");
+  }
+  const baseUrl = provider.baseUrl.replace(/\/+$/, "");
+  const parts = [{
+    type: "text",
+    text: [
+      "\u4F60\u662F\u4E00\u4E2A\u89C6\u9891\u4F34\u5B66\u52A9\u624B\u3002",
+      context ? `\u3010\u6700\u8FD1\u7684\u5B57\u5E55\u4E0A\u4E0B\u6587\u3011
+${context}
+` : "",
+      "\u8BF7\u57FA\u4E8E\u5B57\u5E55\u4E0A\u4E0B\u6587\u548C\u7528\u6237\u63D0\u4F9B\u7684\u5185\u5BB9\u56DE\u7B54\u3002\u7528\u7B80\u4F53\u4E2D\u6587\u56DE\u7B54\uFF0C\u4FDD\u6301\u7B80\u6D01\u51C6\u786E\u3002",
+      "",
+      `\u3010\u7528\u6237\u63D0\u95EE\u3011
+${question || "\u8BF7\u63CF\u8FF0\u8FD9\u5F20\u56FE\u7247\uFF0C\u5E76\u7ED3\u5408\u89C6\u9891\u4E0A\u4E0B\u6587\u89E3\u91CA\u3002"}`
+    ].filter(Boolean).join("\n")
+  }];
+  for (const img of images) {
+    parts.push({ type: "image_url", image_url: { url: img } });
+  }
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${provider.apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: route.model,
+      messages: [{ role: "user", content: parts }],
+      temperature: 0.3,
+      max_tokens: 2048,
+      stream: false
+    })
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const text = await res.text();
+      if (text) msg = text.slice(0, 240);
+    } catch {
+    }
+    throw new Error(msg);
+  }
+  const json = await res.json();
+  const content = json.choices?.[0]?.message?.content;
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) return content.map((p) => p.text || "").join("").trim();
+  return String(json.output_text || "").trim();
+}
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.target !== "background") {
     return false;
@@ -430,10 +485,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       s.state = "stopping";
       pushSession(tabId);
+      const stoppedGeneration = s.generation;
+      s.generation = nextGeneration();
       sendToOffscreen({
         type: "STOP_CAPTURE",
         tabId,
-        generation: s.generation
+        generation: stoppedGeneration
       }).catch(() => {
       }).finally(() => {
         s.state = "idle";
@@ -447,13 +504,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     case "ASK": {
-      const s = sessions.get(tabId);
-      if (!s || s.state !== "running") {
-        sendResponse({ ok: false, error: "\u5F53\u524D\u6807\u7B7E\u9875\u672A\u5728\u8FD0\u884C\uFF0C\u8BF7\u5148\u5F00\u59CB\u8F6C\u5199" });
-        return false;
-      }
+      const s = getOrCreateSession(tabId);
       const question = (message.question || "").trim();
-      if (!question) {
+      const images = Array.isArray(message.images) ? message.images.slice(0, 4) : [];
+      if (!question && images.length === 0) {
         sendResponse({ ok: false, error: "\u95EE\u9898\u4E0D\u80FD\u4E3A\u7A7A" });
         return false;
       }
@@ -464,32 +518,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const requestId = message.requestId || `ask_${Date.now()}`;
       s.pendingAskRequestId = requestId;
       const recentContext = s.subtitles.slice(-20).map((sub) => `[${sub.source}] \u2192 ${sub.target}`).join("\n");
-      sendToOffscreen({
-        type: "ASK_QUESTION",
-        tabId,
-        question,
-        requestId,
-        generation: s.generation,
-        config: s.configSnapshot,
-        context: recentContext,
-        sourceLang: s.sourceLang,
-        targetLang: s.targetLang
-      }).then((result) => {
+      (async () => {
+        const config = s.configSnapshot || await loadConfig();
+        const answer = await askLLM({
+          question,
+          images,
+          context: recentContext,
+          config,
+          sourceLang: s.sourceLang,
+          targetLang: s.targetLang
+        });
         if (s.pendingAskRequestId !== requestId) return;
         s.pendingAskRequestId = null;
-        if (result && result.ok && result.answer) {
-          s.messages.push({ role: "assistant", content: result.answer });
-          pushSession(tabId);
-          sendResponse({ ok: true, answer: result.answer });
-        } else {
-          sendResponse({ ok: false, error: result?.error || "\u83B7\u53D6\u56DE\u7B54\u5931\u8D25" });
-        }
-      }).catch((err) => {
+        s.messages.push({ role: "assistant", content: answer });
+        pushSession(tabId);
+        sendResponse({ ok: true, answer });
+      })().catch((err) => {
         if (s.pendingAskRequestId !== requestId) return;
         s.pendingAskRequestId = null;
-        sendResponse({ ok: false, error: err.message });
+        sendResponse({ ok: false, error: err.message || "\u83B7\u53D6\u56DE\u7B54\u5931\u8D25" });
       });
-      s.messages.push({ role: "user", content: question });
+      s.messages.push({ role: "user", content: question, images });
       pushSession(tabId);
       return true;
     }
@@ -514,7 +563,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     case "CAPTURE_SCREENSHOT": {
-      chrome.tabs.captureVisibleTab(null, { format: "png" }).then((dataUrl) => {
+      chrome.tabs.captureVisibleTab({ format: "png" }).then((dataUrl) => {
         sendResponse({ ok: true, dataUrl });
       }).catch((err) => {
         sendResponse({ ok: false, error: err.message });
@@ -529,13 +578,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return false;
       }
       const oc = message.obsidianConfig || {};
-      const obsidianPort = oc.apiPort || 27124;
+      const obsidianPort = Number(oc.apiPort) || 27123;
+      const protocol = oc.apiProtocol === "https" ? "https" : oc.apiProtocol === "http" ? "http" : obsidianPort === 27124 ? "https" : "http";
       const obsidianApiKey = oc.apiKey || "";
-      const noteFolder = (oc.noteFolder || "snooper-notes").replace(/^\/+|\/+$/g, "");
+      const noteFolder = String(oc.noteFolder || "snooper-notes").replace(/^\/+|\/+$/g, "");
       const fileName = `${title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_")}.md`;
+      const base = `${protocol}://127.0.0.1:${obsidianPort}`;
+      const vaultPath = noteFolder ? `/vault/${noteFolder}/${encodeURIComponent(fileName)}` : `/vault/${encodeURIComponent(fileName)}`;
       (async () => {
         try {
-          const res = await fetch(`http://localhost:${obsidianPort}/vault/${noteFolder}/${encodeURIComponent(fileName)}`, {
+          const res = await fetch(base + vaultPath, {
             method: "PUT",
             headers: {
               "Content-Type": "text/markdown",
@@ -545,15 +597,68 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           if (res.ok) {
             sendResponse({ ok: true });
-          } else {
-            sendResponse({ ok: false, error: `Obsidian API \u8FD4\u56DE ${res.status}` });
+            return;
           }
+          if (res.status === 401 || res.status === 403) {
+            sendResponse({ ok: false, error: "Obsidian \u62D2\u7EDD\u8BBF\u95EE\uFF1AAPI Key \u4E0D\u6B63\u786E\u6216\u672A\u586B\u5199" });
+            return;
+          }
+          if (res.status === 404) {
+            sendResponse({ ok: false, error: "Obsidian \u627E\u4E0D\u5230\u5199\u5165\u8DEF\u5F84\uFF0C\u8BF7\u68C0\u67E5\u7B14\u8BB0\u76EE\u5F55\u8BBE\u7F6E" });
+            return;
+          }
+          sendResponse({ ok: false, error: `Obsidian API \u8FD4\u56DE ${res.status}` });
         } catch (err) {
-          sendResponse({
-            ok: false,
-            error: "\u65E0\u6CD5\u8FDE\u63A5\u5230 Obsidian\u3002\u8BF7\u786E\u4FDD\uFF1A1) Obsidian \u6B63\u5728\u8FD0\u884C 2) \u5DF2\u5B89\u88C5 Obsidian Local REST API \u63D2\u4EF6 3) \u63D2\u4EF6\u5DF2\u542F\u7528\u3002"
-          });
+          const hint = protocol === "https" ? "HTTPS 27124 \u4F7F\u7528\u81EA\u7B7E\u540D\u8BC1\u4E66\uFF0CChrome \u4F1A\u62D2\u7EDD\u3002\u8BF7\u5728 Obsidian \u2192 Local REST API \u8BBE\u7F6E\u4E2D\u5F00\u542F\u300CEnable Non-encrypted (HTTP) Server\u300D\uFF0C\u7136\u540E\u5728\u4FA7\u680F\u628A\u534F\u8BAE\u6539\u4E3A HTTP\u3001\u7AEF\u53E3 27123\u3002" : "\u8BF7\u786E\u8BA4 Obsidian \u6B63\u5728\u8FD0\u884C\u3001Local REST API \u63D2\u4EF6\u5DF2\u542F\u7528\uFF0C\u5E76\u5F00\u542F\u300CEnable Non-encrypted (HTTP) Server\u300D\uFF08\u7AEF\u53E3 27123\uFF09\u3002";
+          sendResponse({ ok: false, error: `\u65E0\u6CD5\u8FDE\u63A5 Obsidian\uFF08${base}\uFF09\u3002${hint}` });
         }
+      })();
+      return true;
+    }
+    case "TEST_OBSIDIAN": {
+      const oc = message.obsidianConfig || {};
+      const key = oc.apiKey || "";
+      const configuredPort = Number(oc.apiPort) || 27123;
+      const configuredProtocol = oc.apiProtocol === "https" ? "https" : oc.apiProtocol === "http" ? "http" : configuredPort === 27124 ? "https" : "http";
+      const seen = /* @__PURE__ */ new Set();
+      const candidates = [];
+      for (const c of [
+        { protocol: configuredProtocol, port: configuredPort },
+        { protocol: "http", port: 27123 },
+        { protocol: "https", port: 27124 }
+      ]) {
+        const id = `${c.protocol}:${c.port}`;
+        if (!seen.has(id)) {
+          seen.add(id);
+          candidates.push(c);
+        }
+      }
+      (async () => {
+        for (const c of candidates) {
+          try {
+            const res = await fetch(`${c.protocol}://127.0.0.1:${c.port}/vault/`, {
+              headers: key ? { Authorization: `Bearer ${key}` } : {}
+            });
+            if (res.ok) {
+              sendResponse({ ok: true, protocol: c.protocol, port: c.port });
+              return;
+            }
+            if (res.status === 401 || res.status === 403) {
+              sendResponse({
+                ok: false,
+                protocol: c.protocol,
+                port: c.port,
+                error: `\u5DF2\u8FDE\u4E0A ${c.protocol}://127.0.0.1:${c.port}\uFF0C\u4F46 API Key \u4E0D\u6B63\u786E\uFF0C\u8BF7\u5728\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u91CD\u65B0\u590D\u5236`
+              });
+              return;
+            }
+          } catch {
+          }
+        }
+        sendResponse({
+          ok: false,
+          error: "\u65E0\u6CD5\u8FDE\u63A5\u3002\u8BF7\u786E\u8BA4 Obsidian \u6B63\u5728\u8FD0\u884C\u3001Local REST API \u63D2\u4EF6\u5DF2\u542F\u7528\uFF0C\u5E76\u5F00\u542F\u300CEnable Non-encrypted (HTTP) Server\u300D\uFF08\u7AEF\u53E3 27123\uFF09"
+        });
       })();
       return true;
     }

@@ -1,6 +1,14 @@
 (() => {
   // src/ext/sidepanel/panel.ts
   (() => {
+    const DEFAULT_OBSIDIAN = {
+      enabled: false,
+      vaultPath: "",
+      apiProtocol: "http",
+      apiPort: 27123,
+      apiKey: "",
+      noteFolder: "snooper-notes"
+    };
     const NOTES_KEY = "snooper.notes.v1";
     const OBSIDIAN_KEY = "snooper.obsidian-config.v1";
     function loadNotes() {
@@ -38,21 +46,53 @@
       } catch {
       }
     }
-    function loadObsidianConfig() {
+    function normalizeObsidianConfig(raw) {
+      const r = raw && typeof raw === "object" ? raw : {};
+      const port = Number(r.apiPort) || DEFAULT_OBSIDIAN.apiPort;
+      const protocol = r.apiProtocol === "https" || r.apiProtocol === "http" ? r.apiProtocol : port === 27124 ? "https" : "http";
+      return {
+        enabled: !!r.enabled,
+        vaultPath: typeof r.vaultPath === "string" ? r.vaultPath : "",
+        apiProtocol: protocol,
+        apiPort: port,
+        apiKey: typeof r.apiKey === "string" ? r.apiKey : "",
+        noteFolder: typeof r.noteFolder === "string" && r.noteFolder.trim() ? r.noteFolder.trim() : DEFAULT_OBSIDIAN.noteFolder
+      };
+    }
+    async function loadObsidianConfig() {
+      try {
+        const got = await chrome.storage.local.get(OBSIDIAN_KEY);
+        const stored = got?.[OBSIDIAN_KEY];
+        if (stored && typeof stored === "object") return normalizeObsidianConfig(stored);
+      } catch {
+      }
       try {
         const raw = localStorage.getItem(OBSIDIAN_KEY);
-        if (raw) return JSON.parse(raw);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          const config = normalizeObsidianConfig(parsed);
+          try {
+            await chrome.storage.local.set({ [OBSIDIAN_KEY]: config });
+          } catch {
+          }
+          return config;
+        }
       } catch {
       }
-      return { enabled: false, vaultPath: "", apiPort: 27124, apiKey: "", noteFolder: "snooper-notes" };
+      return { ...DEFAULT_OBSIDIAN };
     }
-    function saveObsidianConfig(config) {
+    async function saveObsidianConfig(config) {
+      const normalized = normalizeObsidianConfig(config);
       try {
-        localStorage.setItem(OBSIDIAN_KEY, JSON.stringify(config));
+        await chrome.storage.local.set({ [OBSIDIAN_KEY]: normalized });
+      } catch {
+      }
+      try {
+        localStorage.setItem(OBSIDIAN_KEY, JSON.stringify(normalized));
       } catch {
       }
     }
-    let obsidianCfg = { enabled: false, vaultPath: "", apiPort: 27124, apiKey: "", noteFolder: "snooper-notes" };
+    let obsidianCfg = { ...DEFAULT_OBSIDIAN };
     let notes = [];
     const noticeBanner = document.getElementById("noticeBanner");
     const tabNotes = document.getElementById("tab-notes");
@@ -61,9 +101,12 @@
     const notesRefreshBtn = document.getElementById("notes-refresh-btn");
     const openPageConfigBtn = document.getElementById("open-page-config");
     const obsidianEnabled = document.getElementById("obsidian-enabled");
+    const obsidianProtocol = document.getElementById("obsidian-protocol");
     const obsidianPort = document.getElementById("obsidian-port");
     const obsidianFolder = document.getElementById("obsidian-folder");
     const obsidianKey = document.getElementById("obsidian-key");
+    const obsidianTest = document.getElementById("obsidian-test");
+    const obsidianTestStatus = document.getElementById("obsidian-test-status");
     const saveConfigBtn = document.getElementById("saveConfigBtn");
     function showNotice(text, isError = false) {
       noticeBanner.textContent = text;
@@ -223,25 +266,65 @@
       showNotice("\u7B14\u8BB0\u5DF2\u5BFC\u51FA");
     }
     notesRefreshBtn.addEventListener("click", loadAndRenderNotes);
-    function renderObsidianConfig() {
-      obsidianCfg = loadObsidianConfig();
+    async function renderObsidianConfig() {
+      obsidianCfg = await loadObsidianConfig();
       obsidianEnabled.checked = obsidianCfg.enabled;
+      obsidianProtocol.value = obsidianCfg.apiProtocol;
       obsidianPort.value = String(obsidianCfg.apiPort);
       obsidianFolder.value = obsidianCfg.noteFolder;
       obsidianKey.value = obsidianCfg.apiKey;
+      obsidianTestStatus.hidden = true;
     }
-    function syncObsidianForm() {
+    async function syncObsidianForm() {
       obsidianCfg.enabled = obsidianEnabled.checked;
-      obsidianCfg.apiPort = parseInt(obsidianPort.value, 10) || 27124;
+      obsidianCfg.apiProtocol = obsidianProtocol.value === "https" ? "https" : "http";
+      obsidianCfg.apiPort = parseInt(obsidianPort.value, 10) || (obsidianCfg.apiProtocol === "https" ? 27124 : 27123);
       obsidianCfg.noteFolder = obsidianFolder.value.trim() || "snooper-notes";
       obsidianCfg.apiKey = obsidianKey.value.trim();
-      saveObsidianConfig(obsidianCfg);
+      await saveObsidianConfig(obsidianCfg);
     }
-    saveConfigBtn.addEventListener("click", () => {
-      syncObsidianForm();
+    saveConfigBtn.addEventListener("click", async () => {
+      await syncObsidianForm();
       showNotice("Obsidian \u8BBE\u7F6E\u5DF2\u4FDD\u5B58");
     });
-    renderObsidianConfig();
+    obsidianTest.addEventListener("click", async () => {
+      await syncObsidianForm();
+      obsidianTest.disabled = true;
+      obsidianTestStatus.textContent = "\u6B63\u5728\u6D4B\u8BD5\u2026";
+      obsidianTestStatus.hidden = false;
+      obsidianTestStatus.className = "obsidian-test-status";
+      try {
+        const res = await chrome.runtime.sendMessage({
+          target: "background",
+          type: "TEST_OBSIDIAN",
+          obsidianConfig: obsidianCfg
+        });
+        if (res && res.ok) {
+          obsidianCfg.apiProtocol = res.protocol;
+          obsidianCfg.apiPort = res.port;
+          await saveObsidianConfig(obsidianCfg);
+          obsidianProtocol.value = res.protocol;
+          obsidianPort.value = String(res.port);
+          obsidianTestStatus.textContent = `\u8FDE\u63A5\u6210\u529F\uFF08${String(res.protocol).toUpperCase()} ${res.port}\uFF09\uFF0C\u5DF2\u4FDD\u5B58`;
+          obsidianTestStatus.className = "obsidian-test-status ok";
+        } else {
+          obsidianTestStatus.textContent = res?.error || "\u8FDE\u63A5\u5931\u8D25\uFF0C\u8BF7\u786E\u8BA4 Obsidian \u6B63\u5728\u8FD0\u884C\u4E14 Local REST API \u63D2\u4EF6\u5DF2\u542F\u7528";
+          obsidianTestStatus.className = "obsidian-test-status err";
+        }
+      } catch (err) {
+        obsidianTestStatus.textContent = err.message || "\u901A\u4FE1\u5F02\u5E38";
+        obsidianTestStatus.className = "obsidian-test-status err";
+      } finally {
+        obsidianTest.disabled = false;
+      }
+    });
+    obsidianProtocol.addEventListener("change", () => {
+      const port = parseInt(obsidianPort.value, 10);
+      if (!port || port === 27123 || port === 27124) {
+        obsidianPort.value = obsidianProtocol.value === "https" ? "27124" : "27123";
+      }
+    });
+    void renderObsidianConfig();
     void loadAndRenderNotes();
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") void loadAndRenderNotes();

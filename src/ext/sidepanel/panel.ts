@@ -33,9 +33,19 @@
   interface ObsidianConfig {
     enabled: boolean
     vaultPath: string
+    apiProtocol: 'http' | 'https'
     apiPort: number
     apiKey: string
     noteFolder: string
+  }
+
+  const DEFAULT_OBSIDIAN: ObsidianConfig = {
+    enabled: false,
+    vaultPath: '',
+    apiProtocol: 'http',
+    apiPort: 27123,
+    apiKey: '',
+    noteFolder: 'snooper-notes',
   }
 
   /* ===== Persistence ===== */
@@ -70,19 +80,52 @@
     try { localStorage.setItem(NOTES_KEY, JSON.stringify(next)) } catch { /* ignore */ }
   }
 
-  function loadObsidianConfig(): ObsidianConfig {
+  function normalizeObsidianConfig(raw: any): ObsidianConfig {
+    const r = raw && typeof raw === 'object' ? raw : {}
+    const port = Number(r.apiPort) || DEFAULT_OBSIDIAN.apiPort
+    const protocol: 'http' | 'https' =
+      r.apiProtocol === 'https' || r.apiProtocol === 'http'
+        ? r.apiProtocol
+        : port === 27124 ? 'https' : 'http'
+    return {
+      enabled: !!r.enabled,
+      vaultPath: typeof r.vaultPath === 'string' ? r.vaultPath : '',
+      apiProtocol: protocol,
+      apiPort: port,
+      apiKey: typeof r.apiKey === 'string' ? r.apiKey : '',
+      noteFolder: typeof r.noteFolder === 'string' && r.noteFolder.trim()
+        ? r.noteFolder.trim()
+        : DEFAULT_OBSIDIAN.noteFolder,
+    }
+  }
+
+  async function loadObsidianConfig(): Promise<ObsidianConfig> {
+    // 1. Shared store (in-page + side panel)
+    try {
+      const got = await chrome.storage.local.get(OBSIDIAN_KEY)
+      const stored = got?.[OBSIDIAN_KEY]
+      if (stored && typeof stored === 'object') return normalizeObsidianConfig(stored)
+    } catch { /* ignore */ }
+    // 2. Legacy panel localStorage -> migrate to shared store
     try {
       const raw = localStorage.getItem(OBSIDIAN_KEY)
-      if (raw) return JSON.parse(raw)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        const config = normalizeObsidianConfig(parsed)
+        try { await chrome.storage.local.set({ [OBSIDIAN_KEY]: config }) } catch { /* ignore */ }
+        return config
+      }
     } catch { /* ignore */ }
-    return { enabled: false, vaultPath: '', apiPort: 27124, apiKey: '', noteFolder: 'snooper-notes' }
+    return { ...DEFAULT_OBSIDIAN }
   }
 
-  function saveObsidianConfig(config: ObsidianConfig) {
-    try { localStorage.setItem(OBSIDIAN_KEY, JSON.stringify(config)) } catch { /* ignore */ }
+  async function saveObsidianConfig(config: ObsidianConfig) {
+    const normalized = normalizeObsidianConfig(config)
+    try { await chrome.storage.local.set({ [OBSIDIAN_KEY]: normalized }) } catch { /* ignore */ }
+    try { localStorage.setItem(OBSIDIAN_KEY, JSON.stringify(normalized)) } catch { /* ignore */ }
   }
 
-  let obsidianCfg: ObsidianConfig = { enabled: false, vaultPath: '', apiPort: 27124, apiKey: '', noteFolder: 'snooper-notes' }
+  let obsidianCfg: ObsidianConfig = { ...DEFAULT_OBSIDIAN }
   let notes: NoteDocument[] = []
 
   /* ===== DOM refs ===== */
@@ -94,9 +137,12 @@
   const openPageConfigBtn = document.getElementById('open-page-config') as HTMLButtonElement | null
 
   const obsidianEnabled = document.getElementById('obsidian-enabled') as HTMLInputElement
+  const obsidianProtocol = document.getElementById('obsidian-protocol') as HTMLSelectElement
   const obsidianPort = document.getElementById('obsidian-port') as HTMLInputElement
   const obsidianFolder = document.getElementById('obsidian-folder') as HTMLInputElement
   const obsidianKey = document.getElementById('obsidian-key') as HTMLInputElement
+  const obsidianTest = document.getElementById('obsidian-test') as HTMLButtonElement
+  const obsidianTestStatus = document.getElementById('obsidian-test-status')!
   const saveConfigBtn = document.getElementById('saveConfigBtn')!
 
   /* ===== Utilities ===== */
@@ -279,29 +325,71 @@
   notesRefreshBtn.addEventListener('click', loadAndRenderNotes)
 
   /* ===== Obsidian ===== */
-  function renderObsidianConfig() {
-    obsidianCfg = loadObsidianConfig()
+  async function renderObsidianConfig() {
+    obsidianCfg = await loadObsidianConfig()
     obsidianEnabled.checked = obsidianCfg.enabled
+    obsidianProtocol.value = obsidianCfg.apiProtocol
     obsidianPort.value = String(obsidianCfg.apiPort)
     obsidianFolder.value = obsidianCfg.noteFolder
     obsidianKey.value = obsidianCfg.apiKey
+    obsidianTestStatus.hidden = true
   }
 
-  function syncObsidianForm() {
+  async function syncObsidianForm() {
     obsidianCfg.enabled = obsidianEnabled.checked
-    obsidianCfg.apiPort = parseInt(obsidianPort.value, 10) || 27124
+    obsidianCfg.apiProtocol = obsidianProtocol.value === 'https' ? 'https' : 'http'
+    obsidianCfg.apiPort = parseInt(obsidianPort.value, 10) || (obsidianCfg.apiProtocol === 'https' ? 27124 : 27123)
     obsidianCfg.noteFolder = obsidianFolder.value.trim() || 'snooper-notes'
     obsidianCfg.apiKey = obsidianKey.value.trim()
-    saveObsidianConfig(obsidianCfg)
+    await saveObsidianConfig(obsidianCfg)
   }
 
-  saveConfigBtn.addEventListener('click', () => {
-    syncObsidianForm()
+  saveConfigBtn.addEventListener('click', async () => {
+    await syncObsidianForm()
     showNotice('Obsidian 设置已保存')
   })
 
+  obsidianTest.addEventListener('click', async () => {
+    await syncObsidianForm()
+    obsidianTest.disabled = true
+    obsidianTestStatus.textContent = '正在测试…'
+    obsidianTestStatus.hidden = false
+    obsidianTestStatus.className = 'obsidian-test-status'
+    try {
+      const res: any = await chrome.runtime.sendMessage({
+        target: 'background',
+        type: 'TEST_OBSIDIAN',
+        obsidianConfig: obsidianCfg,
+      })
+      if (res && res.ok) {
+        obsidianCfg.apiProtocol = res.protocol
+        obsidianCfg.apiPort = res.port
+        await saveObsidianConfig(obsidianCfg)
+        obsidianProtocol.value = res.protocol
+        obsidianPort.value = String(res.port)
+        obsidianTestStatus.textContent = `连接成功（${String(res.protocol).toUpperCase()} ${res.port}），已保存`
+        obsidianTestStatus.className = 'obsidian-test-status ok'
+      } else {
+        obsidianTestStatus.textContent = res?.error || '连接失败，请确认 Obsidian 正在运行且 Local REST API 插件已启用'
+        obsidianTestStatus.className = 'obsidian-test-status err'
+      }
+    } catch (err: any) {
+      obsidianTestStatus.textContent = err.message || '通信异常'
+      obsidianTestStatus.className = 'obsidian-test-status err'
+    } finally {
+      obsidianTest.disabled = false
+    }
+  })
+
+  obsidianProtocol.addEventListener('change', () => {
+    const port = parseInt(obsidianPort.value, 10)
+    if (!port || port === 27123 || port === 27124) {
+      obsidianPort.value = obsidianProtocol.value === 'https' ? '27124' : '27123'
+    }
+  })
+
   /* ===== Init ===== */
-  renderObsidianConfig()
+  void renderObsidianConfig()
   void loadAndRenderNotes()
 
   // Keep the note counter fresh when the panel is reopened.

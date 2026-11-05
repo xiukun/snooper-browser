@@ -57,6 +57,7 @@ interface SubtitleEntry {
 interface MessageEntry {
   role: string
   content: string
+  images?: string[]
 }
 
 interface StreamingSubtitle {
@@ -307,6 +308,69 @@ function pushStreamingUpdate(tabId: number) {
   }).catch(() => {
     // Tab may be closed; best-effort
   });
+}
+
+/* ===== LLM Q&A ===== */
+
+async function askLLM({ question, images, context, config, sourceLang, targetLang }: {
+  question: string
+  images: string[]
+  context: string
+  config: AppConfig
+  sourceLang: string
+  targetLang: string
+}): Promise<string> {
+  const route = config.routes.llm;
+  const provider = config.providers.find((p) => p.id === route.providerId);
+  if (!provider || !provider.apiKey) {
+    throw new Error('尚未配置 LLM 服务商，请点击页面悬浮栏的 ⚙ 填入 API Key');
+  }
+  if (!route.model) {
+    throw new Error('未选择 LLM 模型，请点击页面悬浮栏的 ⚙ 配置');
+  }
+
+  const baseUrl = provider.baseUrl.replace(/\/+$/, '');
+  const parts: any[] = [{
+    type: 'text',
+    text: [
+      '你是一个视频伴学助手。',
+      context ? `【最近的字幕上下文】\n${context}\n` : '',
+      '请基于字幕上下文和用户提供的内容回答。用简体中文回答，保持简洁准确。',
+      '',
+      `【用户提问】\n${question || '请描述这张图片，并结合视频上下文解释。'}`,
+    ].filter(Boolean).join('\n'),
+  }];
+  for (const img of images) {
+    parts.push({ type: 'image_url', image_url: { url: img } });
+  }
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${provider.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: route.model,
+      messages: [{ role: 'user', content: parts }],
+      temperature: 0.3,
+      max_tokens: 2048,
+      stream: false,
+    }),
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const text = await res.text();
+      if (text) msg = text.slice(0, 240);
+    } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  const json = await res.json();
+  const content = json.choices?.[0]?.message?.content;
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) return content.map((p: any) => p.text || '').join('').trim();
+  return String(json.output_text || '').trim();
 }
 
 /* ===== Message Router ===== */
@@ -601,10 +665,16 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
       s.state = 'stopping';
       pushSession(tabId);
 
+      // Invalidate in-flight ASR/translation results immediately. Late
+      // responses from the stopped segment carry the old generation and are
+      // dropped, so nothing new appears after the user hits stop.
+      const stoppedGeneration = s.generation;
+      s.generation = nextGeneration();
+
       sendToOffscreen({
         type: 'STOP_CAPTURE',
         tabId,
-        generation: s.generation,
+        generation: stoppedGeneration,
       }).catch(() => {
         // Offscreen may already be closed
       }).finally(() => {
@@ -621,14 +691,12 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
     }
 
     case 'ASK': {
-      const s = sessions.get(tabId);
-      if (!s || s.state !== 'running') {
-        sendResponse({ ok: false, error: '当前标签页未在运行，请先开始转写' });
-        return false;
-      }
-
+      // Chat stays available after stop: it uses subtitle history as context
+      // and loads config on demand instead of relying on the capture session.
+      const s = getOrCreateSession(tabId);
       const question = (message.question || '').trim();
-      if (!question) {
+      const images: string[] = Array.isArray(message.images) ? message.images.slice(0, 4) : [];
+      if (!question && images.length === 0) {
         sendResponse({ ok: false, error: '问题不能为空' });
         return false;
       }
@@ -646,36 +714,29 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         .map((sub) => `[${sub.source}] → ${sub.target}`)
         .join('\n');
 
-      // Handle ASK via offscreen (which has fetch capability)
-      sendToOffscreen({
-        type: 'ASK_QUESTION',
-        tabId,
-        question,
-        requestId,
-        generation: s.generation,
-        config: s.configSnapshot,
-        context: recentContext,
-        sourceLang: s.sourceLang,
-        targetLang: s.targetLang,
-      }).then((result: any) => {
-        if (s.pendingAskRequestId !== requestId) return; // stale
-        s.pendingAskRequestId = null;
-
-        if (result && result.ok && result.answer) {
-          s.messages.push({ role: 'assistant', content: result.answer });
-          pushSession(tabId);
-          sendResponse({ ok: true, answer: result.answer });
-        } else {
-          sendResponse({ ok: false, error: result?.error || '获取回答失败' });
-        }
-      }).catch((err: any) => {
+      (async () => {
+        const config = s.configSnapshot || await loadConfig();
+        const answer = await askLLM({
+          question,
+          images,
+          context: recentContext,
+          config,
+          sourceLang: s.sourceLang,
+          targetLang: s.targetLang,
+        });
         if (s.pendingAskRequestId !== requestId) return;
         s.pendingAskRequestId = null;
-        sendResponse({ ok: false, error: err.message });
+        s.messages.push({ role: 'assistant', content: answer });
+        pushSession(tabId);
+        sendResponse({ ok: true, answer });
+      })().catch((err: any) => {
+        if (s.pendingAskRequestId !== requestId) return;
+        s.pendingAskRequestId = null;
+        sendResponse({ ok: false, error: err.message || '获取回答失败' });
       });
 
       // Store user message optimistically
-      s.messages.push({ role: 'user', content: question });
+      s.messages.push({ role: 'user', content: question, images });
       pushSession(tabId);
 
       return true; // async – response will be sent later
@@ -708,7 +769,7 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
 
     case 'CAPTURE_SCREENSHOT': {
       // Use chrome.tabs.captureVisibleTab for screenshot
-      chrome.tabs.captureVisibleTab(null, { format: 'png' }).then((dataUrl) => {
+      chrome.tabs.captureVisibleTab({ format: 'png' }).then((dataUrl) => {
         sendResponse({ ok: true, dataUrl });
       }).catch((err) => {
         sendResponse({ ok: false, error: err.message });
@@ -724,16 +785,25 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         return false;
       }
 
-      // Use config sent from content script, or fall back to defaults
+      // Use config sent from content script, or fall back to defaults.
+      // The plugin serves plain HTTP on 27123 and self-signed HTTPS on 27124;
+      // Chrome rejects the self-signed cert, so HTTP is the default.
       const oc = message.obsidianConfig || {};
-      const obsidianPort = oc.apiPort || 27124;
+      const obsidianPort = Number(oc.apiPort) || 27123;
+      const protocol = oc.apiProtocol === 'https'
+        ? 'https'
+        : oc.apiProtocol === 'http'
+          ? 'http'
+          : (obsidianPort === 27124 ? 'https' : 'http');
       const obsidianApiKey = oc.apiKey || '';
-      const noteFolder = (oc.noteFolder || 'snooper-notes').replace(/^\/+|\/+$/g, '');
+      const noteFolder = String(oc.noteFolder || 'snooper-notes').replace(/^\/+|\/+$/g, '');
       const fileName = `${title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '_')}.md`;
+      const base = `${protocol}://127.0.0.1:${obsidianPort}`;
+      const vaultPath = noteFolder ? `/vault/${noteFolder}/${encodeURIComponent(fileName)}` : `/vault/${encodeURIComponent(fileName)}`;
 
       (async () => {
         try {
-          const res = await fetch(`http://localhost:${obsidianPort}/vault/${noteFolder}/${encodeURIComponent(fileName)}`, {
+          const res = await fetch(base + vaultPath, {
             method: 'PUT',
             headers: {
               'Content-Type': 'text/markdown',
@@ -743,15 +813,68 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
           });
           if (res.ok) {
             sendResponse({ ok: true });
-          } else {
-            sendResponse({ ok: false, error: `Obsidian API 返回 ${res.status}` });
+            return;
           }
+          if (res.status === 401 || res.status === 403) {
+            sendResponse({ ok: false, error: 'Obsidian 拒绝访问：API Key 不正确或未填写' });
+            return;
+          }
+          if (res.status === 404) {
+            sendResponse({ ok: false, error: 'Obsidian 找不到写入路径，请检查笔记目录设置' });
+            return;
+          }
+          sendResponse({ ok: false, error: `Obsidian API 返回 ${res.status}` });
         } catch (err: any) {
-          sendResponse({
-            ok: false,
-            error: '无法连接到 Obsidian。请确保：1) Obsidian 正在运行 2) 已安装 Obsidian Local REST API 插件 3) 插件已启用。',
-          });
+          const hint = protocol === 'https'
+            ? 'HTTPS 27124 使用自签名证书，Chrome 会拒绝。请在 Obsidian → Local REST API 设置中开启「Enable Non-encrypted (HTTP) Server」，然后在侧栏把协议改为 HTTP、端口 27123。'
+            : '请确认 Obsidian 正在运行、Local REST API 插件已启用，并开启「Enable Non-encrypted (HTTP) Server」（端口 27123）。';
+          sendResponse({ ok: false, error: `无法连接 Obsidian（${base}）。${hint}` });
         }
+      })();
+      return true;
+    }
+
+    case 'TEST_OBSIDIAN': {
+      const oc = message.obsidianConfig || {};
+      const key = oc.apiKey || '';
+      const configuredPort = Number(oc.apiPort) || 27123;
+      const configuredProtocol = oc.apiProtocol === 'https' ? 'https' : oc.apiProtocol === 'http' ? 'http' : (configuredPort === 27124 ? 'https' : 'http');
+      const seen = new Set<string>();
+      const candidates: Array<{ protocol: 'http' | 'https'; port: number }> = [];
+      for (const c of [
+        { protocol: configuredProtocol as 'http' | 'https', port: configuredPort },
+        { protocol: 'http' as const, port: 27123 },
+        { protocol: 'https' as const, port: 27124 },
+      ]) {
+        const id = `${c.protocol}:${c.port}`;
+        if (!seen.has(id)) { seen.add(id); candidates.push(c); }
+      }
+
+      (async () => {
+        for (const c of candidates) {
+          try {
+            const res = await fetch(`${c.protocol}://127.0.0.1:${c.port}/vault/`, {
+              headers: key ? { Authorization: `Bearer ${key}` } : {},
+            });
+            if (res.ok) {
+              sendResponse({ ok: true, protocol: c.protocol, port: c.port });
+              return;
+            }
+            if (res.status === 401 || res.status === 403) {
+              sendResponse({
+                ok: false,
+                protocol: c.protocol,
+                port: c.port,
+                error: `已连上 ${c.protocol}://127.0.0.1:${c.port}，但 API Key 不正确，请在插件设置中重新复制`,
+              });
+              return;
+            }
+          } catch { /* try next */ }
+        }
+        sendResponse({
+          ok: false,
+          error: '无法连接。请确认 Obsidian 正在运行、Local REST API 插件已启用，并开启「Enable Non-encrypted (HTTP) Server」（端口 27123）',
+        });
       })();
       return true;
     }

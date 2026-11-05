@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "snooper-browser",
-  "version": "0.5.0",
-  "description": "实时翻译 · 智能笔记 · AI 图像创作 — 浏览器内一站式工作台",
+  "version": "0.6.0",
+  "description": "\u5b9e\u65f6\u7ffb\u8bd1 \u00b7 \u667a\u80fd\u7b14\u8bb0 \u00b7 AI \u56fe\u50cf\u521b\u4f5c \u2014 \u6d4f\u89c8\u5668\u5185\u4e00\u7ad9\u5f0f\u5de5\u4f5c\u53f0",
   "action": {
-    "default_title": "snooper-browser — 点击打开笔记与集成面板"
+    "default_title": "snooper-browser \u2014 \u70b9\u51fb\u6253\u5f00\u7b14\u8bb0\u4e0e\u96c6\u6210\u9762\u677f"
   },
   "background": {
     "service_worker": "background.js",
@@ -15,8 +15,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "world": "ISOLATED"
     }
@@ -27,15 +31,21 @@
     "storage",
     "tabCapture",
     "offscreen",
-    "sidePanel"
+    "sidePanel",
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "web_accessible_resources": [
     {
-      "matches": ["<all_urls>"],
-      "resources": ["audio-worklet.js", "fullscreen-bridge.js"]
+      "matches": [
+        "<all_urls>"
+      ],
+      "resources": [
+        "audio-worklet.js",
+        "fullscreen-bridge.js"
+      ]
     }
   ],
   "content_security_policy": {

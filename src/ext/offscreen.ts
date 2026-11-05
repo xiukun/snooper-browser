@@ -311,6 +311,7 @@ interface CaptureSession {
   isSilent: boolean
   pendingTranscriptions: number
   currentAskController: AbortController | null
+  aborted: boolean
   recentContext?: { source: string; target: string }[]
 }
 
@@ -367,6 +368,7 @@ async function startTabCapture({ tabId, streamId, sourceLang, targetLang, config
     isSilent: false,
     pendingTranscriptions: 0,
     currentAskController: null,
+    aborted: false,
   };
   captureSessions.set(tabId, session);
 
@@ -432,7 +434,7 @@ function onPcmChunk(tabId: number, msg: any) {
 
 function checkSegment(tabId: number) {
   const session = captureSessions.get(tabId);
-  if (!session) return;
+  if (!session || session.aborted) return;
 
   const now = Date.now();
   const segmentDuration = now - session.segmentStartTime;
@@ -715,10 +717,8 @@ async function finalizeSegment(tabId: number) {
 
     // 1. Transcribe via SSE streaming (collect full result)
     const transcription = await transcribeAudioStream(wavBlob, session.config);
-    if (!transcription) {
-      session.pendingTranscriptions--;
-      return;
-    }
+    if (session.aborted) return;
+    if (!transcription) return;
 
     const asrLatency = Math.round(performance.now() - t0);
 
@@ -745,6 +745,7 @@ async function finalizeSegment(tabId: number) {
       config: session.config,
       context: contextSummary,
       onDelta: (delta) => {
+        if (session.aborted) return;
         fullTranslation += delta;
         const currentLatency = Math.round(
           performance.now() - t0 + (Date.now() - segmentStartTime)
@@ -773,6 +774,7 @@ async function finalizeSegment(tabId: number) {
     }
 
     // 6. Send final subtitle (triggers content script to finalize the entry)
+    if (session.aborted) return;
     chrome.runtime.sendMessage({
       type: 'CAPTURE_SUBTITLE',
       tabId,
@@ -784,6 +786,7 @@ async function finalizeSegment(tabId: number) {
       latency: totalLatency,
     });
   } catch (err: any) {
+    if (session.aborted) return;
     console.warn('[RTTS] finalizeSegment error:', err.message);
     // Clear streaming state on error
     chrome.runtime.sendMessage({
@@ -878,6 +881,10 @@ function extractChatText(json: any): string {
 async function stopTabCapture(tabId: number) {
   const session = captureSessions.get(tabId);
   if (!session) return;
+
+  // Mark first: in-flight finalizeSegment calls check this after every await
+  // and must not emit subtitles once the user has stopped.
+  session.aborted = true;
 
   if (session.currentAskController) {
     session.currentAskController.abort();

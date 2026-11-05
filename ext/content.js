@@ -91,6 +91,82 @@
     let dragState = null;
     let langPickerOpen = false;
     let notesExpanded = false;
+    const UI_HIDDEN_KEY = "snooper.ui-hidden.v1";
+    let uiHidden = (() => {
+      try {
+        return localStorage.getItem(UI_HIDDEN_KEY) === "1";
+      } catch {
+        return false;
+      }
+    })();
+    function persistUiHidden() {
+      try {
+        localStorage.setItem(UI_HIDDEN_KEY, uiHidden ? "1" : "0");
+      } catch {
+      }
+    }
+    function applyUiHidden() {
+      bar.classList.toggle("hidden", uiHidden);
+      showBtn.style.display = uiHidden ? "flex" : "none";
+      hideBtn.style.display = uiHidden ? "none" : "";
+      if (uiHidden) {
+        subBox.classList.add("hidden");
+        langPicker.classList.remove("open");
+      }
+    }
+    const OBSIDIAN_CONFIG_KEY = "snooper.obsidian-config.v1";
+    const DEFAULT_OBSIDIAN_CONFIG = {
+      enabled: false,
+      apiProtocol: "http",
+      apiPort: 27123,
+      apiKey: "",
+      noteFolder: "snooper-notes"
+    };
+    function normalizeObsidianConfig(raw) {
+      const cfg = raw && typeof raw === "object" ? raw : {};
+      const port = Number(cfg.apiPort) || DEFAULT_OBSIDIAN_CONFIG.apiPort;
+      const protocol = cfg.apiProtocol === "https" || cfg.apiProtocol === "http" ? cfg.apiProtocol : port === 27124 ? "https" : "http";
+      return {
+        enabled: !!cfg.enabled,
+        apiProtocol: protocol,
+        apiPort: port,
+        apiKey: typeof cfg.apiKey === "string" ? cfg.apiKey : "",
+        noteFolder: typeof cfg.noteFolder === "string" && cfg.noteFolder.trim() ? cfg.noteFolder.trim() : DEFAULT_OBSIDIAN_CONFIG.noteFolder
+      };
+    }
+    async function loadObsidianConfig() {
+      try {
+        const got = await chrome.storage.local.get(OBSIDIAN_CONFIG_KEY);
+        const stored = got?.[OBSIDIAN_CONFIG_KEY];
+        if (stored && typeof stored === "object") return normalizeObsidianConfig(stored);
+      } catch {
+      }
+      try {
+        const raw = localStorage.getItem(OBSIDIAN_CONFIG_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          const normalized = normalizeObsidianConfig(parsed);
+          try {
+            await chrome.storage.local.set({ [OBSIDIAN_CONFIG_KEY]: normalized });
+          } catch {
+          }
+          return normalized;
+        }
+      } catch {
+      }
+      return { ...DEFAULT_OBSIDIAN_CONFIG };
+    }
+    async function saveObsidianConfig(config) {
+      const normalized = normalizeObsidianConfig(config);
+      try {
+        await chrome.storage.local.set({ [OBSIDIAN_CONFIG_KEY]: normalized });
+      } catch {
+      }
+      try {
+        localStorage.setItem(OBSIDIAN_CONFIG_KEY, JSON.stringify(normalized));
+      } catch {
+      }
+    }
     let demoInterval = null;
     let demoIndex = 0;
     function startDemoSubtitles() {
@@ -232,10 +308,19 @@
     #rtts-show-btn {
       position: fixed; top: 16px; right: 16px;
       z-index: 2147483641;
-      background: rgba(14,14,24,0.62);
-      border: 1px solid rgba(255,255,255,0.1);
+      width: auto; height: 32px; padding: 0 13px 0 9px; gap: 6px;
+      border-radius: 999px;
+      background: rgba(14,14,24,0.72);
+      border: 1px solid rgba(255,255,255,0.12);
       box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+      display: flex; align-items: center;
+      font-size: 12px; color: rgba(255,255,255,0.84);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
     }
+    #rtts-show-btn:hover { background: rgba(24,24,38,0.86); color: #fff; }
+    #rtts-show-btn svg { width: 15px; height: 15px; }
+    #rtts-show-btn .rtts-show-label { line-height: 1; white-space: nowrap; }
 
     /* === Language Picker === */
     #rtts-lang-btn { border-radius: 10px; }
@@ -270,9 +355,9 @@
       width: min(72vw, 840px);
       max-height: 32vh;
       padding: 10px 18px 8px;
-      background: linear-gradient(180deg, rgba(6,6,14,0.32), rgba(6,6,12,0.2));
-      backdrop-filter: blur(8px) saturate(145%);
-      -webkit-backdrop-filter: blur(8px) saturate(145%);
+      background: linear-gradient(180deg, rgba(6,6,14,0.58), rgba(6,6,12,0.44));
+      backdrop-filter: blur(10px) saturate(140%);
+      -webkit-backdrop-filter: blur(10px) saturate(140%);
       border: 1px solid rgba(255,255,255,0.06);
       border-radius: 16px;
       box-shadow: 0 8px 30px rgba(0,0,0,0.28);
@@ -313,30 +398,34 @@
       transition: opacity 0.25s, font-size 0.25s;
     }
     .sub-row.current {
-      font-size: 17px; font-weight: 600; color: #fff; line-height: 1.5;
-      text-shadow: 0 1px 10px rgba(0,0,0,0.9), 0 0 26px rgba(0,0,0,0.55);
-      padding: 4px 0;
+      font-size: 16px; font-weight: 500; color: rgba(255,255,255,0.97); line-height: 1.5;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.85);
+      padding: 3px 0;
     }
     .sub-row.current .sub-source {
-      font-size: 12px; font-weight: 400; color: rgba(255,255,255,0.4); display: block; margin-top: 2px;
+      font-size: 13px; font-weight: 400; color: rgba(255,255,255,0.74); display: block;
+      margin-top: 3px; line-height: 1.45;
     }
     .sub-row.history {
-      font-size: 13px; font-weight: 400; color: rgba(255,255,255,0.5); line-height: 1.35;
-      text-shadow: 0 1px 6px rgba(0,0,0,0.75);
+      font-size: 13px; font-weight: 400; color: rgba(255,255,255,0.8); line-height: 1.4;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.8);
       padding: 2px 0;
     }
-    .sub-row.history .sub-source { display: none; }
+    .sub-row.history .sub-source {
+      display: block; font-size: 11.5px; color: rgba(255,255,255,0.52);
+      margin-top: 1px; line-height: 1.35;
+    }
 
     /* === Streaming Subtitle (live, in-progress) === */
     #rtts-streaming-row {
-      font-size: 17px; font-weight: 600; color: #fff; line-height: 1.45;
-      text-shadow: 0 1px 10px rgba(0,0,0,0.9), 0 0 26px rgba(0,0,0,0.5);
+      font-size: 16px; font-weight: 500; color: rgba(255,255,255,0.97); line-height: 1.45;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.85);
       position: relative;
       min-height: 1.45em;
     }
     #rtts-streaming-row .sub-source {
-      font-size: 12px; font-weight: 400; color: rgba(255,255,255,0.45);
-      display: block; margin-top: 1px;
+      font-size: 12.5px; font-weight: 400; color: rgba(255,255,255,0.68);
+      display: block; margin-top: 2px;
     }
     #rtts-streaming-row .stream-cursor {
       display: inline-block;
@@ -476,23 +565,59 @@
     .rtts-msg.user { background: rgba(124,92,255,0.25); border: 1px solid rgba(124,92,255,0.35); align-self: flex-end; color: #fff; }
     .rtts-msg.assistant { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); align-self: flex-start; color: rgba(255,255,255,0.85); }
     .rtts-msg.error { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.25); color: #fca5a5; }
-    #rtts-chat-footer {
-      padding: 10px 16px; border-top: 1px solid rgba(255,255,255,0.06);
-      display: flex; gap: 8px;
+    .rtts-msg .rtts-msg-images {
+      display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px;
     }
+    .rtts-msg .rtts-msg-images img {
+      width: 72px; height: 72px; object-fit: cover; border-radius: 7px;
+      border: 1px solid rgba(255,255,255,0.14); cursor: zoom-in; display: block;
+    }
+    #rtts-chat-composer {
+      padding: 10px 14px 12px; border-top: 1px solid rgba(255,255,255,0.06);
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    #rtts-chat-attachments {
+      display: flex; flex-wrap: wrap; gap: 6px;
+    }
+    #rtts-chat-attachments:empty { display: none; }
+    .rtts-attach {
+      position: relative; width: 54px; height: 54px; border-radius: 8px;
+      overflow: hidden; border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(255,255,255,0.04);
+    }
+    .rtts-attach img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .rtts-attach button {
+      position: absolute; top: 2px; right: 2px; width: 16px; height: 16px;
+      border-radius: 50%; border: none; background: rgba(0,0,0,0.72); color: #fff;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      padding: 0;
+    }
+    .rtts-attach button svg { width: 9px; height: 9px; stroke: currentColor; stroke-width: 2.5; fill: none; }
+    #rtts-chat-input-row { display: flex; align-items: flex-end; gap: 8px; }
+    #rtts-chat-attach-btn {
+      width: 36px; height: 36px; flex-shrink: 0; border-radius: 9px;
+      border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.6); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #rtts-chat-attach-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+    #rtts-chat-attach-btn svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.8; fill: none; }
     #rtts-chat-input {
-      flex: 1; height: 34px;
+      flex: 1; min-height: 36px; max-height: 120px;
       background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 8px; padding: 0 10px; color: #fff; font-size: 13px;
-      outline: none;
+      border-radius: 9px; padding: 8px 10px; color: #fff; font-size: 13px;
+      line-height: 1.45; font-family: inherit; resize: none; outline: none;
+      overflow-y: auto;
     }
     #rtts-chat-input:focus { border-color: #7c5cff; }
+    #rtts-chat-input::placeholder { color: rgba(255,255,255,0.34); }
     #rtts-send {
-      height: 34px; padding: 0 14px; border: none; border-radius: 8px;
+      height: 36px; padding: 0 14px; border: none; border-radius: 9px;
       background: #7c5cff; color: #fff; font-weight: 600; font-size: 12px;
-      cursor: pointer;
+      cursor: pointer; flex-shrink: 0;
     }
     #rtts-send:disabled { opacity: 0.4; cursor: not-allowed; }
+    #rtts-chat-composer.dragover { background: rgba(124,92,255,0.1); }
 
     /* === Fullscreen hint === */
     #rtts-fs-warn {
@@ -505,7 +630,7 @@
     #rtts-fs-warn.hidden { display: none; }
 
     /* === Refined chrome === */
-    .sub-row.current { font-size: 18px; letter-spacing: -0.01em; }
+    .sub-row.current { letter-spacing: -0.005em; }
     #rtts-sub-placeholder { font-size: 11.5px; }
 
     /* === Notes === */
@@ -571,6 +696,21 @@
     }
     .rtts-field .hint { font-size: 10px; color: rgba(255,255,255,0.3); }
     .rtts-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .rtts-section-title {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 4px; padding-top: 12px;
+      border-top: 1px solid rgba(255,255,255,0.07);
+      font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; color: rgba(255,255,255,0.45);
+    }
+    .rtts-inline-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .rtts-inline-actions .rtts-status { flex: 1; min-width: 160px; margin: 0; }
+    .rtts-shot-panel { width: min(760px, 94vw); }
+    .rtts-shot-body { padding: 12px; align-items: center; }
+    .rtts-shot-body img {
+      display: block; max-width: 100%; max-height: 64vh; object-fit: contain;
+      border-radius: 10px; background: #000;
+    }
     .rtts-pw-wrap { position: relative; }
     .rtts-pw-wrap input { padding-right: 34px; }
     .rtts-pw-wrap button {
@@ -792,13 +932,14 @@
       <button id="rtts-settings-btn" class="rtts-btn" data-tip="\u914D\u7F6E" aria-label="\u914D\u7F6E">
         <svg viewBox="0 0 24 24"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
       </button>
-      <button id="rtts-hide-btn" class="rtts-btn" data-tip="\u9690\u85CF\u5DE5\u5177" aria-label="\u9690\u85CF\u5DE5\u5177">
-        <svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
+      <button id="rtts-hide-btn" class="rtts-btn" data-tip="\u5173\u95ED\u5DE5\u5177" aria-label="\u5173\u95ED\u5DE5\u5177">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
 
-    <button id="rtts-show-btn" class="rtts-btn" data-tip="\u663E\u793A\u5DE5\u5177" aria-label="\u663E\u793A\u5DE5\u5177" style="display:none">
+    <button id="rtts-show-btn" class="rtts-btn" data-tip="\u91CD\u65B0\u6253\u5F00 snooper \u5DE5\u5177\u680F" aria-label="\u663E\u793A\u5DE5\u5177" style="display:none">
       <svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+      <span class="rtts-show-label">\u663E\u793A\u5DE5\u5177</span>
     </button>
 
     <!-- Language Picker Popup -->
@@ -854,9 +995,16 @@
         <button id="rtts-drawer-close" aria-label="\u5173\u95ED"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
       <div id="rtts-chat"></div>
-      <div id="rtts-chat-footer">
-        <input id="rtts-chat-input" placeholder="\u63D0\u95EE\u89C6\u9891\u5185\u5BB9..." aria-label="\u63D0\u95EE">
-        <button id="rtts-send">\u53D1\u9001</button>
+      <div id="rtts-chat-composer">
+        <div id="rtts-chat-attachments" aria-live="polite"></div>
+        <div id="rtts-chat-input-row">
+          <button id="rtts-chat-attach-btn" type="button" aria-label="\u6DFB\u52A0\u56FE\u7247" data-tip="\u6DFB\u52A0\u56FE\u7247">
+            <svg viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </button>
+          <textarea id="rtts-chat-input" rows="1" placeholder="\u63D0\u95EE\uFF0C\u6216\u7C98\u8D34\u56FE\u7247\u2026" aria-label="\u63D0\u95EE"></textarea>
+          <button id="rtts-send" type="button">\u53D1\u9001</button>
+        </div>
+        <input id="rtts-chat-file" type="file" accept="image/*" multiple hidden>
       </div>
     </div>
 
@@ -900,6 +1048,36 @@
               <label for="rtts-cfg-image">\u56FE\u50CF\u751F\u6210\u6A21\u578B</label>
               <input id="rtts-cfg-image" type="text" spellcheck="false" placeholder="moss-image-sft-1.0">
             </div>
+          </div>
+          <div class="rtts-section-title">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            Obsidian \u540C\u6B65
+          </div>
+          <div class="rtts-grid-2">
+            <div class="rtts-field">
+              <label for="rtts-cfg-ob-protocol">\u534F\u8BAE</label>
+              <select id="rtts-cfg-ob-protocol">
+                <option value="http">HTTP\uFF08\u63A8\u8350\uFF09</option>
+                <option value="https">HTTPS\uFF08\u9700\u4FE1\u4EFB\u8BC1\u4E66\uFF09</option>
+              </select>
+            </div>
+            <div class="rtts-field">
+              <label for="rtts-cfg-ob-port">\u7AEF\u53E3</label>
+              <input id="rtts-cfg-ob-port" type="number" inputmode="numeric" placeholder="27123">
+            </div>
+          </div>
+          <div class="rtts-field">
+            <label for="rtts-cfg-ob-key">API Key</label>
+            <input id="rtts-cfg-ob-key" type="password" spellcheck="false" autocomplete="off" placeholder="\u5728 Local REST API \u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u590D\u5236">
+          </div>
+          <div class="rtts-field">
+            <label for="rtts-cfg-ob-folder">\u7B14\u8BB0\u76EE\u5F55</label>
+            <input id="rtts-cfg-ob-folder" type="text" spellcheck="false" placeholder="snooper-notes">
+            <span class="hint">HTTP \u9700\u8981\u63D2\u4EF6\u5F00\u542F\u300CEnable Non-encrypted (HTTP) Server\u300D</span>
+          </div>
+          <div class="rtts-inline-actions">
+            <button id="rtts-cfg-ob-test" class="rtts-btn-ghost" type="button">\u6D4B\u8BD5 Obsidian</button>
+            <div id="rtts-cfg-ob-status" class="rtts-status" role="status" aria-live="polite"></div>
           </div>
           <div id="rtts-cfg-status" class="rtts-status" role="status" aria-live="polite"></div>
         </div>
@@ -966,6 +1144,32 @@
       </div>
     </div>
 
+    <!-- Screenshot preview -->
+    <div id="rtts-shot-modal" class="rtts-modal-mask">
+      <div class="rtts-modal rtts-shot-panel" role="dialog" aria-modal="true" aria-label="\u622A\u56FE\u9884\u89C8">
+        <div class="rtts-modal-header">
+          <div class="rtts-modal-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+          </div>
+          <div>
+            <h3>\u89C6\u9891\u622A\u56FE</h3>
+            <p class="sub">\u53EA\u622A\u53D6\u89C6\u9891\u753B\u9762\uFF0C\u4E0D\u542B\u5B57\u5E55\u4E0E\u5DE5\u5177\u680F</p>
+          </div>
+          <button id="rtts-shot-close-x" class="rtts-modal-close" type="button" aria-label="\u5173\u95ED"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        </div>
+        <div class="rtts-modal-body rtts-shot-body">
+          <img id="rtts-shot-img" alt="\u89C6\u9891\u622A\u56FE\u9884\u89C8">
+        </div>
+        <div class="rtts-modal-footer">
+          <button id="rtts-shot-download" class="rtts-btn-ghost" type="button">\u4E0B\u8F7D\u56FE\u7247</button>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button id="rtts-shot-close" class="rtts-btn-ghost" type="button">\u5173\u95ED</button>
+            <button id="rtts-shot-save" class="rtts-btn-primary" type="button">\u5B58\u5165\u7B14\u8BB0</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="rtts-toasts" aria-live="polite"></div>
   `;
     const wrapper = document.createElement("div");
@@ -995,6 +1199,10 @@
     const drawer = shadow.getElementById("rtts-drawer");
     const chatEl = shadow.getElementById("rtts-chat");
     const chatInput = shadow.getElementById("rtts-chat-input");
+    const chatComposer = shadow.getElementById("rtts-chat-composer");
+    const chatAttachBtn = shadow.getElementById("rtts-chat-attach-btn");
+    const chatFile = shadow.getElementById("rtts-chat-file");
+    const chatAttachments = shadow.getElementById("rtts-chat-attachments");
     const sendBtn = shadow.getElementById("rtts-send");
     const fsWarn = shadow.getElementById("rtts-fs-warn");
     const hideBtn = shadow.getElementById("rtts-hide-btn");
@@ -1022,6 +1230,18 @@
     const cfgTest = shadow.getElementById("rtts-cfg-test");
     const cfgSave = shadow.getElementById("rtts-cfg-save");
     const cfgCancel = shadow.getElementById("rtts-cfg-cancel");
+    const cfgObProtocol = shadow.getElementById("rtts-cfg-ob-protocol");
+    const cfgObPort = shadow.getElementById("rtts-cfg-ob-port");
+    const cfgObKey = shadow.getElementById("rtts-cfg-ob-key");
+    const cfgObFolder = shadow.getElementById("rtts-cfg-ob-folder");
+    const cfgObTest = shadow.getElementById("rtts-cfg-ob-test");
+    const cfgObStatus = shadow.getElementById("rtts-cfg-ob-status");
+    const shotModal = shadow.getElementById("rtts-shot-modal");
+    const shotImg = shadow.getElementById("rtts-shot-img");
+    const shotClose = shadow.getElementById("rtts-shot-close");
+    const shotCloseX = shadow.getElementById("rtts-shot-close-x");
+    const shotDownload = shadow.getElementById("rtts-shot-download");
+    const shotSave = shadow.getElementById("rtts-shot-save");
     const imageModal = shadow.getElementById("rtts-image-modal");
     const imgClose = shadow.getElementById("rtts-img-close");
     const imgPrompt = shadow.getElementById("rtts-img-prompt");
@@ -1148,10 +1368,47 @@
       cfgStatus.textContent = text;
       cfgStatus.className = "rtts-status" + (text ? ` show ${tone}` : "");
     }
+    function setObStatus(text, tone = "") {
+      cfgObStatus.textContent = text;
+      cfgObStatus.className = "rtts-status" + (text ? ` show ${tone}` : "");
+    }
+    function buildObsidianConfig() {
+      const protocol = cfgObProtocol.value === "https" ? "https" : "http";
+      const fallbackPort = protocol === "https" ? 27124 : 27123;
+      return {
+        enabled: true,
+        apiProtocol: protocol,
+        apiPort: Number(cfgObPort.value) || fallbackPort,
+        apiKey: cfgObKey.value.trim(),
+        noteFolder: cfgObFolder.value.trim() || "snooper-notes"
+      };
+    }
+    async function testObsidian() {
+      cfgObTest.disabled = true;
+      setObStatus("\u6B63\u5728\u6D4B\u8BD5 Obsidian \u8FDE\u63A5\u2026", "info");
+      const res = await bg("TEST_OBSIDIAN", { obsidianConfig: buildObsidianConfig() });
+      cfgObTest.disabled = false;
+      if (res.ok) {
+        cfgObProtocol.value = res.protocol;
+        cfgObPort.value = String(res.port);
+        await saveObsidianConfig(buildObsidianConfig());
+        setObStatus(`\u8FDE\u63A5\u6210\u529F\uFF08${String(res.protocol).toUpperCase()} ${res.port}\uFF09\uFF0C\u5DF2\u81EA\u52A8\u4FDD\u5B58`, "ok");
+      } else {
+        setObStatus(res.error || "\u8FDE\u63A5\u5931\u8D25\uFF0C\u8BF7\u786E\u8BA4 Obsidian \u6B63\u5728\u8FD0\u884C", "err");
+      }
+    }
     async function openSettings() {
       cfgApiKey.type = "password";
       cfgToggleKey.classList.remove("revealed");
-      const res = await bg("GET_CONFIG");
+      const [res, ob] = await Promise.all([
+        bg("GET_CONFIG"),
+        loadObsidianConfig()
+      ]);
+      cfgObProtocol.value = ob.apiProtocol;
+      cfgObPort.value = String(ob.apiPort);
+      cfgObKey.value = ob.apiKey;
+      cfgObFolder.value = ob.noteFolder;
+      setObStatus("");
       if (res.ok && res.config) {
         cfgCache = res.config;
         const first = cfgCache.providers?.[0] ?? {};
@@ -1223,6 +1480,7 @@
       const config = buildConfig();
       cfgSave.disabled = true;
       setCfgStatus("\u6B63\u5728\u4FDD\u5B58\u2026", "info");
+      await saveObsidianConfig(buildObsidianConfig());
       const res = await bg("SAVE_CONFIG", { config });
       cfgSave.disabled = false;
       if (res.ok) {
@@ -1253,6 +1511,13 @@
     });
     cfgSave.addEventListener("click", saveSettings);
     cfgTest.addEventListener("click", testConnection);
+    cfgObTest.addEventListener("click", testObsidian);
+    cfgObProtocol.addEventListener("change", () => {
+      const port = Number(cfgObPort.value);
+      if (!port || port === 27123 || port === 27124) {
+        cfgObPort.value = cfgObProtocol.value === "https" ? "27124" : "27123";
+      }
+    });
     cfgToggleKey.addEventListener("click", () => {
       const revealed = cfgApiKey.type === "password";
       cfgApiKey.type = revealed ? "text" : "password";
@@ -1261,9 +1526,11 @@
     document.addEventListener("keydown", (e) => {
       const settingsOpen = settingsModal.classList.contains("open");
       const imageOpen = imageModal.classList.contains("open");
-      if (!settingsOpen && !imageOpen) return;
+      const shotOpen = shotModal.classList.contains("open");
+      if (!settingsOpen && !imageOpen && !shotOpen) return;
       if (e.key === "Escape") {
         if (imageOpen) closeImagePanel();
+        else if (shotOpen) closeShotPreview();
         else closeSettings();
         return;
       }
@@ -1355,7 +1622,7 @@
       updateLangLabel();
       const subs = session.subtitles || [];
       const streaming = session.streamingSubtitle;
-      if (s === "running" || subs.length > 0 || streaming) {
+      if (!uiHidden && (s === "running" || subs.length > 0 || streaming)) {
         subBox.classList.remove("hidden");
         const hasContent = subs.length > 0 || !!streaming;
         subPlaceholder.style.display = hasContent ? "none" : "";
@@ -1392,8 +1659,9 @@
         subPlaceholder.textContent = "\u70B9\u51FB\u300C\u5F55\u97F3\u300D\u5F00\u59CB\u5B9E\u65F6\u8F6C\u5199";
         subRows.textContent = "";
         clearStreaming();
-        if (subs.length === 0) subBox.classList.add("hidden");
+        subBox.classList.add("hidden");
       }
+      applyUiHidden();
       positionSubBox();
       updateChat();
       renderNotes();
@@ -1410,7 +1678,21 @@
         msgs.forEach((m) => {
           const b = document.createElement("div");
           b.className = `rtts-msg ${m.role === "user" ? "user" : "assistant"}`;
-          b.textContent = m.content || "";
+          const contentEl = document.createElement("div");
+          contentEl.textContent = m.content || "";
+          b.appendChild(contentEl);
+          if (Array.isArray(m.images) && m.images.length > 0) {
+            const imgGrid = document.createElement("div");
+            imgGrid.className = "rtts-msg-images";
+            for (const url of m.images) {
+              const thumb = document.createElement("img");
+              thumb.src = url;
+              thumb.alt = "\u56FE\u7247";
+              thumb.addEventListener("click", () => openShotPreview(url, true));
+              imgGrid.appendChild(thumb);
+            }
+            b.appendChild(imgGrid);
+          }
           chatEl.appendChild(b);
         });
       }
@@ -1638,20 +1920,140 @@
       isDrawerOpen = false;
       drawer.classList.remove("open");
     });
+    let pendingImages = [];
+    function autoGrow(el) {
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 120) + "px";
+    }
+    chatInput.addEventListener("input", () => autoGrow(chatInput));
+    function renderAttachments() {
+      chatAttachments.textContent = "";
+      if (pendingImages.length === 0) return;
+      for (let i = 0; i < pendingImages.length; i++) {
+        const url = pendingImages[i];
+        const chip = document.createElement("div");
+        chip.className = "rtts-attach";
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = "\u5DF2\u6DFB\u52A0\u56FE\u7247";
+        chip.appendChild(img);
+        const remove = document.createElement("button");
+        remove.innerHTML = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+        remove.setAttribute("aria-label", "\u79FB\u9664\u56FE\u7247");
+        remove.addEventListener("click", () => {
+          pendingImages.splice(i, 1);
+          renderAttachments();
+        });
+        chip.appendChild(remove);
+        chatAttachments.appendChild(chip);
+      }
+    }
+    async function compressImage(file) {
+      return new Promise((resolve, reject) => {
+        if (file.size > 10 * 1024 * 1024) {
+          reject(new Error("\u56FE\u7247\u8FC7\u5927\uFF08\u8D85\u8FC7 10MB\uFF09"));
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const img = new Image();
+          img.onload = () => {
+            let w = img.naturalWidth;
+            let h = img.naturalHeight;
+            const max = 1280;
+            if (w > max || h > max) {
+              if (w > h) {
+                h = Math.round(h * max / w);
+                w = max;
+              } else {
+                w = Math.round(w * max / h);
+                h = max;
+              }
+            }
+            const canvas = document.createElement("canvas");
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) {
+              reject(new Error("\u538B\u7F29\u5931\u8D25"));
+              return;
+            }
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL("image/jpeg", 0.82));
+          };
+          img.onerror = () => reject(new Error("\u56FE\u7247\u89E3\u7801\u5931\u8D25"));
+          img.src = reader.result;
+        };
+        reader.onerror = () => reject(new Error("\u8BFB\u53D6\u6587\u4EF6\u5931\u8D25"));
+        reader.readAsDataURL(file);
+      });
+    }
+    function addFiles(files) {
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith("image/")) continue;
+        if (pendingImages.length >= 4) {
+          toast("\u6700\u591A 4 \u5F20\u56FE\u7247", "err");
+          break;
+        }
+        compressImage(file).then((dataUrl) => {
+          pendingImages.push(dataUrl);
+          renderAttachments();
+        }).catch((err) => {
+          toast(err.message, "err");
+        });
+      }
+    }
+    chatAttachBtn.addEventListener("click", () => chatFile.click());
+    chatFile.addEventListener("change", () => {
+      if (chatFile.files) {
+        addFiles(chatFile.files);
+        chatFile.value = "";
+      }
+    });
+    chatInput.addEventListener("paste", (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const imageFiles = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.type?.startsWith("image/") && item.getAsFile) {
+          const file = item.getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        addFiles(imageFiles);
+      }
+    });
+    chatComposer.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      chatComposer.classList.add("dragover");
+    });
+    chatComposer.addEventListener("dragleave", () => chatComposer.classList.remove("dragover"));
+    chatComposer.addEventListener("drop", (e) => {
+      e.preventDefault();
+      chatComposer.classList.remove("dragover");
+      if (e.dataTransfer?.files) addFiles(e.dataTransfer.files);
+    });
     async function sendQuestion() {
       if (isAskBusy) return;
       const q = chatInput.value.trim();
-      if (!q) return;
+      const imgs = pendingImages.slice();
+      if (!q && imgs.length === 0) return;
       isAskBusy = true;
       chatInput.value = "";
+      pendingImages = [];
+      renderAttachments();
       chatInput.disabled = true;
       sendBtn.disabled = true;
       sendBtn.textContent = "...";
+      autoGrow(chatInput);
       if (!session.messages) session.messages = [];
-      session.messages.push({ role: "user", content: q });
+      session.messages.push({ role: "user", content: q || "\uFF08\u56FE\u7247\uFF09", images: imgs.length > 0 ? imgs : void 0 });
       updateChat();
       const rid = "q_" + Date.now();
-      const res = await bg("ASK", { question: q, requestId: rid });
+      const res = await bg("ASK", { question: q, images: imgs, requestId: rid });
       session.messages.push({
         role: "assistant",
         content: res.ok && res.answer ? res.answer : "\u8BF7\u6C42\u5931\u8D25\uFF1A" + (res.error || "\u672A\u77E5\u9519\u8BEF")
@@ -1674,21 +2076,16 @@
       openSettings();
     });
     hideBtn.addEventListener("click", () => {
-      if (session.state === "running") {
-        if (!confirm("\u6B63\u5728\u8F6C\u5199\u4E2D\uFF0C\u9690\u85CF\u540E\u5B57\u5E55\u5C06\u4E0D\u53EF\u89C1\u3002\u786E\u5B9A\u9690\u85CF\uFF1F")) return;
-      }
-      bar.classList.add("hidden");
-      subBox.classList.add("hidden");
-      hideBtn.style.display = "none";
-      showBtn.style.display = "";
+      uiHidden = true;
+      persistUiHidden();
+      applyUiHidden();
+      toast("\u5DE5\u5177\u5DF2\u5173\u95ED\uFF0C\u70B9\u53F3\u4E0A\u89D2\u300C\u663E\u793A\u5DE5\u5177\u300D\u53EF\u91CD\u65B0\u6253\u5F00", "ok");
     });
     showBtn.addEventListener("click", () => {
-      bar.classList.remove("hidden");
-      if (session.state === "running" || session.subtitles.length > 0) {
-        subBox.classList.remove("hidden");
-      }
-      hideBtn.style.display = "";
-      showBtn.style.display = "none";
+      uiHidden = false;
+      persistUiHidden();
+      applyUiHidden();
+      render();
     });
     window.addEventListener("message", (e) => {
       if (!e.data || e.data.type !== "rtts:fullscreen") return;
@@ -1766,7 +2163,7 @@
             img.className = "note-img-preview";
             img.alt = "\u7B14\u8BB0\u56FE\u7247";
             img.style.cssText = "max-width:100%;max-height:80px;border-radius:4px;object-fit:cover;cursor:pointer";
-            img.addEventListener("click", () => window.open(entry.imageUrl, "_blank"));
+            img.addEventListener("click", () => openShotPreview(entry.imageUrl, true));
             item.appendChild(img);
           }
           if (entry.type === "svg" && entry.svg) {
@@ -1811,28 +2208,119 @@
         });
       }
     }
-    async function captureScreenshot() {
-      try {
-        const bgRes = await bg("CAPTURE_SCREENSHOT");
-        if (bgRes.ok && bgRes.dataUrl) return bgRes.dataUrl;
-      } catch {
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("Canvas not available");
-      ctx.fillStyle = "#0a0a12";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#7c5cff";
-      ctx.font = "14px system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText("snooper-browser \u622A\u56FE", canvas.width / 2, canvas.height / 2 - 10);
-      ctx.fillStyle = "rgba(255,255,255,0.4)";
-      ctx.font = "12px system-ui";
-      ctx.fillText("\u9875\u9762\u622A\u56FE\u9700\u8981\u6269\u5C55\u6743\u9650 \u2014 \u8BF7\u4F7F\u7528\u6269\u5C55 API", canvas.width / 2, canvas.height / 2 + 20);
-      return canvas.toDataURL("image/png");
+    function loadImageElement(src) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("\u622A\u56FE\u89E3\u7801\u5931\u8D25"));
+        img.src = src;
+      });
     }
+    function getVideoContentRect(video) {
+      const r = video.getBoundingClientRect();
+      let x = r.left;
+      let y = r.top;
+      let w = r.width;
+      let h = r.height;
+      if (!w || !h || !video.videoWidth || !video.videoHeight) return null;
+      const fit = getComputedStyle(video).objectFit || "contain";
+      if (fit === "contain" || fit === "scale-down") {
+        const videoAspect = video.videoWidth / video.videoHeight;
+        const boxAspect = w / h;
+        if (videoAspect > boxAspect) {
+          const nh = w / videoAspect;
+          y += (h - nh) / 2;
+          h = nh;
+        } else {
+          const nw = h * videoAspect;
+          x += (w - nw) / 2;
+          w = nw;
+        }
+      }
+      const left = Math.max(0, x);
+      const top = Math.max(0, y);
+      const right = Math.min(window.innerWidth, x + w);
+      const bottom = Math.min(window.innerHeight, y + h);
+      if (right - left < 8 || bottom - top < 8) return null;
+      return { x: left, y: top, w: right - left, h: bottom - top };
+    }
+    async function captureVideoFrame() {
+      const video = document.querySelector("video");
+      if (!video) throw new Error("\u5F53\u524D\u9875\u9762\u6CA1\u6709\u89C6\u9891");
+      if (!video.videoWidth || !video.videoHeight) throw new Error("\u89C6\u9891\u8FD8\u6CA1\u6709\u753B\u9762\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5");
+      const rect = getVideoContentRect(video);
+      if (!rect) throw new Error("\u89C6\u9891\u4E0D\u5728\u53EF\u89C6\u533A\u57DF\u5185");
+      host.style.display = "none";
+      try {
+        await new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        const res = await bg("CAPTURE_SCREENSHOT");
+        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u6D4F\u89C8\u5668\u622A\u56FE\u5931\u8D25");
+        const img = await loadImageElement(res.dataUrl);
+        const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
+        const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
+        const sx = Math.round(rect.x * scaleX);
+        const sy = Math.round(rect.y * scaleY);
+        const sw = Math.max(1, Math.round(rect.w * scaleX));
+        const sh = Math.max(1, Math.round(rect.h * scaleY));
+        let outW = sw;
+        let outH = sh;
+        const maxW = 1600;
+        if (outW > maxW) {
+          outH = Math.round(outH * maxW / outW);
+          outW = maxW;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = outW;
+        canvas.height = outH;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("\u65E0\u6CD5\u521B\u5EFA\u753B\u5E03");
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+        return canvas.toDataURL("image/jpeg", 0.9);
+      } finally {
+        host.style.display = "";
+      }
+    }
+    let shotPreviewUrl = "";
+    function openShotPreview(dataUrl, saved) {
+      shotPreviewUrl = dataUrl;
+      shotImg.src = dataUrl;
+      shotSave.disabled = saved;
+      shotSave.textContent = saved ? "\u5DF2\u5B58\u5165\u7B14\u8BB0" : "\u5B58\u5165\u7B14\u8BB0";
+      shotModal.classList.add("open");
+    }
+    function closeShotPreview() {
+      shotModal.classList.remove("open");
+      shotImg.removeAttribute("src");
+    }
+    function downloadShot() {
+      if (!shotPreviewUrl) return;
+      const a = document.createElement("a");
+      a.href = shotPreviewUrl;
+      a.download = `snooper-video-${Date.now()}.jpg`;
+      a.click();
+    }
+    shotClose.addEventListener("click", closeShotPreview);
+    shotCloseX.addEventListener("click", closeShotPreview);
+    shotDownload.addEventListener("click", downloadShot);
+    shotModal.addEventListener("click", (e) => {
+      if (e.target === shotModal) closeShotPreview();
+    });
+    shotSave.addEventListener("click", () => {
+      if (!shotPreviewUrl) return;
+      addNoteEntry({
+        id: `screenshot_${Date.now()}`,
+        type: "screenshot",
+        at: Date.now(),
+        imageUrl: shotPreviewUrl,
+        text: "\u89C6\u9891\u622A\u56FE"
+      });
+      shotSave.disabled = true;
+      shotSave.textContent = "\u5DF2\u5B58\u5165\u7B14\u8BB0";
+      toast("\u622A\u56FE\u5DF2\u5B58\u5165\u7B14\u8BB0", "ok");
+    });
     function getSubtitleText() {
       return (session.subtitles || []).map((sub) => {
         const t = sub.target || "";
@@ -1957,19 +2445,23 @@
       openImagePanel(last?.target || last?.source || "");
     });
     screenshotBtn.addEventListener("click", async () => {
+      screenshotBtn.classList.add("busy");
       try {
-        const dataUrl = await captureScreenshot();
+        const dataUrl = await captureVideoFrame();
         addNoteEntry({
           id: `screenshot_${Date.now()}`,
           type: "screenshot",
           at: Date.now(),
           imageUrl: dataUrl,
-          text: "\u9875\u9762\u622A\u56FE"
+          text: "\u89C6\u9891\u622A\u56FE"
         });
+        openShotPreview(dataUrl, true);
         flashChip(screenshotBtn);
-        toast("\u622A\u56FE\u5DF2\u5B58\u5165\u7B14\u8BB0", "ok");
+        toast("\u5DF2\u622A\u53D6\u89C6\u9891\u753B\u9762\u5E76\u5B58\u5165\u7B14\u8BB0", "ok");
       } catch (err) {
         toast("\u622A\u56FE\u5931\u8D25\uFF1A" + (err.message || "\u672A\u77E5\u9519\u8BEF"), "err");
+      } finally {
+        screenshotBtn.classList.remove("busy");
       }
     });
     function setNotesExpanded(expanded) {
@@ -2019,14 +2511,19 @@
         toast("\u6CA1\u6709\u5185\u5BB9\u53EF\u5BFC\u51FA", "err");
         return;
       }
-      let obsidianConfig = {};
-      try {
-        const raw = localStorage.getItem("snooper.obsidian-config.v1");
-        if (raw) obsidianConfig = JSON.parse(raw);
-      } catch {
+      const obsidianConfig = await loadObsidianConfig();
+      if (!obsidianConfig.apiKey) {
+        toast("\u8BF7\u5148\u586B\u5199 Obsidian API Key", "err");
+        await openSettings();
+        cfgObKey.focus();
+        return;
       }
       try {
-        const res = await bg("EXPORT_TO_OBSIDIAN", { content: md, title: `snooper-\u7B14\u8BB0-${Date.now()}`, obsidianConfig });
+        const res = await bg("EXPORT_TO_OBSIDIAN", {
+          content: md,
+          title: `snooper-\u7B14\u8BB0-${Date.now()}`,
+          obsidianConfig
+        });
         if (res.ok) {
           flashChip(obsidianBtn, 2e3);
           toast("\u5DF2\u53D1\u9001\u5230 Obsidian", "ok");

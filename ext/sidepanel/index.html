@@ -91,9 +91,16 @@
                 启用 Obsidian 同步
               </label>
             </div>
-            <div class="field-group full">
-              <label for="obsidian-port" class="field-label">API 端口</label>
-              <input id="obsidian-port" type="number" class="field-input" value="27124" placeholder="27124">
+            <div class="field-group half">
+              <label for="obsidian-protocol" class="field-label">协议</label>
+              <select id="obsidian-protocol" class="field-input">
+                <option value="http">HTTP（推荐）</option>
+                <option value="https">HTTPS（需信任证书）</option>
+              </select>
+            </div>
+            <div class="field-group half">
+              <label for="obsidian-port" class="field-label">端口</label>
+              <input id="obsidian-port" type="number" class="field-input" value="27123" placeholder="27123">
             </div>
             <div class="field-group full">
               <label for="obsidian-folder" class="field-label">笔记目录</label>
@@ -102,6 +109,12 @@
             <div class="field-group full">
               <label for="obsidian-key" class="field-label">API Key（可选）</label>
               <input id="obsidian-key" type="password" class="field-input" value="" placeholder="在 Obsidian 插件设置中获取">
+            </div>
+            <div class="field-group full">
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <button id="obsidian-test" type="button" class="btn btn-secondary">测试连接</button>
+                <span id="obsidian-test-status" class="obsidian-test-status" hidden></span>
+              </div>
             </div>
           </div>
         </section>
@@ -112,7 +125,7 @@
       <div class="footer-actions">
         <button id="saveConfigBtn" type="button" class="btn btn-primary btn-save">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-          保存 Obsidian 设置
+          保存设置
         </button>
       </div>
     </footer>

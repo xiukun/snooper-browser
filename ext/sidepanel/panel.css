@@ -105,6 +105,13 @@ body {
   color: #f87171;
 }
 
+.obsidian-test-status {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.obsidian-test-status.ok { color: #3fd1c0; }
+.obsidian-test-status.err { color: #ef4444; }
+
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }

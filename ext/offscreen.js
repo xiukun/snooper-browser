@@ -267,7 +267,8 @@
       lastSilenceTime: 0,
       isSilent: false,
       pendingTranscriptions: 0,
-      currentAskController: null
+      currentAskController: null,
+      aborted: false
     };
     captureSessions.set(tabId, session);
     try {
@@ -320,7 +321,7 @@
   }
   function checkSegment(tabId) {
     const session = captureSessions.get(tabId);
-    if (!session) return;
+    if (!session || session.aborted) return;
     const now = Date.now();
     const segmentDuration = now - session.segmentStartTime;
     const pcmLength = session.pcmBuffer.reduce((sum, buf) => sum + buf.length, 0);
@@ -539,10 +540,8 @@ ${contextBlock}` : "",
       const wavBlob = createWavBlob(pcmData, TARGET_SAMPLE_RATE);
       const t0 = performance.now();
       const transcription = await transcribeAudioStream(wavBlob, session.config);
-      if (!transcription) {
-        session.pendingTranscriptions--;
-        return;
-      }
+      if (session.aborted) return;
+      if (!transcription) return;
       const asrLatency = Math.round(performance.now() - t0);
       const contextSummary = getContextSummary(session);
       chrome.runtime.sendMessage({
@@ -561,6 +560,7 @@ ${contextBlock}` : "",
         config: session.config,
         context: contextSummary,
         onDelta: (delta) => {
+          if (session.aborted) return;
           fullTranslation += delta;
           const currentLatency = Math.round(
             performance.now() - t0 + (Date.now() - segmentStartTime)
@@ -583,6 +583,7 @@ ${contextBlock}` : "",
       if (transcription && translation) {
         pushContext(session, transcription, translation);
       }
+      if (session.aborted) return;
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE",
         tabId,
@@ -594,6 +595,7 @@ ${contextBlock}` : "",
         latency: totalLatency
       });
     } catch (err) {
+      if (session.aborted) return;
       console.warn("[RTTS] finalizeSegment error:", err.message);
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE_STREAMING",
@@ -671,6 +673,7 @@ ${question}`
   async function stopTabCapture(tabId) {
     const session = captureSessions.get(tabId);
     if (!session) return;
+    session.aborted = true;
     if (session.currentAskController) {
       session.currentAskController.abort();
       session.currentAskController = null;

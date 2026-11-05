@@ -170,6 +170,20 @@ function stop() {
   controller.abort()
 }
 
+function injectContext(prompt: string) {
+  const normalized = prompt.trim()
+  if (!normalized) return
+  const userMessage: ChatMessage = {
+    id: uid('msg'),
+    role: 'user',
+    content: normalized,
+    createdAt: Date.now(),
+    status: 'done',
+  }
+  messages.value.push(userMessage)
+  toast.success('已注入对话视图')
+}
+
 function clear() {
   stop()
   messages.value = []
@@ -192,5 +206,6 @@ export function useChat() {
     send,
     stop,
     clear,
+    injectContext,
   }
 }

@@ -1,19 +1,23 @@
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { listModels } from '@/lib/moss'
 import {
   CAPABILITIES,
   type AppConfig,
   type CapabilityKey,
   type CapabilityRoute,
+  type ExternalConfigUpdate,
   type ProviderProfile,
   createDefaultConfig,
   createProvider,
+  getTabSessionId,
   getProvider,
   loadProviderConfig,
   maskSecret,
+  parseExternalConfig,
   persistProviderConfig,
   resolveRoute,
 } from '@/lib/providers'
+import { STORAGE_KEYS } from '@/lib/brand'
 
 const settings = reactive<AppConfig>(loadProviderConfig())
 const syncingId = ref('')
@@ -24,6 +28,57 @@ const lastTest = ref<{
   count: number
   message: string
 } | null>(null)
+
+// Cross-tab external update state: populated when another tab writes a
+// new global template. The active runtime is never auto-overwritten here.
+const externalUpdate = ref<ExternalConfigUpdate | null>(null)
+const hasExternalConfigUpdate = ref(false)
+const tabSessionId = ref('')
+
+function onStorageEvent(event: StorageEvent) {
+  if (event.key !== STORAGE_KEYS.providerConfig) return
+  const parsed = parseExternalConfig(event.newValue)
+  if (!parsed) return
+  // Ignore the echo of our own writes: if the new value equals the current
+  // serialized settings, there is nothing to apply.
+  try {
+    const currentJson = JSON.stringify(settings)
+    if (event.newValue === currentJson) return
+  } catch {
+    /* ignore comparison errors */
+  }
+  externalUpdate.value = parsed
+  hasExternalConfigUpdate.value = true
+}
+
+let storageListenerAttached = false
+function ensureStorageListener() {
+  if (storageListenerAttached || typeof window === 'undefined') return
+  window.addEventListener('storage', onStorageEvent)
+  storageListenerAttached = true
+}
+
+function applyExternalConfig() {
+  const update = externalUpdate.value
+  if (!update) return
+  settings.providers = update.config.providers
+  settings.routes = update.config.routes
+  externalUpdate.value = null
+  hasExternalConfigUpdate.value = false
+}
+
+function dismissExternalConfigUpdate() {
+  externalUpdate.value = null
+  hasExternalConfigUpdate.value = false
+}
+
+// Attach once at module level; Vue components call useSettings() many times,
+// so mounting here prevents duplicate listeners. Unmount cleanup is best-effort.
+try {
+  ensureStorageListener()
+} catch {
+  /* non-browser environment */
+}
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined
 watch(
@@ -152,6 +207,21 @@ function reset() {
 }
 
 export function useSettings() {
+  onMounted(() => {
+    ensureStorageListener()
+    if (!tabSessionId.value) {
+      try {
+        tabSessionId.value = getTabSessionId()
+      } catch {
+        /* sessionStorage unavailable */
+      }
+    }
+  })
+  onBeforeUnmount(() => {
+    // Intentionally do not remove the listener on unmount: the settings
+    // singleton outlives individual views, and duplicate registration is
+    // prevented by the module-level flag.
+  })
   return {
     settings,
     config: computed<AppConfig>(() => settings),
@@ -166,6 +236,11 @@ export function useSettings() {
     lastTest,
     isConfigured,
     maskedKey,
+    hasExternalConfigUpdate,
+    externalUpdate,
+    tabSessionId,
+    applyExternalConfig,
+    dismissExternalConfigUpdate,
     addProvider,
     updateProvider,
     removeProvider,

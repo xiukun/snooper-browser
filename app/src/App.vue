@@ -9,9 +9,15 @@ import SettingsView from '@/views/SettingsView.vue'
 import TranslateView from '@/views/TranslateView.vue'
 import VisionView from '@/views/VisionView.vue'
 import { useNavigation } from '@/composables/useNavigation'
+import { useSettings } from '@/composables/useSettings'
 import { NAV_ITEMS, type ViewKey } from '@/lib/navigation'
 
 const { activeView, setView } = useNavigation()
+const {
+  hasExternalConfigUpdate,
+  applyExternalConfig,
+  dismissExternalConfigUpdate,
+} = useSettings()
 
 const VIEWS: Record<ViewKey, unknown> = {
   translate: TranslateView,
@@ -58,6 +64,30 @@ onBeforeUnmount(() => {
 
     <div class="flex min-w-0 flex-1 flex-col">
       <AppTopbar :item="currentItem" />
+      <div
+        v-if="hasExternalConfigUpdate"
+        class="shrink-0 border-b border-amber-glow/20 bg-amber-glow/8 px-4 py-2 sm:px-6 lg:px-8"
+        role="alert"
+      >
+        <p class="flex flex-wrap items-center gap-2 text-[12px] leading-relaxed text-mist-200">
+          <span class="text-amber-glow">检测到配置在其他标签页更新</span>
+          <span class="text-mist-400">为保护当前会话，已暂不覆盖。</span>
+          <button
+            type="button"
+            class="rounded-lg border border-amber-glow/30 px-2.5 py-1 text-[11px] font-medium text-amber-glow transition-colors hover:bg-amber-glow/12"
+            @click="applyExternalConfig"
+          >
+            应用更新
+          </button>
+          <button
+            type="button"
+            class="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-mist-400 transition-colors hover:bg-white/5"
+            @click="dismissExternalConfigUpdate"
+          >
+            忽略
+          </button>
+        </p>
+      </div>
       <main class="relative min-h-0 flex-1 overflow-hidden">
         <KeepAlive>
           <component :is="currentView" :key="activeView" />

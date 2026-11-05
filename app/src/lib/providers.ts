@@ -1,5 +1,6 @@
 import { MODEL_CATALOG } from './models'
 import { uid } from './utils'
+import { STORAGE_KEYS } from './brand'
 
 export type ProviderProtocol = 'moss' | 'openai'
 export type CapabilityKey = 'llm' | 'audio' | 'video'
@@ -83,8 +84,51 @@ export const MODEL_SUGGESTIONS: Record<CapabilityKey, string[]> = {
   video: ['moss-vl-realtime-1.0', 'moss-vl-1.0'],
 }
 
-const CONFIG_KEY = 'snooper.provider-config.v1'
+const CONFIG_KEY = STORAGE_KEYS.providerConfig
+const SESSION_CONFIG_KEY = STORAGE_KEYS.providerConfigSession
 const LEGACY_CONFIG_KEYS = ['snooper.moss.config.v1', 'rtts.moss.config.v1'] as const
+
+/**
+ * Returns the session-scoped snapshot key for the current tab.
+ * Each browser tab gets its own sessionStorage namespace, so two tabs
+ * never share the active runtime config (API key + routes). The first
+ * load in a tab hydrates from localStorage (global template) and then
+ * materialises this session snapshot.
+ */
+const TAB_SESSION_KEY = 'snooper.provider-config.tab-id.v1'
+
+export function getTabSessionId(): string {
+  try {
+    const existing = sessionStorage.getItem(TAB_SESSION_KEY)
+    if (existing) return existing
+    const id = `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+    sessionStorage.setItem(TAB_SESSION_KEY, id)
+    return id
+  } catch {
+    return `tab_${Date.now().toString(36)}`
+  }
+}
+
+function parseStoredConfig(raw: string | null): AppConfig | null {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<AppConfig>
+    const providers =
+      Array.isArray(parsed.providers) && parsed.providers.length
+        ? parsed.providers.map(normalizeProvider)
+        : DEFAULT_CONFIG.providers.map(normalizeProvider)
+    return {
+      providers,
+      routes: {
+        llm: { ...DEFAULT_CONFIG.routes.llm, ...parsed.routes?.llm },
+        audio: { ...DEFAULT_CONFIG.routes.audio, ...parsed.routes?.audio },
+        video: { ...DEFAULT_CONFIG.routes.video, ...parsed.routes?.video },
+      },
+    }
+  } catch {
+    return null
+  }
+}
 
 const env = import.meta.env
 const envKey = (env.VITE_MOSS_API_KEY ?? '').trim()
@@ -186,20 +230,20 @@ function fromLegacy(legacy: LegacyConfig): AppConfig {
 
 export function loadProviderConfig(): AppConfig {
   try {
+    const sessionRaw = sessionStorage.getItem(SESSION_CONFIG_KEY)
+    const session = parseStoredConfig(sessionRaw)
+    if (session) return session
+
     const raw = localStorage.getItem(CONFIG_KEY)
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<AppConfig>
-      const providers =
-        Array.isArray(parsed.providers) && parsed.providers.length
-          ? parsed.providers.map(normalizeProvider)
-          : DEFAULT_CONFIG.providers.map(normalizeProvider)
-      return {
-        providers,
-        routes: {
-          llm: { ...DEFAULT_CONFIG.routes.llm, ...parsed.routes?.llm },
-          audio: { ...DEFAULT_CONFIG.routes.audio, ...parsed.routes?.audio },
-          video: { ...DEFAULT_CONFIG.routes.video, ...parsed.routes?.video },
-        },
+      const parsed = parseStoredConfig(raw)
+      if (parsed) {
+        try {
+          sessionStorage.setItem(SESSION_CONFIG_KEY, JSON.stringify(parsed))
+        } catch {
+          /* session snapshot best-effort */
+        }
+        return parsed
       }
     }
 
@@ -221,11 +265,31 @@ export function loadProviderConfig(): AppConfig {
 }
 
 export function persistProviderConfig(config: AppConfig) {
+  const json = JSON.stringify(config)
   try {
-    localStorage.setItem(CONFIG_KEY, JSON.stringify(config))
+    localStorage.setItem(CONFIG_KEY, json)
   } catch {
     /* private mode / quota */
   }
+  try {
+    sessionStorage.setItem(SESSION_CONFIG_KEY, json)
+  } catch {
+    /* session snapshot best-effort */
+  }
+}
+
+/** Returned when another tab modified the global template. Callers must not auto-overwrite the active runtime. */
+export interface ExternalConfigUpdate {
+  config: AppConfig
+  at: number
+}
+
+/** Attempt to parse a cross-tab storage payload without touching current runtime state. */
+export function parseExternalConfig(raw: string | null): ExternalConfigUpdate | null {
+  if (!raw) return null
+  const config = parseStoredConfig(raw)
+  if (!config) return null
+  return { config, at: Date.now() }
 }
 
 export function getProvider(config: AppConfig, providerId: string): ProviderProfile | undefined {

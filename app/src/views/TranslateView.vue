@@ -4,7 +4,9 @@ import { toast } from 'vue-sonner'
 import {
   ArrowLeftRight,
   AudioLines,
+  Camera,
   Clock3,
+  Download,
   Film,
   Gauge,
   Languages,
@@ -23,7 +25,10 @@ import {
   X,
 } from '@lucide/vue'
 import FieldSelect from '@/components/ui/FieldSelect.vue'
+import ExportDialog from '@/components/ui/ExportDialog.vue'
 import { useNavigation } from '@/composables/useNavigation'
+import { useChat } from '@/composables/useChat'
+import { useVision } from '@/composables/useVision'
 import { useRealtime } from '@/composables/useRealtime'
 import { useSettings } from '@/composables/useSettings'
 import { languageLabel, LANGUAGES } from '@/lib/models'
@@ -58,6 +63,10 @@ const {
 
 const { isConfigured, audioRoute } = useSettings()
 const { setView } = useNavigation()
+const { injectContext } = useChat()
+const { injectImageDataUrl } = useVision()
+const showExport = ref(false)
+const videoRef = ref<HTMLVideoElement | null>(null)
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const transcriptEl = ref<HTMLElement | null>(null)
@@ -88,6 +97,51 @@ const bars = computed(() => {
     return Math.round(Math.max(6, Math.min(100, height)))
   })
 })
+
+function parseSubtitleLine(index: number) {
+  const normalized = [...subtitles.value].reverse()
+  const line = normalized[index]
+  if (!line) return
+  const prev = normalized[index + 1]
+  const next = normalized[index - 1]
+  const parts: string[] = [
+    '请解析这条双语字幕背后的专业术语与上下文，使用简体中文并用类比举例说明：',
+  ]
+  if (prev) parts.push(`上文 译文：${prev.target}\n上文 原文：${prev.source}`)
+  parts.push(`当前 译文：${line.target}\n当前 原文：${line.source}`)
+  if (next) parts.push(`下文 译文：${next.target}\n下文 原文：${next.source}`)
+  const prompt = parts.join('\n\n')
+  injectContext(prompt)
+  void nextTick(() => {
+    setView('chat')
+  })
+}
+
+function captureVideoFrame() {
+  const video = videoRef.value
+  if (!video || !mediaUrl.value || mediaKind.value !== 'video') {
+    toast.error('当前没有可截取的视频画面')
+    return
+  }
+  try {
+    const canvas = document.createElement('canvas')
+    const width = video.videoWidth || 1280
+    const height = video.videoHeight || 720
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      toast.error('截取失败：Canvas 不可用')
+      return
+    }
+    ctx.drawImage(video, 0, 0, width, height)
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85)
+    injectImageDataUrl(dataUrl, `frame_${formatTime(elapsed.value)}.jpg`)
+    setView('vision')
+  } catch (err) {
+    toast.error(err instanceof Error ? `截取失败：${err.message}` : '截取失败')
+  }
+}
 
 watch(
   () => subtitles.value.length,
@@ -239,6 +293,15 @@ function onMediaPicked(event: Event) {
             <RotateCcw class="h-3.5 w-3.5" />
             重置
           </button>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[11.5px] text-mist-400 transition-colors hover:bg-white/5 hover:text-mist-100 disabled:opacity-40"
+            :disabled="!subtitles.length"
+            @click="showExport = true"
+          >
+            <Download class="h-3.5 w-3.5" />
+            导出
+          </button>
         </div>
       </div>
 
@@ -255,6 +318,7 @@ function onMediaPicked(event: Event) {
 
               <video
                 v-if="mediaUrl && mediaKind === 'video'"
+                ref="videoRef"
                 :src="mediaUrl"
                 class="absolute inset-0 h-full w-full object-cover opacity-45"
                 autoplay
@@ -414,6 +478,14 @@ function onMediaPicked(event: Event) {
                   画面预览 · 静音
                   <button
                     type="button"
+                    class="ml-1 inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.06] px-2 py-0.5 text-[9.5px] text-mist-300 transition-colors hover:border-iris-400/40 hover:text-iris-200"
+                    @click="captureVideoFrame"
+                  >
+                    <Camera class="h-2.5 w-2.5" />
+                    截图解析
+                  </button>
+                  <button
+                    type="button"
                     class="ml-0.5 rounded-full p-0.5 text-mist-500 hover:text-rose-300"
                     aria-label="移除预览媒体"
                     @click="clearMedia"
@@ -471,7 +543,7 @@ function onMediaPicked(event: Event) {
                 字幕会按时间顺序出现在这里。
               </div>
               <div
-                v-for="line in [...subtitles].reverse()"
+                v-for="(line, index) in [...subtitles].reverse()"
                 :key="line.id"
                 class="group flex gap-3 rounded-xl px-2.5 py-2.5 transition-colors hover:bg-white/[0.035]"
               >
@@ -484,6 +556,14 @@ function onMediaPicked(event: Event) {
                       {{ line.speaker }}
                     </span>
                     <span class="text-[9.5px] text-mist-600">{{ line.latency }} ms</span>
+                    <button
+                      type="button"
+                      class="ml-auto inline-flex items-center gap-1 rounded-md border border-white/8 bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-mist-500 opacity-0 transition-opacity group-hover:opacity-100 hover:border-iris-400/40 hover:text-iris-200"
+                      @click.stop="parseSubtitleLine(index)"
+                    >
+                      <Sparkles class="h-2.5 w-2.5" />
+                      解析
+                    </button>
                   </div>
                   <p class="mt-0.5 truncate text-[11px] text-mist-500">{{ line.source }}</p>
                   <p class="mt-0.5 text-[12.5px] leading-relaxed text-mist-100">{{ line.target }}</p>
@@ -696,6 +776,15 @@ function onMediaPicked(event: Event) {
         </aside>
       </div>
     </div>
+    <ExportDialog
+      :open="showExport"
+      :subtitles="subtitles"
+      :source-lang="sourceLang"
+      :target-lang="targetLang"
+      :engine="engine"
+      :elapsed-seconds="elapsed"
+      @close="showExport = false"
+    />
   </div>
 </template>
 

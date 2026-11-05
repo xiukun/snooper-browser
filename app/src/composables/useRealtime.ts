@@ -3,12 +3,16 @@ import { toast } from 'vue-sonner'
 import { friendlyError } from '@/lib/errors'
 import { languageShort } from '@/lib/models'
 import { transcribeAudio, translateText } from '@/lib/moss'
-import { clamp, uid } from '@/lib/utils'
+import { clamp, sleep, uid } from '@/lib/utils'
 import { useSettings } from './useSettings'
+import { checkCaptureSupport, mapCaptureErrorToHint } from '@/lib/permissions'
+import type { AppConfig } from '@/lib/providers'
 
 export interface SubtitleLine {
   id: string
   at: number
+  /** End timestamp (seconds relative to session start). */
+  endedAt: number
   source: string
   target: string
   speaker: string
@@ -93,10 +97,26 @@ const MAX_SEGMENT_QUEUE = 3
 const segmentQueue: Blob[] = []
 let draining = false
 
-function pushSubtitle(source: string, target: string, speaker: string, latency: number) {
+// VAD segmentation: prefer natural pause over mechanical 6s slicing.
+// A segment is cut when silence >500ms after at least 2s of speech, or at
+// a hard cap of 7s (and the legacy 6s fallback when VAD is off).
+const VAD_THRESHOLD = 0.045
+const VAD_SILENCE_MS = 500
+const VAD_MIN_SEGMENT_MS = 2000
+const VAD_HARD_CAP_MS = 7000
+const FALLBACK_SLICE_MS = 6000
+let vadEnabled = false
+let vadTimer: number | undefined
+let vadSilenceStart = 0
+let vadSegmentStart = 0
+
+type SegmentBlob = Blob & { enqueuedAt?: number; endedAt?: number; durationMs?: number }
+
+function pushSubtitle(source: string, target: string, speaker: string, latency: number, endedAt?: number) {
   subtitles.value.push({
     id: uid('sub'),
     at: elapsed.value,
+    endedAt: endedAt ?? elapsed.value,
     source,
     target,
     speaker,
@@ -204,13 +224,76 @@ function startRecorder(mediaStream: MediaStream) {
     : 'audio/webm'
   recorder = new MediaRecorder(mediaStream, { mimeType })
   recorder.ondataavailable = (event) => {
-    enqueueSegment(event.data)
+    if (event.data.size === 0) return
+    const segment = event.data as SegmentBlob
+    segment.enqueuedAt = performance.now()
+    segment.endedAt = elapsed.value
+    enqueueSegment(segment)
   }
-  recorder.start(6000)
+  recorder.start(FALLBACK_SLICE_MS)
+  // Enable VAD only when the capture path provides an AnalyserNode.
+  vadEnabled = !!analyser
+  vadSegmentStart = performance.now()
+  vadSilenceStart = 0
+  startVadLoop()
+}
+
+function stopVadLoop() {
+  if (vadTimer !== undefined) {
+    window.clearInterval(vadTimer)
+    vadTimer = undefined
+  }
+}
+
+function startVadLoop() {
+  if (!vadEnabled || !analyser || !analyserBuffer) return
+  if (vadTimer !== undefined) return
+  vadTimer = window.setInterval(() => {
+    if (!analyser || !analyserBuffer || !recorder || !isRunning.value || engine.value !== 'moss') return
+    if (analyserBuffer.length === 0) return
+    analyser.getByteTimeDomainData(analyserBuffer)
+    let sum = 0
+    for (const sample of analyserBuffer) {
+      const normalized = (sample - 128) / 128
+      sum += normalized * normalized
+    }
+    const rms = Math.sqrt(sum / Math.max(1, analyserBuffer.length))
+    const now = performance.now()
+    const segmentElapsed = now - vadSegmentStart
+    if (rms < VAD_THRESHOLD) {
+      if (vadSilenceStart === 0) vadSilenceStart = now
+      const silenceElapsed = now - vadSilenceStart
+      if (silenceElapsed >= VAD_SILENCE_MS && segmentElapsed >= VAD_MIN_SEGMENT_MS) {
+        // Natural pause: flush the current segment now instead of waiting
+        // for the next hard slice.
+        vadSilenceStart = 0
+        vadSegmentStart = now
+        try {
+          recorder.requestData()
+        } catch {
+          /* recorder already stopped */
+        }
+      }
+    } else {
+      vadSilenceStart = 0
+    }
+    if (segmentElapsed >= VAD_HARD_CAP_MS) {
+      vadSegmentStart = now
+      vadSilenceStart = 0
+      try {
+        recorder.requestData()
+      } catch {
+        /* recorder already stopped */
+      }
+    }
+  }, 100)
 }
 
 function enqueueSegment(blob: Blob) {
   if (!isRunning.value || engine.value !== 'moss' || blob.size < 2400) return
+  // Attach end timestamp if not already set by the data-available handler.
+  const segmentBlob = blob as SegmentBlob
+  if (typeof segmentBlob.endedAt !== 'number') segmentBlob.endedAt = elapsed.value
   segmentQueue.push(blob)
   if (segmentQueue.length > MAX_SEGMENT_QUEUE) {
     segmentQueue.shift()
@@ -237,21 +320,39 @@ async function drainSegments() {
 }
 
 async function processSegment(blob: Blob) {
-  const started = performance.now()
+  const started = (blob as SegmentBlob).enqueuedAt ?? performance.now()
+  const endedAt = (blob as SegmentBlob).endedAt ?? elapsed.value
   const { settings } = useSettings()
+  const snapshot = (): AppConfig => JSON.parse(JSON.stringify(settings)) as AppConfig
+  const doTranscribe = async (): Promise<string> => {
+    let lastErr: unknown = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await transcribeAudio(blob, { config: snapshot() })
+      } catch (err) {
+        lastErr = err
+        if (attempt === 0) await sleep(300)
+      }
+    }
+    throw lastErr
+  }
   try {
-    const text = await transcribeAudio(blob, { config: { ...settings } })
+    const text = await doTranscribe()
     if (!text) return
     const translated = await translateText(text, {
       source: sourceLang.value,
       target: targetLang.value,
-      config: { ...settings },
+      config: snapshot(),
     })
     if (isRunning.value) {
-      pushSubtitle(text, translated || text, captureLabel.value || 'LIVE', performance.now() - started)
+      pushSubtitle(text, translated || text, captureLabel.value || 'LIVE', performance.now() - started, endedAt)
     }
   } catch (err) {
-    const message = friendlyError(err)
+    const raw = err instanceof Error ? err.message.toLowerCase() : ''
+    const isAuthOrQuota = raw.includes('401') || raw.includes('403') || raw.includes('quota') || raw.includes('unauthorized')
+    const message = isAuthOrQuota
+      ? `${friendlyError(err)} 请检查 API Key 或额度。`
+      : friendlyError(err)
     error.value = message
     if (!warnedTranscribe) {
       warnedTranscribe = true
@@ -261,6 +362,11 @@ async function processSegment(blob: Blob) {
 }
 
 async function startMic() {
+  const support = await checkCaptureSupport()
+  if (!support.ok) {
+    toast.error(support.hint ?? '当前浏览器不支持麦克风采集')
+    return false
+  }
   try {
     const mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -268,12 +374,18 @@ async function startMic() {
     attachStream(mediaStream, '麦克风')
     return true
   } catch (err) {
-    toast.error(err instanceof Error ? `无法访问麦克风：${err.message}` : '无法访问麦克风')
+    const hint = mapCaptureErrorToHint(err, 'microphone')
+    toast.error(hint)
     return false
   }
 }
 
 async function startTabAudio() {
+  const support = await checkCaptureSupport()
+  if (!support.ok && support.code === 'unsupported') {
+    toast.error(support.hint ?? '当前环境不支持标签页音频共享')
+    return false
+  }
   try {
     const mediaStream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
@@ -292,7 +404,8 @@ async function startTabAudio() {
   } catch (err) {
     const aborted = err instanceof DOMException && err.name === 'NotAllowedError'
     if (!aborted) {
-      toast.error(err instanceof Error ? `无法共享音频：${err.message}` : '无法共享音频')
+      const hint = mapCaptureErrorToHint(err, 'tab')
+      toast.error(hint)
     }
     return false
   }
@@ -308,6 +421,8 @@ function attachStream(mediaStream: MediaStream, label: string) {
 }
 
 function stopCapture() {
+  stopVadLoop()
+  vadEnabled = false
   if (recorder) {
     try {
       recorder.stop()

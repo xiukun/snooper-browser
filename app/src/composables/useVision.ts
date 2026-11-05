@@ -179,6 +179,13 @@ function stop() {
   controller?.abort()
 }
 
+function injectImageDataUrl(dataUrl: string, name = '截图帧.jpg') {
+  if (!dataUrl) return
+  const image: VisionImage = { id: uid('img'), name, size: 0, dataUrl }
+  images.value.push(image)
+  toast.success('已注入图像视图')
+}
+
 function clearHistory() {
   stop()
   runs.value = []
@@ -201,5 +208,6 @@ export function useVision() {
     analyze,
     stop,
     clearHistory,
+    injectImageDataUrl,
   }
 }

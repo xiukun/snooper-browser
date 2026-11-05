@@ -18,4 +18,6 @@ export const BRAND = {
 
 export const STORAGE_KEYS = {
   activeView: 'snooper.active-view.v1',
+  providerConfig: 'snooper.provider-config.v1',
+  providerConfigSession: 'snooper.provider-config.session.v1',
 } as const

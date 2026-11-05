@@ -778,13 +778,22 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         return false;
       }
 
-      // Update the streaming subtitle in-place (not pushed to subtitles[] yet)
-      s.streamingSubtitle = {
-        at: message.at || Date.now(),
-        source: message.source || '',
-        partialTarget: message.partialTarget || '',
-        latency: message.latency || 0,
-      };
+      // Empty content means an explicit clear (e.g. the segment errored).
+      // Only apply it if it targets the currently streaming segment, so a
+      // failed older segment can't clobber a newer segment still streaming.
+      if (!message.source && !message.partialTarget) {
+        if (!s.streamingSubtitle || s.streamingSubtitle.at === message.at) {
+          s.streamingSubtitle = null;
+        }
+      } else {
+        // Update the streaming subtitle in-place (not pushed to subtitles[] yet)
+        s.streamingSubtitle = {
+          at: message.at || Date.now(),
+          source: message.source || '',
+          partialTarget: message.partialTarget || '',
+          latency: message.latency || 0,
+        };
+      }
 
       // Forward to content script via lightweight message
       pushStreamingUpdate(message.tabId);
@@ -798,8 +807,13 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         return false;
       }
 
-      // Clear streaming state (final subtitle has arrived)
-      s.streamingSubtitle = null;
+      // Clear streaming state only if the final subtitle belongs to the
+      // currently streaming segment. If a NEWER segment is already streaming
+      // (overlapping in-flight segments), leave it visible so it never
+      // "disappears for a second" while waiting for its own final.
+      if (s.streamingSubtitle && s.streamingSubtitle.at === (message.at || Date.now())) {
+        s.streamingSubtitle = null;
+      }
 
       s.subtitles.push({
         id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,

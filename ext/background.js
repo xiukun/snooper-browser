@@ -572,12 +572,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!s || s.generation !== message.generation) {
         return false;
       }
-      s.streamingSubtitle = {
-        at: message.at || Date.now(),
-        source: message.source || "",
-        partialTarget: message.partialTarget || "",
-        latency: message.latency || 0
-      };
+      if (!message.source && !message.partialTarget) {
+        if (!s.streamingSubtitle || s.streamingSubtitle.at === message.at) {
+          s.streamingSubtitle = null;
+        }
+      } else {
+        s.streamingSubtitle = {
+          at: message.at || Date.now(),
+          source: message.source || "",
+          partialTarget: message.partialTarget || "",
+          latency: message.latency || 0
+        };
+      }
       pushStreamingUpdate(message.tabId);
       return false;
     }
@@ -586,7 +592,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!s || s.generation !== message.generation) {
         return false;
       }
-      s.streamingSubtitle = null;
+      if (s.streamingSubtitle && s.streamingSubtitle.at === (message.at || Date.now())) {
+        s.streamingSubtitle = null;
+      }
       s.subtitles.push({
         id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         at: message.at || Date.now(),

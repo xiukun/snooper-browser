@@ -1,7 +1,11 @@
 (() => {
   // src/lib/models.ts
-  var LANGUAGES = [
+  var SOURCE_LANGUAGES = [
     { code: "auto", label: "\u81EA\u52A8\u68C0\u6D4B", short: "AUTO" },
+    { code: "zh", label: "\u7B80\u4F53\u4E2D\u6587", short: "ZH" },
+    { code: "en", label: "English", short: "EN" }
+  ];
+  var TARGET_LANGUAGES = [
     { code: "zh", label: "\u7B80\u4F53\u4E2D\u6587", short: "ZH" },
     { code: "en", label: "English", short: "EN" },
     { code: "ja", label: "\u65E5\u672C\u8A9E", short: "JA" },
@@ -13,11 +17,59 @@
     { code: "ar", label: "\u0627\u0644\u0639\u0631\u0628\u064A\u0629", short: "AR" },
     { code: "pt", label: "Portugu\xEAs", short: "PT" }
   ];
+  var LANGUAGES = [...SOURCE_LANGUAGES, ...TARGET_LANGUAGES.filter(
+    (target) => !SOURCE_LANGUAGES.some((source) => source.code === target.code)
+  )];
+
+  // src/lib/transcription-request.ts
+  function buildTranscriptionFormData(input) {
+    const form = new FormData();
+    form.append("model", input.model);
+    form.append("file", input.file, "segment.wav");
+    form.append("response_format", "json");
+    form.append("temperature", "0");
+    if (input.sourceLang !== "auto") form.append("language", input.sourceLang);
+    return form;
+  }
+
+  // src/lib/passthrough.ts
+  var HAN = new RegExp("\\p{Script=Han}", "u");
+  var HIRAGANA_KATAKANA = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
+  var HANGUL = new RegExp("\\p{Script=Hangul}", "u");
+  var LATIN = new RegExp("\\p{Script=Latin}", "u");
+  function detectLanguage(text) {
+    const chars = Array.from(text);
+    if (chars.length === 0) return null;
+    let han = 0;
+    let kana = 0;
+    let hangul = 0;
+    let latin = 0;
+    for (const char of chars) {
+      if (HIRAGANA_KATAKANA.test(char)) kana++;
+      else if (HANGUL.test(char)) hangul++;
+      else if (HAN.test(char)) han++;
+      else if (LATIN.test(char)) latin++;
+    }
+    const scriptChars = han + kana + hangul + latin;
+    if (scriptChars * 2 <= chars.length) return null;
+    if (kana > 0) return "ja";
+    if (hangul > 0) return "ko";
+    if (han > 0) return "zh";
+    if (latin > 0) return "en";
+    return null;
+  }
+  function shouldSkipTranslation(sourceLang, targetLang, transcription) {
+    if (!transcription || !transcription.trim()) return false;
+    const effectiveSource = sourceLang === "auto" ? detectLanguage(transcription) : sourceLang;
+    if (!effectiveSource) return false;
+    return effectiveSource === targetLang;
+  }
 
   // src/lib/asr-guard.ts
   var STOCK_LINES = [
     // English
     /^(who are you|i need to go eat|i'?ll reach out to you|thank you for watching|thanks for watching|thanks? for (liking|subscribing)|please subscribe|like and subscribe|see you (next|in the next) (time|video))(?:[\s.!?…]*)$/i,
+    /^one[,.\s]+two[,.\s]+three[,.\s]+four[,.\s]+five[,.\s]+six[,.\s]+seven[,.\s]+eight[,.\s]+nine[,.\s]+ten[.!?…]*$/i,
     /^(subtitles? (by|provided by)|captions? by|transcri(bed|ption) by)\b.*$/i,
     /^(amara\.org|www\.amara\.org).*$/i,
     // Chinese: `\b` never matches between CJK characters, so these use explicit
@@ -36,6 +88,11 @@
   function normalize(text) {
     return String(text || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
   }
+  function normalizeEnglish(text) {
+    return normalize(text).toLowerCase().replace(/[^a-z]+/g, " ").trim();
+  }
+  var GENERIC_BURST_LINES = /* @__PURE__ */ new Set(["what s up", "keep it up", "thank you"]);
+  var COUNTING_BURST_LINE = "one two three four five six seven eight nine ten";
   function isLikelyAsrHallucination(text) {
     const t = normalize(text);
     if (!t) return true;
@@ -46,6 +103,12 @@
     if (STOCK_LINES.some((re) => re.test(bare))) return true;
     if (DEGENERATE_RUN.test(t)) return true;
     return false;
+  }
+  function isLikelyAsrHallucinationSequence(history, text) {
+    if (isLikelyAsrHallucination(text)) return true;
+    const current = normalizeEnglish(text);
+    if (!GENERIC_BURST_LINES.has(current)) return false;
+    return history.slice(-4).some((candidate) => normalizeEnglish(candidate) === COUNTING_BURST_LINE);
   }
 
   // src/lib/audio-segments.ts
@@ -343,7 +406,8 @@
       videoEl: null,
       frameRms: [],
       frameLens: [],
-      audioSilent: false
+      audioSilent: false,
+      recentAsrCandidates: []
     };
     captureSessions.set(tabId, session);
     ensureKeepAlive();
@@ -516,48 +580,13 @@
     }
     return result;
   }
-  async function transcribeAudioStream(wavBlob, config) {
+  async function transcribeAudio(wavBlob, config, sourceLang) {
     const { provider, route } = validateRoute(config, "audio");
-    const form = new FormData();
-    form.append("model", route.model);
-    form.append("file", wavBlob, "segment.wav");
-    form.append("response_format", "verbose_json");
-    form.append("stream", "true");
-    const baseUrl = provider.baseUrl.replace(/\/+$/, "");
-    let fullText = "";
-    let hasError = false;
-    await streamSSE(
-      `${baseUrl}/audio/transcriptions`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${provider.apiKey}`
-        },
-        body: form
-      },
-      {
-        onDelta: (delta) => {
-          fullText += delta;
-        },
-        onDone: () => {
-        },
-        onError: (err) => {
-          hasError = true;
-        },
-        allowNonStreamingFallback: true
-      }
-    );
-    if (hasError && !fullText) {
-      return await transcribeAudioSync(wavBlob, config);
-    }
-    return fullText.trim();
-  }
-  async function transcribeAudioSync(wavBlob, config) {
-    const { provider, route } = validateRoute(config, "audio");
-    const form = new FormData();
-    form.append("model", route.model);
-    form.append("file", wavBlob, "segment.wav");
-    form.append("response_format", "json");
+    const form = buildTranscriptionFormData({
+      model: route.model,
+      file: wavBlob,
+      sourceLang
+    });
     const baseUrl = provider.baseUrl.replace(/\/+$/, "");
     const json = await apiFetch(`${baseUrl}/audio/transcriptions`, {
       method: "POST",
@@ -708,14 +737,39 @@ ${contextBlock}` : "",
     try {
       const wavBlob = createWavBlob(pcmData, TARGET_SAMPLE_RATE);
       const t0 = performance.now();
-      const transcription = await transcribeAudioStream(wavBlob, session.config);
+      const transcription = await transcribeAudio(wavBlob, session.config, session.sourceLang);
       if (session.aborted) return;
       if (!transcription) return;
-      if (isLikelyAsrHallucination(transcription)) {
+      const isHallucination = isLikelyAsrHallucinationSequence(
+        session.recentAsrCandidates,
+        transcription
+      );
+      if (isHallucination) {
         console.warn("[RTTS] dropped likely ASR hallucination:", transcription);
+        session.recentAsrCandidates = [
+          ...session.recentAsrCandidates.slice(-5),
+          transcription
+        ];
         return;
       }
+      session.recentAsrCandidates = [];
       const asrLatency = Math.round(performance.now() - t0);
+      if (shouldSkipTranslation(session.sourceLang, session.targetLang, transcription)) {
+        const passthroughLatency = Math.round(performance.now() - t0 + (Date.now() - segmentStartTime));
+        if (session.aborted) return;
+        chrome.runtime.sendMessage({
+          type: "CAPTURE_SUBTITLE",
+          tabId,
+          generation: session.generation,
+          at: segmentStartTime,
+          endedAt: Date.now(),
+          source: transcription,
+          target: transcription,
+          latency: passthroughLatency
+        }).catch(() => {
+        });
+        return;
+      }
       const contextSummary = getContextSummary(session);
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE_STREAMING",

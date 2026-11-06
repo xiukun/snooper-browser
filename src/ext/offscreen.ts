@@ -18,7 +18,12 @@
 
 import type { AppConfig, CapabilityKey } from '../lib/providers'
 import { LANGUAGES } from '../lib/models'
-import { isLikelyAsrHallucination } from '../lib/asr-guard'
+import { buildTranscriptionFormData } from '../lib/transcription-request'
+import { shouldSkipTranslation } from '../lib/passthrough'
+import {
+  isLikelyAsrHallucination,
+  isLikelyAsrHallucinationSequence,
+} from '../lib/asr-guard'
 import {
   computeRMS,
   speechDurationMs,
@@ -322,6 +327,8 @@ interface CaptureSession {
   /** True while the last few seconds produced nothing above the gate. */
   audioSilent: boolean
   recentContext?: { source: string; target: string }[]
+  /** Recent ASR candidates used to identify multi-segment noise bursts. */
+  recentAsrCandidates: string[]
 }
 
 /** @type {Map<number, CaptureSession>} */
@@ -382,6 +389,7 @@ async function startTabCapture({ tabId, streamId, sourceLang, targetLang, config
     frameRms: [],
     frameLens: [],
     audioSilent: false,
+    recentAsrCandidates: [],
   };
   captureSessions.set(tabId, session);
   ensureKeepAlive();
@@ -602,59 +610,16 @@ function concatPcm(buffers: Int16Array[]): Int16Array {
   return result;
 }
 
-/* ===== Streaming API Calls ===== */
+/* ===== API Calls ===== */
 
-/**
- * Transcribe audio via SSE streaming.
- * Falls back to non-streaming REST if SSE is not supported.
- */
-async function transcribeAudioStream(wavBlob: Blob, config: AppConfig): Promise<string> {
+/** Transcribe one speech segment through the non-streaming MOSS endpoint. */
+async function transcribeAudio(wavBlob: Blob, config: AppConfig, sourceLang: string): Promise<string> {
   const { provider, route } = validateRoute(config, 'audio');
-
-  const form = new FormData();
-  form.append('model', route.model);
-  form.append('file', wavBlob, 'segment.wav');
-  form.append('response_format', 'verbose_json');
-  form.append('stream', 'true');
-
-  const baseUrl = provider.baseUrl.replace(/\/+$/, '');
-  let fullText = '';
-  let hasError = false;
-
-  await streamSSE(
-    `${baseUrl}/audio/transcriptions`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${provider.apiKey}`,
-      },
-      body: form,
-    },
-    {
-      onDelta: (delta) => { fullText += delta; },
-      onDone: () => {},
-      onError: (err) => { hasError = true; },
-      allowNonStreamingFallback: true,
-    }
-  );
-
-  if (hasError && !fullText) {
-    return await transcribeAudioSync(wavBlob, config);
-  }
-
-  return fullText.trim();
-}
-
-/**
- * Non-streaming ASR fallback.
- */
-async function transcribeAudioSync(wavBlob: Blob, config: AppConfig): Promise<string> {
-  const { provider, route } = validateRoute(config, 'audio');
-
-  const form = new FormData();
-  form.append('model', route.model);
-  form.append('file', wavBlob, 'segment.wav');
-  form.append('response_format', 'json');
+  const form = buildTranscriptionFormData({
+    model: route.model,
+    file: wavBlob,
+    sourceLang,
+  });
 
   const baseUrl = provider.baseUrl.replace(/\/+$/, '');
   const json = await apiFetch(`${baseUrl}/audio/transcriptions`, {
@@ -856,18 +821,50 @@ async function finalizeSegment(tabId: number) {
     const wavBlob = createWavBlob(pcmData, TARGET_SAMPLE_RATE);
     const t0 = performance.now();
 
-    // 1. Transcribe via SSE streaming (collect full result)
-    const transcription = await transcribeAudioStream(wavBlob, session.config);
+    // 1. Transcribe the complete audio segment.
+    const transcription = await transcribeAudio(wavBlob, session.config, session.sourceLang);
     if (session.aborted) return;
     if (!transcription) return;
-    if (isLikelyAsrHallucination(transcription)) {
+    const isHallucination = isLikelyAsrHallucinationSequence(
+      session.recentAsrCandidates,
+      transcription,
+    );
+    if (isHallucination) {
       // Loud music and encoder noise still reach the model even with energy
       // gating. Drop the stock phrases instead of translating them.
       console.warn('[RTTS] dropped likely ASR hallucination:', transcription);
+      session.recentAsrCandidates = [
+        ...session.recentAsrCandidates.slice(-5),
+        transcription,
+      ];
       return;
     }
+    // A real subtitle breaks a suspected noise burst. Keeping only rejected
+    // candidates avoids carrying a stale counting phrase into later dialogue.
+    session.recentAsrCandidates = [];
 
     const asrLatency = Math.round(performance.now() - t0);
+
+    // Same-language passthrough: when the transcript already is the target
+    // language (e.g. zh audio with zh subtitles), displaying it directly is
+    // faster, cheaper, and avoids the LLM rewriting correct text.
+    if (shouldSkipTranslation(session.sourceLang, session.targetLang, transcription)) {
+      const passthroughLatency = Math.round(performance.now() - t0 + (Date.now() - segmentStartTime));
+      if (session.aborted) return;
+      chrome.runtime.sendMessage({
+        type: 'CAPTURE_SUBTITLE',
+        tabId,
+        generation: session.generation,
+        at: segmentStartTime,
+        endedAt: Date.now(),
+        source: transcription,
+        target: transcription,
+        latency: passthroughLatency,
+      }).catch(() => {
+        // Background may be busy; the subtitle will appear on the next state sync.
+      });
+      return;
+    }
 
     // 2. Build context for coherent translation
     const contextSummary = getContextSummary(session);

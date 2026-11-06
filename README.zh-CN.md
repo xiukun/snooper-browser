@@ -2,7 +2,7 @@
 
 **看得见，译得出，读得懂。**
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-7c5cff.svg)](./LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-7c5cff.svg)](./LICENSE)
 [![Vue 3](https://img.shields.io/badge/Vue-3.5-3ee6d5.svg)](https://vuejs.org)
 [![Vite](https://img.shields.io/badge/Vite-8-9c85ff.svg)](https://vite.dev)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-4-7ef2e4.svg)](https://tailwindcss.com)
@@ -15,10 +15,16 @@ snooper 是一个完全运行在浏览器里的开源多模态工作台。抓取
 
 ### 实时互译
 
+![页面工具栏、语言选择、双语字幕与伴学抽屉](./docs/screenshots/toolbar-language-and-subtitles.jpg)
+
+截图中从上到下：页面内工具栏（停止、语言对、AI、笔记）、拆分后的源语言/目标语言选择、视频自带字幕与 snooper 字幕共存，以及视频暂停或静音时的「等待音频」状态。
+
 - 两种音频来源：麦克风，或通过 `getDisplayMedia({ audio: true })` 捕获标签页声音。
 - 原视频**不会被静音**，字幕与画面同时存在。
-- 6 秒分段 → 语音转写 → 结合上下文翻译 → 字幕逐句出现。
-- 十种语言对（中 / 英 / 日 / 韩 / 法 / 德 / 西 / 俄 / 阿 / 葡），切换后下一条生效。
+- 语音检测在本地完成：纯静音分段在请求前被丢弃，已知 ASR 幻觉话术（`Who are you?`、`123456789`、`[whistle]` 等）在翻译前被过滤。
+- 源语言（语音识别）：**自动检测（默认）**、中文、English。选择了具体语言时会把语言提示传给音频模型，`auto` 则省略。
+- 目标语言（翻译）：中 / 英 / 日 / 韩 / 法 / 德 / 西 / 俄 / 阿 / 葡。切换后下一条生效。
+- 转写使用非流式请求（`response_format=json`、`temperature=0`），已在 MOSS 网关实测；翻译仍走 SSE 流式。
 - 内置演示信号，没有任何 Key 也能完整预览字幕动效。
 
 ### 智能对话
@@ -27,6 +33,7 @@ snooper 是一个完全运行在浏览器里的开源多模态工作台。抓取
 - Markdown 渲染 + Shiki 代码高亮，流式输出可随时停止。
 - 历史被压缩成单条 user 消息，这正是单轮模型所要求的形态。
 - 拖拽、粘贴、文件选择三种附图方式。
+- 扩展中的伴学抽屉可以引用笔记里保存的截图；伴学与笔记输入框都是舒适的多行高度，随内容增长，超过上限后滚动。
 
 ### 图像理解
 
@@ -41,6 +48,12 @@ snooper 是一个完全运行在浏览器里的开源多模态工作台。抓取
 - **模型发现**：调用 `GET /models`，按服务商缓存，并记录状态与原始错误信息。
 - 任何 OpenAI 兼容中转都可用；MOSS 协议内置支持。
 - 配置与密钥只保存在 `localStorage`。
+
+### 笔记与导出
+
+- 在页面工具栏把字幕行和页面截图存为笔记。
+- 在扩展侧边栏查看、编辑、删除笔记；把完整字幕与笔记导出为 Markdown，可用于 Obsidian 或任何纯文本工作流。
+- 可选 Obsidian 同步：通过 Local REST API 插件连接，保存前先进行连接测试。
 
 ## 快速开始
 
@@ -75,6 +88,68 @@ pnpm preview
 4. 对话、图像理解、字幕翻译共用 `LLM` 路由；字幕的听写部分走 `音频` 路由。
 
 > 密钥写入 `localStorage`，请求从浏览器直连你配置的服务商。若公开部署且需要隐藏密钥，请自行加一层代理。
+
+## 浏览器扩展
+
+Manifest V3 扩展为 Chrome 和 Edge 116+ 提供页面内工具栏与侧边栏。
+
+### 使用发布 ZIP 安装
+
+1. 从发布页下载 `snooper-browser-v<version>.zip`。
+2. 在 Chrome 或 Edge 打开扩展管理页，并启用**开发者模式**。
+3. 只有解压后的开发目录才使用**加载已解压的扩展程序**；商店提交时直接在对应开发者后台上传 ZIP。
+4. 固定 snooper-browser，打开普通网页后点击扩展图标。
+5. 在侧边栏或页面工具栏中打开**开始配置**并添加服务商。扩展包不包含任何密钥。
+
+### 本地构建与打包
+
+在仓库根目录执行：
+
+```bash
+pnpm install
+pnpm build:ext
+pnpm package:ext
+```
+
+打包命令会重新构建扩展，复制 16/32/48/128 像素图标，并生成：
+
+- `dist-extension/snooper-browser-v<version>.zip`
+- `dist-extension/snooper-browser-v<version>.zip.sha256`
+
+ZIP 刻意保持可读，不包含加密代码，也不会加载远程代码。Chrome Web Store 与 Edge Add-ons 要求提交代码可供审核，不能用压缩或加密来隐藏功能。压缩包根目录同时包含 `LICENSE` 与 `NOTICE`，确保 Apache-2.0 的许可条款与署名信息随包分发。
+
+### 首次使用流程
+
+1. 在要使用的网页上点击扩展图标。
+2. 在**配置**中添加服务商地址、API Key、协议和模型路由。
+3. 如有需要，为 **LLM**、**音频**、**视频**、**图像**分别选择路由。
+4. 开始麦克风或标签页音频转写，并在浏览器提示时授予采集权限。
+5. 使用页面工具栏暂停、停止、保存笔记、导出字幕，或让配置好的模型分析当前页面。
+6. 打开侧边栏查看笔记与转写历史、导出 Markdown、删除记录，或配置可选的 Obsidian 同步。
+
+### 权限与数据流
+
+| 权限 | 用途 |
+| --- | --- |
+| `activeTab`、`scripting` | 用户点击扩展后打开或注入页面工具栏。 |
+| `storage` | 在扩展存储中保存服务商配置、笔记、历史、Obsidian 设置和会话恢复状态。 |
+| `tabCapture`、`offscreen` | 用户开始转写后采集和处理标签页音频。 |
+| `sidePanel` | 提供可选的笔记、历史和 Obsidian 侧边栏。 |
+| `<all_urls>` | 让用户在任意网站使用主动打开的页面工具栏。 |
+
+音频只会在转写期间发送给配置的音频服务商。聊天文字和图片只会在提交时发送给配置的 LLM 或图像服务商。笔记、历史和 API Key 留在浏览器内，除非用户主动导出文件或开启 Obsidian 同步。威胁模型见 [SECURITY.md](./SECURITY.md)。
+
+### 故障排查
+
+- **工具栏没有出现：** 刷新页面，再次点击扩展图标，并确认当前不是 `chrome://` 或 `edge://` 等浏览器内部页面。
+- **没有捕获到声音：** 授予麦克风或标签页音频权限，确认标签页确实有声音，并停止同一标签页上的其他采集扩展。
+- **请求失败：** 检查服务商地址、API Key、协议、CORS 策略和模型。服务商支持 `/models` 时点击**拉取模型**，否则手动填写模型 ID。
+- **侧边栏无法打开：** 使用普通网页并通过用户点击触发。浏览器设置页不允许注入页面脚本。
+- **Obsidian 同步失败：** 安装并启用 Obsidian Local REST API，检查端口和 Token，保存前先点击**测试连接**。
+
+### 商店提交
+
+商店描述、权限理由、隐私披露和审核步骤位于 [`docs/store/`](./docs/store/)。提交前请把占位的隐私政策引用替换为公开 HTTPS 地址；审核测试账号或测试端点只应填写在商店后台的私密审核字段中。
 
 ## 技术栈
 
@@ -138,4 +213,6 @@ app/
 
 ## 开源协议
 
-[MIT](./LICENSE) © 2026 snooper-browser contributors
+[Apache License 2.0](./LICENSE) © 2026 snooper-browser contributors
+
+包含专利授权与商标使用说明；署名信息记录在 [NOTICE](./NOTICE)。协议变更前发布的版本仍按 MIT License 提供。

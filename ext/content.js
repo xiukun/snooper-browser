@@ -1,4 +1,26 @@
 (() => {
+  // src/lib/models.ts
+  var SOURCE_LANGUAGES = [
+    { code: "auto", label: "\u81EA\u52A8\u68C0\u6D4B", short: "AUTO" },
+    { code: "zh", label: "\u7B80\u4F53\u4E2D\u6587", short: "ZH" },
+    { code: "en", label: "English", short: "EN" }
+  ];
+  var TARGET_LANGUAGES = [
+    { code: "zh", label: "\u7B80\u4F53\u4E2D\u6587", short: "ZH" },
+    { code: "en", label: "English", short: "EN" },
+    { code: "ja", label: "\u65E5\u672C\u8A9E", short: "JA" },
+    { code: "ko", label: "\uD55C\uAD6D\uC5B4", short: "KO" },
+    { code: "fr", label: "Fran\xE7ais", short: "FR" },
+    { code: "de", label: "Deutsch", short: "DE" },
+    { code: "es", label: "Espa\xF1ol", short: "ES" },
+    { code: "ru", label: "\u0420\u0443\u0441\u0441\u043A\u0438\u0439", short: "RU" },
+    { code: "ar", label: "\u0627\u0644\u0639\u0631\u0628\u064A\u0629", short: "AR" },
+    { code: "pt", label: "Portugu\xEAs", short: "PT" }
+  ];
+  var LANGUAGES = [...SOURCE_LANGUAGES, ...TARGET_LANGUAGES.filter(
+    (target) => !SOURCE_LANGUAGES.some((source) => source.code === target.code)
+  )];
+
   // src/ext/content.ts
   var NOTES_STORAGE_KEY = "snooper.notes.v1";
   async function loadNotes() {
@@ -62,21 +84,12 @@
     host = document.createElement("div");
     host.id = HOST_ID;
     const shadow = host.attachShadow({ mode: "closed" });
-    const LANGUAGES = [
-      { code: "auto", label: "\u81EA\u52A8\u68C0\u6D4B", short: "AUTO" },
-      { code: "zh", label: "\u4E2D\u6587", short: "ZH" },
-      { code: "en", label: "English", short: "EN" },
-      { code: "ja", label: "\u65E5\u672C\u8A9E", short: "JA" },
-      { code: "ko", label: "\uD55C\uAD6D\uC5B4", short: "KO" },
-      { code: "fr", label: "Fran\xE7ais", short: "FR" },
-      { code: "de", label: "Deutsch", short: "DE" },
-      { code: "es", label: "Espa\xF1ol", short: "ES" },
-      { code: "ru", label: "\u0420\u0443\u0441\u0441\u043A\u0438\u0439", short: "RU" },
-      { code: "ar", label: "\u0627\u0644\u0639\u0631\u0628\u064A\u0629", short: "AR" },
-      { code: "pt", label: "Portugu\xEAs", short: "PT" }
-    ];
-    const LANG_MAP = Object.fromEntries(LANGUAGES.map((l) => [l.code, l.label]));
-    const LANG_SHORT = Object.fromEntries(LANGUAGES.map((l) => [l.code, l.short]));
+    const LANG_MAP = Object.fromEntries(
+      [...SOURCE_LANGUAGES, ...TARGET_LANGUAGES].map((l) => [l.code, l.label])
+    );
+    const LANG_SHORT = Object.fromEntries(
+      [...SOURCE_LANGUAGES, ...TARGET_LANGUAGES].map((l) => [l.code, l.short])
+    );
     let session = {
       state: "idle",
       sourceLang: "auto",
@@ -710,7 +723,7 @@
     #rtts-chat-editor,
     #rtts-notes-editor {
       flex: 1; min-width: 0;
-      min-height: 26px; max-height: 120px; overflow-y: auto;
+      min-height: 68px; max-height: 160px; overflow-y: auto;
       padding: 4px 2px;
       color: #fff; font-size: 13px; line-height: 1.5;
       white-space: pre-wrap; word-break: break-word;
@@ -735,7 +748,7 @@
     }
     .rtts-md-preview {
       flex: 1; min-width: 0;
-      min-height: 26px; max-height: 120px; overflow-y: auto;
+      min-height: 68px; max-height: 160px; overflow-y: auto;
       padding: 4px 2px;
       color: rgba(255,255,255,0.88); font-size: 13px; line-height: 1.55;
     }
@@ -1622,7 +1635,7 @@
     function buildLangPicker() {
       sourceLangsEl.textContent = "";
       targetLangsEl.textContent = "";
-      LANGUAGES.forEach((l) => {
+      SOURCE_LANGUAGES.forEach((l) => {
         const src = document.createElement("span");
         src.className = "lang-opt" + (l.code === session.sourceLang ? " active" : "");
         src.textContent = l.label;
@@ -1635,7 +1648,8 @@
           });
         });
         sourceLangsEl.appendChild(src);
-        if (l.code === "auto") return;
+      });
+      TARGET_LANGUAGES.forEach((l) => {
         const tgt = document.createElement("span");
         tgt.className = "lang-opt" + (l.code === session.targetLang ? " active" : "");
         tgt.textContent = l.label;

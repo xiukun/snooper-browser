@@ -16,6 +16,7 @@
  */
 
 import type { SubtitleLine, NoteEntry, NoteDocument } from '../lib/types'
+import { SOURCE_LANGUAGES, TARGET_LANGUAGES } from '../lib/models'
 
 /* ===== Note persistence =====
  * Notes live in chrome.storage.local so the in-page drawer and the side
@@ -169,21 +170,12 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
   const shadow = host.attachShadow({ mode: 'closed' });
 
   /* ===== Languages ===== */
-  const LANGUAGES = [
-    { code: 'auto', label: '自动检测', short: 'AUTO' },
-    { code: 'zh', label: '中文', short: 'ZH' },
-    { code: 'en', label: 'English', short: 'EN' },
-    { code: 'ja', label: '日本語', short: 'JA' },
-    { code: 'ko', label: '한국어', short: 'KO' },
-    { code: 'fr', label: 'Français', short: 'FR' },
-    { code: 'de', label: 'Deutsch', short: 'DE' },
-    { code: 'es', label: 'Español', short: 'ES' },
-    { code: 'ru', label: 'Русский', short: 'RU' },
-    { code: 'ar', label: 'العربية', short: 'AR' },
-    { code: 'pt', label: 'Português', short: 'PT' },
-  ];
-  const LANG_MAP = Object.fromEntries(LANGUAGES.map((l) => [l.code, l.label]));
-  const LANG_SHORT = Object.fromEntries(LANGUAGES.map((l) => [l.code, l.short]));
+  const LANG_MAP = Object.fromEntries(
+    [...SOURCE_LANGUAGES, ...TARGET_LANGUAGES].map((l) => [l.code, l.label]),
+  );
+  const LANG_SHORT = Object.fromEntries(
+    [...SOURCE_LANGUAGES, ...TARGET_LANGUAGES].map((l) => [l.code, l.short]),
+  );
 
   /* ===== Types ===== */
   interface SubtitleEntry {
@@ -890,7 +882,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     #rtts-chat-editor,
     #rtts-notes-editor {
       flex: 1; min-width: 0;
-      min-height: 26px; max-height: 120px; overflow-y: auto;
+      min-height: 68px; max-height: 160px; overflow-y: auto;
       padding: 4px 2px;
       color: #fff; font-size: 13px; line-height: 1.5;
       white-space: pre-wrap; word-break: break-word;
@@ -915,7 +907,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     }
     .rtts-md-preview {
       flex: 1; min-width: 0;
-      min-height: 26px; max-height: 120px; overflow-y: auto;
+      min-height: 68px; max-height: 160px; overflow-y: auto;
       padding: 4px 2px;
       color: rgba(255,255,255,0.88); font-size: 13px; line-height: 1.55;
     }
@@ -1812,7 +1804,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   function buildLangPicker() {
     sourceLangsEl.textContent = '';
     targetLangsEl.textContent = '';
-    LANGUAGES.forEach((l) => {
+    SOURCE_LANGUAGES.forEach((l) => {
       const src = document.createElement('span');
       src.className = 'lang-opt' + (l.code === session.sourceLang ? ' active' : '');
       src.textContent = l.label;
@@ -1824,8 +1816,9 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
         bg('SET_LANG', { sourceLang: l.code }).then(() => syncSessionFromBackground()).catch(() => {});
       });
       sourceLangsEl.appendChild(src);
+    });
 
-      if (l.code === 'auto') return; // auto not valid for target
+    TARGET_LANGUAGES.forEach((l) => {
       const tgt = document.createElement('span');
       tgt.className = 'lang-opt' + (l.code === session.targetLang ? ' active' : '');
       tgt.textContent = l.label;

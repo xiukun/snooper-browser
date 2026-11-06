@@ -2,7 +2,7 @@
 
 **See it. Translate it. Understand it.**
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-7c5cff.svg)](./LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-7c5cff.svg)](./LICENSE)
 [![Vue 3](https://img.shields.io/badge/Vue-3.5-3ee6d5.svg)](https://vuejs.org)
 [![Vite](https://img.shields.io/badge/Vite-8-9c85ff.svg)](https://vite.dev)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-4-7ef2e4.svg)](https://tailwindcss.com)
@@ -15,10 +15,25 @@ snooper is an open-source multimodal workspace that runs entirely in the browser
 
 ### Real-time subtitles
 
+![snooper in-page toolbar with language picker, bilingual subtitles, and the companion drawer](./docs/screenshots/toolbar-language-and-subtitles.jpg)
+
+The screenshot shows the in-page toolbar (stop, language pair, AI, notes), the
+language picker with separate source and target rows, burned-in video subtitles
+plus snooper's own overlay, and the "waiting for audio" state shown when the
+video is paused or silent.
+
 - Two audio sources: microphone, or tab audio through `getDisplayMedia({ audio: true })`.
 - The original playback is **never muted** — subtitles and video coexist.
-- 6-second segments → speech-to-text → context-aware translation → subtitles appear line by line.
-- Ten language pairs (zh / en / ja / ko / fr / de / es / ru / ar / pt); switching applies to the next line.
+- Speech detection is local: silent segments are dropped before any request,
+  and known ASR hallucination patterns (stock phrases, `123456789`, `[whistle]`)
+  are filtered before translation.
+- Source languages (speech recognition): **automatic detection (default)**,
+  Chinese, English. The matching language hint is sent to the audio model;
+  `auto` omits the hint.
+- Target languages (translation): zh / en / ja / ko / fr / de / es / ru / ar / pt.
+  Switching applies to the next line.
+- Non-streaming transcription requests (`response_format=json`,
+  `temperature=0`) verified against the MOSS gateway; translation streams via SSE.
 - Built-in demo stream, so the subtitle animation can be reviewed without any key.
 
 ### Chat
@@ -27,6 +42,9 @@ snooper is an open-source multimodal workspace that runs entirely in the browser
 - Markdown rendering with Shiki highlighting; streaming output can be stopped at any time.
 - History is flattened into a single user message, which is what single-turn models require.
 - Attach images by drag-and-drop, paste, or file picker.
+- In the extension, the companion drawer can cite screenshots saved in notes,
+  and both the companion and note editors offer a comfortable multi-line input
+  that grows while typing and scrolls past a bounded maximum.
 
 ### Image understanding
 
@@ -41,6 +59,14 @@ snooper is an open-source multimodal workspace that runs entirely in the browser
 - **Model discovery** via `GET /models`, cached per provider with status and the raw error message.
 - Works with any OpenAI-compatible relay; the MOSS protocol is built in.
 - Configuration and keys live only in `localStorage`.
+
+### Notes and export
+
+- Save subtitle lines and page screenshots as notes from the in-page toolbar.
+- Review, edit, and delete notes in the extension side panel; export the full
+  transcript with notes as Markdown for Obsidian or any plain-text workflow.
+- Optional Obsidian sync through the Local REST API plugin, verified with a
+  connection test before saving.
 
 ## Quick start
 
@@ -75,6 +101,68 @@ Both are **development conveniences only**. Regular users add providers in the a
 4. Chat, image understanding and subtitle translation share the `LLM` route; the listening half of the subtitle pipeline uses the `Audio` route.
 
 > Keys are written to `localStorage` and requests go straight from your browser to the provider you configured. If you deploy this publicly and need to hide the key, put a proxy in front of it.
+
+## Browser extension
+
+The Manifest V3 extension adds an in-page toolbar and a side panel to Chrome and Edge 116+.
+
+### Install from a release ZIP
+
+1. Download `snooper-browser-v<version>.zip` from a release.
+2. In Chrome or Edge, open the extension management page and enable **Developer mode**.
+3. Use **Load unpacked** only with an extracted development directory. Store submissions use the ZIP directly in the relevant developer dashboard.
+4. Pin snooper-browser, open a normal web page, and click the extension icon.
+5. Open **开始配置** in the side panel or page toolbar and add a provider. No key is included in the extension package.
+
+### Build and package locally
+
+Run these commands from the repository root:
+
+```bash
+pnpm install
+pnpm build:ext
+pnpm package:ext
+```
+
+The package command rebuilds the extension, copies the 16/32/48/128 px icons, and writes:
+
+- `dist-extension/snooper-browser-v<version>.zip`
+- `dist-extension/snooper-browser-v<version>.zip.sha256`
+
+The ZIP is intentionally readable and contains no encrypted or remotely loaded code. Chrome Web Store and Edge Add-ons require submitted code to be reviewable; minification or encryption must not be used to hide functionality. The archive root also contains `LICENSE` and `NOTICE`, so the Apache-2.0 terms and attribution travel with the package.
+
+### First-use workflow
+
+1. Click the extension icon on the page you want to use.
+2. In **Settings / 配置**, add a provider URL, API key, protocol, and model routes.
+3. Choose separate **LLM**, **Audio**, **Video**, and **Image** routes when your provider setup needs it.
+4. Start microphone or tab-audio transcription. Grant the browser capture permission when prompted.
+5. Use the in-page toolbar to pause, stop, save notes, export subtitles, or ask the configured model about the current page.
+6. Open the side panel to review notes and transcription history, export Markdown, delete records, or configure optional Obsidian sync.
+
+### Permissions and data flow
+
+| Permission | Why it is needed |
+| --- | --- |
+| `activeTab`, `scripting` | Opens or injects the toolbar after the user invokes the extension. |
+| `storage` | Stores provider settings, notes, history, Obsidian settings, and session recovery in extension storage. |
+| `tabCapture`, `offscreen` | Captures and processes tab audio after the user starts transcription. |
+| `sidePanel` | Provides the optional notes, history, and Obsidian panel. |
+| `<all_urls>` | Allows the user-invoked toolbar to work on arbitrary websites. |
+
+Audio goes to the configured Audio provider only during transcription. Chat text and images go to the configured LLM or Image provider only when submitted. Notes, history, and API keys stay in the browser unless the user explicitly exports a file or enables Obsidian sync. See [SECURITY.md](./SECURITY.md) for the threat model.
+
+### Troubleshooting
+
+- **The toolbar does not appear:** refresh the page, click the extension icon again, and confirm that the page is not a browser-internal page such as `chrome://` or `edge://`.
+- **No audio is captured:** grant microphone or tab-audio permission, check that the tab has audio, and stop any other capture extension using the same tab.
+- **Requests fail:** verify the provider base URL, API key, protocol, CORS policy, and selected model. Use **Fetch models** when the provider exposes `/models`; otherwise enter the model id manually.
+- **The side panel cannot open:** use a normal web page and invoke the extension from a user gesture. Browser settings pages do not allow content injection.
+- **Obsidian sync fails:** install and enable Obsidian Local REST API, verify the port and token, and use **测试连接** before saving.
+
+### Store submission
+
+Store-specific descriptions, permission justifications, privacy disclosures, and reviewer steps are in [`docs/store/`](./docs/store/). Before submitting, replace the placeholder privacy-policy references with a public HTTPS URL and provide reviewer test credentials or a test endpoint only through the store's private review fields.
 
 ## Tech stack
 
@@ -138,4 +226,6 @@ Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request. Securit
 
 ## License
 
-[MIT](./LICENSE) © 2026 snooper-browser contributors
+[Apache License 2.0](./LICENSE) © 2026 snooper-browser contributors
+
+Includes a patent grant and trademark guidance; attribution notices are recorded in [NOTICE](./NOTICE). Releases published before the license change remain available under the MIT License.

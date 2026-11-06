@@ -140,8 +140,13 @@ export const MODEL_CATALOG: ModelInfo[] = [
   },
 ]
 
-export const LANGUAGES = [
+export const SOURCE_LANGUAGES = [
   { code: 'auto', label: '自动检测', short: 'AUTO' },
+  { code: 'zh', label: '简体中文', short: 'ZH' },
+  { code: 'en', label: 'English', short: 'EN' },
+] as const
+
+export const TARGET_LANGUAGES = [
   { code: 'zh', label: '简体中文', short: 'ZH' },
   { code: 'en', label: 'English', short: 'EN' },
   { code: 'ja', label: '日本語', short: 'JA' },
@@ -153,6 +158,10 @@ export const LANGUAGES = [
   { code: 'ar', label: 'العربية', short: 'AR' },
   { code: 'pt', label: 'Português', short: 'PT' },
 ] as const
+
+export const LANGUAGES = [...SOURCE_LANGUAGES, ...TARGET_LANGUAGES.filter(
+  (target) => !SOURCE_LANGUAGES.some((source) => source.code === target.code),
+)] as const
 
 export function languageLabel(code: string) {
   return LANGUAGES.find((lang) => lang.code === code)?.label ?? code.toUpperCase()

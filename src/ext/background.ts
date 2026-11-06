@@ -91,6 +91,8 @@ interface SessionState {
   streamId: string
   pendingAskRequestId: string | null
   streamingSubtitle: StreamingSubtitle | null
+  /** True when the capture is alive but no audio above the gate is arriving. */
+  audioSilent: boolean
 }
 
 /** @type {Map<number, SessionState>} */
@@ -118,6 +120,7 @@ function createSession(tabId: number): SessionState {
     streamId: '',
     pendingAskRequestId: null,
     streamingSubtitle: null,
+    audioSilent: false,
   };
   sessions.set(tabId, s);
   return s;
@@ -340,6 +343,7 @@ function pushSession(tabId: number) {
     subtitles: s.subtitles,
     messages: s.messages,
     streamingSubtitle: s.streamingSubtitle,
+    audioSilent: s.audioSilent,
   };
 
   chrome.tabs.sendMessage(tabId, {
@@ -692,6 +696,7 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         s.generation = nextGeneration();
         s.subtitles = [];
         s.streamingSubtitle = null;
+        s.audioSilent = false;
         // Don't clear messages – they persist across restarts
         pushSession(tabId);
 
@@ -822,6 +827,7 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         s.streamId = '';
         s.configSnapshot = null;
         s.streamingSubtitle = null;
+        s.audioSilent = false;
         // Save to session history
         if (s.subtitles && s.subtitles.length > 0) {
           persistSessionHistory(tabId);
@@ -1175,6 +1181,22 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
   }
 
   switch (message.type) {
+    case 'CAPTURE_AUDIO_STATE': {
+      // Offscreen tells us when the tab goes quiet (paused video, muted, or a
+      // silent stretch). The UI uses this to say "no audio" instead of looking
+      // like it is translating something invisible.
+      const s = sessions.get(message.tabId);
+      if (s && s.generation === message.generation) {
+        const next = !!message.silent;
+        if (s.audioSilent !== next) {
+          s.audioSilent = next;
+          pushSession(message.tabId);
+        }
+      }
+      sendResponse({ ok: true });
+      return false;
+    }
+
     case 'CAPTURE_KEEPALIVE': {
       // Receiving this message resets the MV3 service-worker idle timer, which
       // is what keeps the background alive through long silent stretches.
@@ -1199,6 +1221,7 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         s.streamId = '';
         s.configSnapshot = null;
         s.streamingSubtitle = null;
+        s.audioSilent = false;
         if (s.subtitles.length > 0) persistSessionHistory(message.tabId);
         pushSession(message.tabId);
         checkAndCloseOffscreen();
@@ -1313,6 +1336,7 @@ function stopSessionForTab(tabId: number) {
   s.configSnapshot = null;
   s.subtitles = [];
   s.streamingSubtitle = null;
+  s.audioSilent = false;
   // Keep messages across navigation
   pushSession(tabId);
   checkAndCloseOffscreen();
@@ -1522,6 +1546,7 @@ function persistSessions() {
       generation: s.generation,
       subtitles: s.subtitles,
       messages: s.messages,
+      audioSilent: false,
     };
   }
   try {

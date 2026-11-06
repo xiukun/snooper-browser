@@ -14,6 +14,86 @@
     { code: "pt", label: "Portugu\xEAs", short: "PT" }
   ];
 
+  // src/lib/asr-guard.ts
+  var STOCK_LINES = [
+    // English
+    /^(who are you|i need to go eat|i'?ll reach out to you|thank you for watching|thanks for watching|thanks? for (liking|subscribing)|please subscribe|like and subscribe|see you (next|in the next) (time|video))(?:[\s.!?…]*)$/i,
+    /^(subtitles? (by|provided by)|captions? by|transcri(bed|ption) by)\b.*$/i,
+    /^(amara\.org|www\.amara\.org).*$/i,
+    // Chinese: `\b` never matches between CJK characters, so these use explicit
+    // anchors instead. The 「订阅」 CTA is only dropped when it *is* the whole
+    // line, otherwise a real sentence like 「订阅号怎么注册」 disappears.
+    /^(请不吝?点赞|请大家?点赞|点赞[、,，]?\s*订阅|感谢(您的)?观看|谢谢观看)/,
+    /^(请?订阅|关注我们)[\s!！。.,，]*$/,
+    /^(字幕由|字幕提供|本字幕由|字幕组)/,
+    /^(明镜与点点|点点栏目)/,
+    // Japanese
+    /^(ご視聴ありがとうございました|チャンネル登録|高評価).*$/
+  ];
+  var ANNOTATION_ONLY = /^[\[(（【]?\s*(whistle|music|silence|blank_?audio|inaudible|noise|applause|laughter|sighs?|音乐|掌声|笑声|静音|無音)\s*[\])）】]?$/i;
+  var NO_CONTENT = /^(?:[0-9\s.,，、:：;；!！?？'"“”‘’()（）\-—–_*/\\|]+|[.…·\s]+)$/;
+  var DEGENERATE_RUN = /(.)\1{7,}/u;
+  function normalize(text) {
+    return String(text || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  }
+  function isLikelyAsrHallucination(text) {
+    const t = normalize(text);
+    if (!t) return true;
+    const bare = t.replace(/^[\s"'“”‘’(\[（【]+|[\s"'“”‘’)\]）】。.!！?？…]+$/g, "");
+    if (!bare) return true;
+    if (ANNOTATION_ONLY.test(t)) return true;
+    if (NO_CONTENT.test(t)) return true;
+    if (STOCK_LINES.some((re) => re.test(bare))) return true;
+    if (DEGENERATE_RUN.test(t)) return true;
+    return false;
+  }
+
+  // src/lib/audio-segments.ts
+  var SPEECH_RMS_THRESHOLD = 0.012;
+  var MIN_SPEECH_MS = 320;
+  var SPEECH_PAD_MS = 120;
+  function computeRMS(buffer) {
+    if (buffer.length === 0) return 0;
+    let sum = 0;
+    for (let i = 0; i < buffer.length; i++) {
+      const normalized = buffer[i] / 32768;
+      sum += normalized * normalized;
+    }
+    return Math.sqrt(sum / buffer.length);
+  }
+  function speechDurationMs(frameRms, frameLens, sampleRate) {
+    let ms = 0;
+    for (let i = 0; i < frameRms.length; i++) {
+      if (frameRms[i] >= SPEECH_RMS_THRESHOLD) {
+        const len = frameLens[i] ?? 0;
+        ms += len / sampleRate * 1e3;
+      }
+    }
+    return ms;
+  }
+  function trimToSpeechBounds(pcm, frameRms, frameLens, sampleRate) {
+    if (frameRms.length === 0) return pcm;
+    let first = -1;
+    let last = -1;
+    for (let i = 0; i < frameRms.length; i++) {
+      if (frameRms[i] >= SPEECH_RMS_THRESHOLD) {
+        if (first < 0) first = i;
+        last = i;
+      }
+    }
+    if (first < 0) return pcm;
+    const frameMs = frameLens[0] ? frameLens[0] / sampleRate * 1e3 : 20;
+    const pad = Math.max(0, Math.ceil(SPEECH_PAD_MS / frameMs));
+    first = Math.max(0, first - pad);
+    last = Math.min(frameRms.length - 1, last + pad);
+    let startSample = 0;
+    for (let i = 0; i < first; i++) startSample += frameLens[i] ?? 0;
+    let endSample = startSample;
+    for (let i = first; i <= last; i++) endSample += frameLens[i] ?? 0;
+    endSample = Math.min(endSample, pcm.length);
+    return endSample > startSample ? pcm.slice(startSample, endSample) : pcm;
+  }
+
   // src/ext/offscreen.ts
   var WORKLET_PATH = chrome.runtime.getURL("audio-worklet.js");
   var TARGET_SAMPLE_RATE = 16e3;
@@ -56,15 +136,6 @@
     for (let i = 0; i < str.length; i++) {
       view.setUint8(offset + i, str.charCodeAt(i));
     }
-  }
-  function computeRMS(buffer) {
-    if (buffer.length === 0) return 0;
-    let sum = 0;
-    for (let i = 0; i < buffer.length; i++) {
-      const normalized = buffer[i] / 32768;
-      sum += normalized * normalized;
-    }
-    return Math.sqrt(sum / buffer.length);
   }
   function validateRoute(config, capability) {
     if (!config || !config.routes || !config.providers) {
@@ -269,7 +340,10 @@
       pendingTranscriptions: 0,
       currentAskController: null,
       aborted: false,
-      videoEl: null
+      videoEl: null,
+      frameRms: [],
+      frameLens: [],
+      audioSilent: false
     };
     captureSessions.set(tabId, session);
     ensureKeepAlive();
@@ -360,18 +434,54 @@
   }
   function onPcmChunk(tabId, msg) {
     const session = captureSessions.get(tabId);
-    if (!session) return;
+    if (!session || session.aborted) return;
     const pcmData = new Int16Array(msg.buffer);
     session.pcmBuffer.push(pcmData);
     session.lastChunkTime = Date.now();
+    const rms = computeRMS(pcmData);
+    session.frameRms.push(rms);
+    session.frameLens.push(pcmData.length);
     checkSegment(tabId);
+  }
+  function trimBufferToMax(session, maxMs) {
+    const maxSamples = Math.floor(TARGET_SAMPLE_RATE * maxMs / 1e3);
+    let total = session.pcmBuffer.reduce((sum, buf) => sum + buf.length, 0);
+    while (total > maxSamples && session.pcmBuffer.length > 1) {
+      const first = session.pcmBuffer[0];
+      const excess = total - maxSamples;
+      if (first.length <= excess) {
+        session.pcmBuffer.shift();
+        session.frameRms.shift();
+        session.frameLens.shift();
+        total -= first.length;
+      } else {
+        const kept = first.slice(excess);
+        session.pcmBuffer[0] = kept;
+        session.frameLens[0] = kept.length;
+        total = maxSamples;
+      }
+    }
+  }
+  function reportAudioState(session, silent) {
+    if (session.audioSilent === silent) return;
+    session.audioSilent = silent;
+    chrome.runtime.sendMessage({
+      type: "CAPTURE_AUDIO_STATE",
+      tabId: session.tabId,
+      generation: session.generation,
+      silent
+    }).catch(() => {
+    });
   }
   function checkSegment(tabId) {
     const session = captureSessions.get(tabId);
     if (!session || session.aborted) return;
+    if (session.pendingTranscriptions >= MAX_QUEUE_SIZE) {
+      trimBufferToMax(session, MAX_SEGMENT_DURATION_MS);
+      return;
+    }
     const now = Date.now();
     const segmentDuration = now - session.segmentStartTime;
-    const pcmLength = session.pcmBuffer.reduce((sum, buf) => sum + buf.length, 0);
     if (segmentDuration < MIN_SEGMENT_DURATION_MS) return;
     const recentPcm = getRecentPcm(session, TARGET_SAMPLE_RATE * 0.2);
     const rms = computeRMS(recentPcm);
@@ -575,11 +685,23 @@ ${contextBlock}` : "",
     if (!session) return;
     if (session.pendingTranscriptions >= MAX_QUEUE_SIZE) return;
     const segmentStartTime = session.segmentStartTime;
-    const pcmData = concatPcm(session.pcmBuffer);
+    const rawPcm = concatPcm(session.pcmBuffer);
+    const frameRms = session.frameRms;
+    const frameLens = session.frameLens;
+    const speechMs = speechDurationMs(frameRms, frameLens, TARGET_SAMPLE_RATE);
+    const trimmedPcm = trimToSpeechBounds(rawPcm, frameRms, frameLens, TARGET_SAMPLE_RATE);
     session.pcmBuffer = [];
+    session.frameRms = [];
+    session.frameLens = [];
     session.segmentStartTime = Date.now();
     session.isSilent = false;
     session.lastSilenceTime = 0;
+    if (speechMs < MIN_SPEECH_MS) {
+      reportAudioState(session, true);
+      return;
+    }
+    reportAudioState(session, false);
+    const pcmData = trimmedPcm;
     const durationMs = pcmData.length / TARGET_SAMPLE_RATE * 1e3;
     if (durationMs < 300) return;
     session.pendingTranscriptions++;
@@ -589,6 +711,10 @@ ${contextBlock}` : "",
       const transcription = await transcribeAudioStream(wavBlob, session.config);
       if (session.aborted) return;
       if (!transcription) return;
+      if (isLikelyAsrHallucination(transcription)) {
+        console.warn("[RTTS] dropped likely ASR hallucination:", transcription);
+        return;
+      }
       const asrLatency = Math.round(performance.now() - t0);
       const contextSummary = getContextSummary(session);
       chrome.runtime.sendMessage({

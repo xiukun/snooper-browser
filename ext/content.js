@@ -553,6 +553,16 @@
       padding: 4px 0;
       flex-shrink: 0;
     }
+    /* Shown while the capture is alive but nothing above the gate arrives \u2014
+       without it, a paused video looks identical to a frozen extension. */
+    #rtts-sub-status {
+      flex-shrink: 0;
+      margin-top: 4px;
+      font-size: 10px; letter-spacing: 0.02em;
+      color: rgba(255,212,140,0.72);
+      text-shadow: 0 1px 6px rgba(0,0,0,0.7);
+    }
+    #rtts-sub-status.hidden { display: none; }
 
     /* === Unified side drawer: chat + notes tabs === */
     #rtts-drawer-tabs {
@@ -1165,6 +1175,7 @@
         </div>
       </div>
       <div id="rtts-sub-placeholder">\u70B9\u51FB\u300C\u5F55\u97F3\u300D\u5F00\u59CB\u5B9E\u65F6\u8F6C\u5199</div>
+      <div id="rtts-sub-status" class="hidden" aria-live="polite">\u89C6\u9891\u5DF2\u6682\u505C\u6216\u9759\u97F3 \xB7 \u7B49\u5F85\u97F3\u9891</div>
     </div>
 
     <!-- Unified side drawer: chat + notes tabs -->
@@ -1404,6 +1415,7 @@
     const subScroll = shadow.getElementById("rtts-sub-scroll");
     const subRows = shadow.getElementById("rtts-sub-rows");
     const subPlaceholder = shadow.getElementById("rtts-sub-placeholder");
+    const subStatus = shadow.getElementById("rtts-sub-status");
     const copyBtn = shadow.getElementById("rtts-copy-btn");
     const exportTxtBtn = shadow.getElementById("rtts-export-txt-btn");
     const exportMdBtn = shadow.getElementById("rtts-export-md-btn");
@@ -1859,7 +1871,9 @@
       if (!uiHidden && (s === "running" || subs.length > 0 || streaming)) {
         subBox.classList.remove("hidden");
         const hasContent = subs.length > 0 || !!streaming;
-        subPlaceholder.style.display = hasContent ? "none" : "";
+        const silent = s === "running" && !!session.audioSilent;
+        subStatus.classList.toggle("hidden", !silent);
+        subPlaceholder.style.display = hasContent || silent ? "none" : "";
         subPlaceholder.textContent = session.isDemoMode ? "\u6F14\u793A\u6A21\u5F0F\u542F\u52A8\u4E2D\u2026" : "\u6B63\u5728\u8046\u542C\u2026";
         subRows.textContent = "";
         const wasAtBottom = subScroll.scrollHeight - subScroll.scrollTop - subScroll.clientHeight < 40;

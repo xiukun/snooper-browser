@@ -210,6 +210,7 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
     subtitles: SubtitleEntry[]
     messages: { role: string; content: string; images?: string[] }[]
     streamingSubtitle?: StreamingSubtitle | null
+    audioSilent?: boolean
     _localSourceLang?: string
     _localTargetLang?: string
     notes: NoteDocument[]
@@ -732,6 +733,16 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
       padding: 4px 0;
       flex-shrink: 0;
     }
+    /* Shown while the capture is alive but nothing above the gate arrives —
+       without it, a paused video looks identical to a frozen extension. */
+    #rtts-sub-status {
+      flex-shrink: 0;
+      margin-top: 4px;
+      font-size: 10px; letter-spacing: 0.02em;
+      color: rgba(255,212,140,0.72);
+      text-shadow: 0 1px 6px rgba(0,0,0,0.7);
+    }
+    #rtts-sub-status.hidden { display: none; }
 
     /* === Unified side drawer: chat + notes tabs === */
     #rtts-drawer-tabs {
@@ -1346,6 +1357,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
         </div>
       </div>
       <div id="rtts-sub-placeholder">点击「录音」开始实时转写</div>
+      <div id="rtts-sub-status" class="hidden" aria-live="polite">视频已暂停或静音 · 等待音频</div>
     </div>
 
     <!-- Unified side drawer: chat + notes tabs -->
@@ -1588,6 +1600,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   const subScroll = shadow.getElementById('rtts-sub-scroll')!;
   const subRows = shadow.getElementById('rtts-sub-rows')!;
   const subPlaceholder = shadow.getElementById('rtts-sub-placeholder')!;
+  const subStatus = shadow.getElementById('rtts-sub-status')!;
   const copyBtn = shadow.getElementById('rtts-copy-btn')!;
   const exportTxtBtn = shadow.getElementById('rtts-export-txt-btn')!;
   const exportMdBtn = shadow.getElementById('rtts-export-md-btn')!;
@@ -2113,7 +2126,9 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     if (!uiHidden && (s === 'running' || subs.length > 0 || streaming)) {
       subBox.classList.remove('hidden');
       const hasContent = subs.length > 0 || !!streaming;
-      subPlaceholder.style.display = hasContent ? 'none' : '';
+      const silent = s === 'running' && !!session.audioSilent;
+      subStatus.classList.toggle('hidden', !silent);
+      subPlaceholder.style.display = hasContent || silent ? 'none' : '';
       subPlaceholder.textContent = session.isDemoMode
         ? '演示模式启动中…'
         : '正在聆听…';

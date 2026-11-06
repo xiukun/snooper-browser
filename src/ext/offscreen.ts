@@ -18,6 +18,14 @@
 
 import type { AppConfig, CapabilityKey } from '../lib/providers'
 import { LANGUAGES } from '../lib/models'
+import { isLikelyAsrHallucination } from '../lib/asr-guard'
+import {
+  computeRMS,
+  speechDurationMs,
+  trimToSpeechBounds,
+  SPEECH_RMS_THRESHOLD,
+  MIN_SPEECH_MS,
+} from '../lib/audio-segments'
 
 /* ===== Constants ===== */
 
@@ -29,6 +37,10 @@ const FRAME_SIZE = 320; // 20ms at 16kHz
 const MIN_SEGMENT_DURATION_MS = 800;
 const MAX_SEGMENT_DURATION_MS = 4000;
 const SILENCE_THRESHOLD_MS = 500;
+/**
+ * Used by the boundary detector (speech → silence transition). Anything that
+ * decides *whether* audio is worth transcribing lives in lib/audio-segments.
+ */
 const SILENCE_RMS_THRESHOLD = 0.045;
 const MAX_QUEUE_SIZE = 3;
 
@@ -75,16 +87,6 @@ function writeString(view: DataView, offset: number, str: string) {
   for (let i = 0; i < str.length; i++) {
     view.setUint8(offset + i, str.charCodeAt(i));
   }
-}
-
-function computeRMS(buffer: Int16Array): number {
-  if (buffer.length === 0) return 0;
-  let sum = 0;
-  for (let i = 0; i < buffer.length; i++) {
-    const normalized = buffer[i] / 32768;
-    sum += normalized * normalized;
-  }
-  return Math.sqrt(sum / buffer.length);
 }
 
 function validateRoute(config: AppConfig, capability: CapabilityKey): { provider: any; route: any } {
@@ -313,6 +315,12 @@ interface CaptureSession {
   currentAskController: AbortController | null
   aborted: boolean
   videoEl: HTMLVideoElement | null
+  /** Per-frame RMS, aligned with pcmBuffer, used to trim edges. */
+  frameRms: number[]
+  /** Per-frame sample counts, aligned with pcmBuffer. */
+  frameLens: number[]
+  /** True while the last few seconds produced nothing above the gate. */
+  audioSilent: boolean
   recentContext?: { source: string; target: string }[]
 }
 
@@ -371,6 +379,9 @@ async function startTabCapture({ tabId, streamId, sourceLang, targetLang, config
     currentAskController: null,
     aborted: false,
     videoEl: null,
+    frameRms: [],
+    frameLens: [],
+    audioSilent: false,
   };
   captureSessions.set(tabId, session);
   ensureKeepAlive();
@@ -482,21 +493,74 @@ async function startTabCapture({ tabId, streamId, sourceLang, targetLang, config
 
 function onPcmChunk(tabId: number, msg: any) {
   const session = captureSessions.get(tabId);
-  if (!session) return;
+  if (!session || session.aborted) return;
 
   const pcmData = new Int16Array(msg.buffer);
   session.pcmBuffer.push(pcmData);
   session.lastChunkTime = Date.now();
+
+  // Track energy per frame while it is still cheap: trimming and the
+  // "is this segment worth transcribing at all" decision both need it.
+  const rms = computeRMS(pcmData);
+  session.frameRms.push(rms);
+  session.frameLens.push(pcmData.length);
+
   checkSegment(tabId);
+}
+
+/**
+ * Drop leading frames until the buffer is at most `maxMs` long. Used when the
+ * ASR queue is saturated: without it the buffer grows without bound and one
+ * enormous segment is eventually shipped, which both the model and the user
+ * read as "subtitles unrelated to what is on screen".
+ */
+function trimBufferToMax(session: CaptureSession, maxMs: number) {
+  const maxSamples = Math.floor((TARGET_SAMPLE_RATE * maxMs) / 1000);
+  let total = session.pcmBuffer.reduce((sum, buf) => sum + buf.length, 0);
+  while (total > maxSamples && session.pcmBuffer.length > 1) {
+    const first = session.pcmBuffer[0]!;
+    const excess = total - maxSamples;
+    if (first.length <= excess) {
+      session.pcmBuffer.shift();
+      session.frameRms.shift();
+      session.frameLens.shift();
+      total -= first.length;
+    } else {
+      const kept = first.slice(excess);
+      session.pcmBuffer[0] = kept;
+      session.frameLens[0] = kept.length;
+      total = maxSamples;
+    }
+  }
+}
+
+/** Let the UI explain "recording, but nothing is coming in". */
+function reportAudioState(session: CaptureSession, silent: boolean) {
+  if (session.audioSilent === silent) return;
+  session.audioSilent = silent;
+  chrome.runtime.sendMessage({
+    type: 'CAPTURE_AUDIO_STATE',
+    tabId: session.tabId,
+    generation: session.generation,
+    silent,
+  }).catch(() => {
+    // Background may be restarting; the next state change will retry.
+  });
 }
 
 function checkSegment(tabId: number) {
   const session = captureSessions.get(tabId);
   if (!session || session.aborted) return;
 
+  // Backpressure: never let the buffer grow past one segment's worth while a
+  // slow ASR request is still in flight.
+  if (session.pendingTranscriptions >= MAX_QUEUE_SIZE) {
+    trimBufferToMax(session, MAX_SEGMENT_DURATION_MS);
+    return;
+  }
+
   const now = Date.now();
   const segmentDuration = now - session.segmentStartTime;
-  const pcmLength = session.pcmBuffer.reduce((sum, buf) => sum + buf.length, 0);
 
   if (segmentDuration < MIN_SEGMENT_DURATION_MS) return;
 
@@ -758,12 +822,31 @@ async function finalizeSegment(tabId: number) {
 
   const segmentStartTime = session.segmentStartTime;
 
-  const pcmData = concatPcm(session.pcmBuffer);
+  const rawPcm = concatPcm(session.pcmBuffer);
+  const frameRms = session.frameRms;
+  const frameLens = session.frameLens;
+  const speechMs = speechDurationMs(frameRms, frameLens, TARGET_SAMPLE_RATE);
+  const trimmedPcm = trimToSpeechBounds(rawPcm, frameRms, frameLens, TARGET_SAMPLE_RATE);
+
+  // Reset the segment regardless of what happens next, otherwise one skipped
+  // segment poisons every later one with stale audio.
   session.pcmBuffer = [];
+  session.frameRms = [];
+  session.frameLens = [];
   session.segmentStartTime = Date.now();
   session.isSilent = false;
   session.lastSilenceTime = 0;
 
+  // A segment with essentially no audio is not speech. Sending it to a
+  // Whisper-family model produces an invented sentence ("Who are you?",
+  // "123456789", "请不吝点赞订阅…") which translation then makes look real.
+  if (speechMs < MIN_SPEECH_MS) {
+    reportAudioState(session, true);
+    return;
+  }
+  reportAudioState(session, false);
+
+  const pcmData = trimmedPcm;
   const durationMs = (pcmData.length / TARGET_SAMPLE_RATE) * 1000;
   if (durationMs < 300) return;
 
@@ -777,6 +860,12 @@ async function finalizeSegment(tabId: number) {
     const transcription = await transcribeAudioStream(wavBlob, session.config);
     if (session.aborted) return;
     if (!transcription) return;
+    if (isLikelyAsrHallucination(transcription)) {
+      // Loud music and encoder noise still reach the model even with energy
+      // gating. Drop the stock phrases instead of translating them.
+      console.warn('[RTTS] dropped likely ASR hallucination:', transcription);
+      return;
+    }
 
     const asrLatency = Math.round(performance.now() - t0);
 

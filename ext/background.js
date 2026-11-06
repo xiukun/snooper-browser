@@ -48,7 +48,8 @@ function createSession(tabId) {
     messages: [],
     streamId: "",
     pendingAskRequestId: null,
-    streamingSubtitle: null
+    streamingSubtitle: null,
+    audioSilent: false
   };
   sessions.set(tabId, s);
   return s;
@@ -200,7 +201,8 @@ function pushSession(tabId) {
     targetLang: s.targetLang,
     subtitles: s.subtitles,
     messages: s.messages,
-    streamingSubtitle: s.streamingSubtitle
+    streamingSubtitle: s.streamingSubtitle,
+    audioSilent: s.audioSilent
   };
   chrome.tabs.sendMessage(tabId, {
     type: "SESSION_UPDATE",
@@ -502,6 +504,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         s.generation = nextGeneration();
         s.subtitles = [];
         s.streamingSubtitle = null;
+        s.audioSilent = false;
         pushSession(tabId);
         try {
           const config = await loadConfig();
@@ -603,6 +606,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         s.streamId = "";
         s.configSnapshot = null;
         s.streamingSubtitle = null;
+        s.audioSilent = false;
         if (s.subtitles && s.subtitles.length > 0) {
           persistSessionHistory(tabId);
         }
@@ -899,6 +903,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   switch (message.type) {
+    case "CAPTURE_AUDIO_STATE": {
+      const s = sessions.get(message.tabId);
+      if (s && s.generation === message.generation) {
+        const next = !!message.silent;
+        if (s.audioSilent !== next) {
+          s.audioSilent = next;
+          pushSession(message.tabId);
+        }
+      }
+      sendResponse({ ok: true });
+      return false;
+    }
     case "CAPTURE_KEEPALIVE": {
       const s = sessions.get(message.tabId);
       if (s && s.state === "starting" && s.generation === message.generation) {
@@ -915,6 +931,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         s.streamId = "";
         s.configSnapshot = null;
         s.streamingSubtitle = null;
+        s.audioSilent = false;
         if (s.subtitles.length > 0) persistSessionHistory(message.tabId);
         pushSession(message.tabId);
         checkAndCloseOffscreen();
@@ -996,6 +1013,7 @@ function stopSessionForTab(tabId) {
   s.configSnapshot = null;
   s.subtitles = [];
   s.streamingSubtitle = null;
+  s.audioSilent = false;
   pushSession(tabId);
   checkAndCloseOffscreen();
 }
@@ -1149,7 +1167,8 @@ function persistSessions() {
       targetLang: s.targetLang,
       generation: s.generation,
       subtitles: s.subtitles,
-      messages: s.messages
+      messages: s.messages,
+      audioSilent: false
     };
   }
   try {

@@ -9,7 +9,8 @@
     "build:ext": "node build-ext.mjs",
     "dev:app": "cd app && pnpm dev",
     "build:app": "cd app && pnpm build",
-    "type-check": "cd app && pnpm exec vue-tsc -b --force"
+    "type-check": "cd app && pnpm exec vue-tsc -b --force",
+    "test:guards": "node scripts/test-audio-guards.mjs"
   },
   "dependencies": {
     "docx": "^9.15.2"

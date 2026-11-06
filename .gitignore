@@ -37,6 +37,7 @@ logs/
 # third-party extension source kept only as a local reference
 /viitor_extracted/
 /ext
+/dist-extension/
 # local agent instructions (kept out of the public repo by decision)
 /AGENTS.md
 /CLAUDE.md

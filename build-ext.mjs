@@ -3,6 +3,7 @@
  * Uses esbuild via npx for fast, type-stripping compilation.
  */
 import { execSync } from 'node:child_process';
+import { cpSync, mkdirSync } from 'node:fs';
 
 const entries = [
   // Background service worker – must be ESM (manifest "type": "module")
@@ -28,6 +29,12 @@ for (const entry of entries) {
     console.error(`  ❌ ${entry.in} failed`);
     process.exit(1);
   }
+}
+
+mkdirSync('ext/icons', { recursive: true });
+for (const size of [16, 32, 48, 128]) {
+  cpSync(`icons/icon${size}.png`, `ext/icons/icon${size}.png`);
+  console.log(`  ✅ icons/icon${size}.png → ext/icons/icon${size}.png`);
 }
 
 console.log('✅ Build complete');

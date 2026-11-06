@@ -13,7 +13,7 @@ export const BRAND = {
     'Open-source multimodal workspace for real-time translation, conversations and visual understanding.',
   repoUrl: 'https://github.com/snooper-browser/snooper-browser',
   docsUrl: 'https://platform.moss.cn/docs/models',
-  license: 'MIT',
+  license: 'Apache-2.0',
 } as const
 
 export const STORAGE_KEYS = {

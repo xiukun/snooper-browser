@@ -50,6 +50,14 @@ pnpm dev                     # http://localhost:5173
 - [ ] 没有提交任何密钥、`.env.local` 或构建产物
 - [ ] 行为变更附带必要的说明
 
+## 许可
+
+本项目采用 Apache License 2.0 授权，全文见 [LICENSE](./LICENSE)，署名信息见 [NOTICE](./NOTICE)。
+
+提交 PR 即表示你同意：除另有明确书面说明外，你提交的 Contribution 按 Apache License 2.0 第 5 条以同一协议授权，无需另签 CLA。请只提交你有权授权的代码；引入第三方代码时，必须在 PR 中说明来源与许可证，并确认其与本项目协议兼容。
+
+协议变更前发布的版本仍按 MIT License 提供，已发布的旧版本不会追溯变更。
+
 ## 关于仓库内容
 
 `doc/` 与 `viitor_extracted/` 属于第三方调研与逆向参考材料，被 `.gitignore` 排除，不随本仓库分发。请勿将它们加入提交。

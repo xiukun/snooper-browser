@@ -1,6 +1,8 @@
 // src/ext/background.ts
 var CONFIG_KEY = "snooper.extension.config.v1";
 var SESSION_RECOVERY_KEY = "snooper.extension.sessions.v1";
+var HISTORY_KEY = "snooper.extension.history.v1";
+var MAX_HISTORY = 100;
 var OFFSCREEN_PATH = "offscreen.html";
 var FS_BRIDGE_FILE = "fullscreen-bridge.js";
 var DEFAULT_CONFIG = {
@@ -37,6 +39,7 @@ function createSession(tabId) {
     sourceLang: "auto",
     targetLang: "zh",
     generation: 0,
+    createdAt: Date.now(),
     configSnapshot: null,
     subtitles: [],
     messages: [],
@@ -318,6 +321,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "GENERATE_IMAGE": {
       (async () => {
         try {
+          let parseImageResponse = function(text) {
+            const payload = JSON.parse(text);
+            const images2 = [];
+            if (Array.isArray(payload.data)) {
+              for (const item of payload.data) {
+                if (item.url) images2.push(item.url);
+                else if (item.b64_json) images2.push(`data:image/png;base64,${item.b64_json}`);
+              }
+            }
+            if (payload.images && Array.isArray(payload.images)) {
+              for (const item of payload.images) {
+                if (typeof item === "string" && item.length > 0) images2.push(item);
+                else if (item.url) images2.push(item.url);
+                else if (item.b64_json) images2.push(`data:image/png;base64,${item.b64_json}`);
+              }
+            }
+            if (images2.length === 0 && payload.output) {
+              if (typeof payload.output === "string" && payload.output.length > 0) images2.push(payload.output);
+              else if (Array.isArray(payload.output)) {
+                for (const o of payload.output) {
+                  if (typeof o === "string" && o.length > 0) images2.push(o);
+                  else if (o.url) images2.push(o.url);
+                  else if (o.b64_json) images2.push(`data:image/png;base64,${o.b64_json}`);
+                }
+              }
+            }
+            if (images2.length === 0) throw new Error("\u751F\u56FE\u63A5\u53E3\u54CD\u5E94\u4E2D\u6CA1\u6709\u627E\u5230\u56FE\u7247");
+            return images2;
+          };
           const config = await loadConfig();
           const route = config.routes.image;
           const provider = config.providers.find((p) => p.id === route?.providerId) || config.providers[0];
@@ -338,33 +370,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           };
           const negative = String(message.negativePrompt || "").trim();
           if (negative) body.negative_prompt = negative;
-          const res = await fetch(`${baseUrl}/images/generations`, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${provider.apiKey}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify(body)
-          });
-          const text = await res.text().catch(() => "");
-          if (!res.ok) {
-            let detail = "";
-            try {
-              const parsed = JSON.parse(text);
-              detail = parsed.error?.message || "";
-            } catch {
-              detail = text.slice(0, 200);
+          async function tryGenerate(body2) {
+            const res = await fetch(`${baseUrl}/images/generations`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${provider.apiKey}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify(body2)
+            });
+            const text = await res.text().catch(() => "");
+            if (!res.ok) {
+              let detail = "";
+              try {
+                const parsed = JSON.parse(text);
+                detail = parsed.error?.message || "";
+              } catch {
+                detail = text.slice(0, 200);
+              }
+              const errMsg = `HTTP ${res.status}${detail ? ` \xB7 ${detail}` : ""}`;
+              if (res.status >= 400 && res.status < 500 && body2.prompt_enhance !== void 0) {
+                const retryBody = { ...body2 };
+                delete retryBody.prompt_enhance;
+                delete retryBody.output_watermark;
+                const r2 = await fetch(`${baseUrl}/images/generations`, {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${provider.apiKey}`,
+                    "Content-Type": "application/json"
+                  },
+                  body: JSON.stringify(retryBody)
+                });
+                const text2 = await r2.text().catch(() => "");
+                if (r2.ok) {
+                  const imgs = parseImageResponse(text2);
+                  if (imgs.length > 0) return imgs;
+                }
+                throw new Error(`\u751F\u56FE\u5931\u8D25 ${errMsg}`);
+              }
+              throw new Error(`\u751F\u56FE\u5931\u8D25 ${errMsg}`);
             }
-            throw new Error(`\u751F\u56FE\u5931\u8D25 HTTP ${res.status}${detail ? ` \xB7 ${detail}` : ""}`);
+            return parseImageResponse(text);
           }
-          let images = [];
-          try {
-            const payload = JSON.parse(text);
-            images = (payload.data || []).map((item) => item.url || (item.b64_json ? `data:image/png;base64,${item.b64_json}` : "")).filter(Boolean);
-          } catch {
-            throw new Error("\u751F\u56FE\u63A5\u53E3\u8FD4\u56DE\u5185\u5BB9\u65E0\u6CD5\u89E3\u6790");
-          }
-          if (!images.length) throw new Error("\u751F\u56FE\u63A5\u53E3\u6CA1\u6709\u8FD4\u56DE\u56FE\u7247");
+          const images = await tryGenerate(body);
           sendResponse({ ok: true, images, model: route?.model || "moss-image-sft-1.0" });
         } catch (err) {
           sendResponse({ ok: false, error: err.message || "\u751F\u56FE\u5931\u8D25" });
@@ -497,6 +545,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         s.streamId = "";
         s.configSnapshot = null;
         s.streamingSubtitle = null;
+        if (s.subtitles && s.subtitles.length > 0) {
+          persistSessionHistory(tabId);
+        }
         pushSession(tabId);
         checkAndCloseOffscreen();
       });
@@ -566,8 +617,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.tabs.captureVisibleTab({ format: "png" }).then((dataUrl) => {
         sendResponse({ ok: true, dataUrl });
       }).catch((err) => {
-        sendResponse({ ok: false, error: err.message });
+        if (err.message && /active stream/i.test(err.message)) {
+          sendToOffscreen({ type: "CAPTURE_FRAME", tabId }).then((frame) => {
+            if (frame && frame.dataUrl) {
+              sendResponse({ ok: true, dataUrl: frame.dataUrl });
+            } else {
+              sendResponse({ ok: false, error: frame?.error || "\u622A\u56FE\u5931\u8D25\uFF1A\u65E0\u6CD5\u83B7\u53D6\u89C6\u9891\u5E27" });
+            }
+          }).catch((e) => {
+            sendResponse({ ok: false, error: "\u622A\u56FE\u5931\u8D25\uFF1A" + (e.message || "") });
+          });
+        } else {
+          sendResponse({ ok: false, error: err.message || "\u622A\u56FE\u5931\u8D25" });
+        }
       });
+      return true;
+    }
+    case "FETCH_URL": {
+      const url = String(message.url || "").trim();
+      if (!url) {
+        sendResponse({ ok: false, error: "URL \u4E3A\u7A7A" });
+        return false;
+      }
+      (async () => {
+        try {
+          const res = await fetch(url);
+          const blob = await res.blob();
+          const reader = new FileReader();
+          reader.onload = () => sendResponse({ ok: true, dataUrl: reader.result });
+          reader.onerror = () => sendResponse({ ok: false, error: "\u65E0\u6CD5\u8BFB\u53D6\u56FE\u7247" });
+          reader.readAsDataURL(blob);
+        } catch (err) {
+          sendResponse({ ok: false, error: "\u65E0\u6CD5\u4E0B\u8F7D\u56FE\u7247\uFF1A" + (err.message || "") });
+        }
+      })();
       return true;
     }
     case "EXPORT_TO_OBSIDIAN": {
@@ -662,6 +745,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })();
       return true;
     }
+    case "GET_HISTORY": {
+      readHistory().then((history) => {
+        sendResponse({ ok: true, history });
+      }).catch((err) => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+    case "DELETE_HISTORY": {
+      const id = String(message.id || "");
+      deleteHistoryEntry(id).then(() => sendResponse({ ok: true })).catch(() => {
+        sendResponse({ ok: false });
+      });
+      return true;
+    }
     default:
       sendResponse({ ok: false, error: `\u672A\u77E5\u6D88\u606F\u7C7B\u578B: ${message.type}` });
       return false;
@@ -748,6 +846,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     }
   }
 });
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  const session = sessions.get(activeInfo.tabId);
+  if (session && (session.state === "running" || session.state === "starting")) {
+    pushSession(activeInfo.tabId);
+  }
+});
 chrome.action.onClicked.addListener((tab) => {
   chrome.scripting.executeScript({
     target: { tabId: tab.id },
@@ -755,6 +859,8 @@ chrome.action.onClicked.addListener((tab) => {
     world: "MAIN"
   }).catch((err) => {
     console.warn("[RTTS] FS bridge injection error:", err.message);
+  });
+  chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_TOOLBAR" }).catch(() => {
   });
   chrome.sidePanel.open({ tabId: tab.id }).catch((err) => {
     console.warn("[RTTS] sidePanel.open error:", err.message);
@@ -773,6 +879,46 @@ chrome.runtime.onInstalled.addListener(async () => {
     await saveConfig(JSON.parse(JSON.stringify(DEFAULT_CONFIG)));
   }
 });
+async function persistSessionHistory(tabId) {
+  const s = sessions.get(tabId);
+  if (!s || !s.subtitles || s.subtitles.length === 0) return;
+  try {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    const entry = {
+      id: `h_${Date.now().toString(36)}_${tabId}`,
+      pageTitle: tab?.title || "",
+      url: tab?.url || "",
+      startedAt: s.createdAt || Date.now(),
+      endedAt: Date.now(),
+      sourceLang: s.sourceLang || "auto",
+      targetLang: s.targetLang || "zh",
+      subtitleCount: s.subtitles.length
+    };
+    const got = await chrome.storage.local.get(HISTORY_KEY);
+    const history = Array.isArray(got[HISTORY_KEY]) ? got[HISTORY_KEY] : [];
+    history.unshift(entry);
+    if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
+    await chrome.storage.local.set({ [HISTORY_KEY]: history });
+  } catch {
+  }
+}
+async function readHistory() {
+  try {
+    const got = await chrome.storage.local.get(HISTORY_KEY);
+    return Array.isArray(got[HISTORY_KEY]) ? got[HISTORY_KEY] : [];
+  } catch {
+    return [];
+  }
+}
+async function deleteHistoryEntry(id) {
+  try {
+    const got = await chrome.storage.local.get(HISTORY_KEY);
+    let history = Array.isArray(got[HISTORY_KEY]) ? got[HISTORY_KEY] : [];
+    history = history.filter((h) => h.id !== id);
+    await chrome.storage.local.set({ [HISTORY_KEY]: history });
+  } catch {
+  }
+}
 async function recoverSessions() {
   try {
     const result = await chrome.storage.session.get(SESSION_RECOVERY_KEY);

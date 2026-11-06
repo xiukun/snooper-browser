@@ -132,6 +132,7 @@
   const noticeBanner = document.getElementById('noticeBanner')!
   const tabNotes = document.getElementById('tab-notes')!
   const tabObsidian = document.getElementById('tab-obsidian')!
+  const tabHistory = document.getElementById('tab-history')!
   const notesList = document.getElementById('notes-list')!
   const notesRefreshBtn = document.getElementById('notes-refresh-btn')!
   const openPageConfigBtn = document.getElementById('open-page-config') as HTMLButtonElement | null
@@ -144,6 +145,10 @@
   const obsidianTest = document.getElementById('obsidian-test') as HTMLButtonElement
   const obsidianTestStatus = document.getElementById('obsidian-test-status')!
   const saveConfigBtn = document.getElementById('saveConfigBtn')!
+
+  const historyList = document.getElementById('history-list')!
+  const historyEmpty = document.getElementById('history-empty')!
+  const historyCount = document.getElementById('history-count')!
 
   /* ===== Utilities ===== */
   function showNotice(text: string, isError = false) {
@@ -165,10 +170,12 @@
     nextTab?.setAttribute('aria-selected', 'true')
     document.getElementById(`panel-${tab}`)?.classList.add('active')
     if (tab === 'notes') void loadAndRenderNotes()
+    if (tab === 'history') void loadAndRenderHistory()
   }
 
   tabNotes.addEventListener('click', () => switchTab('notes'))
   tabObsidian.addEventListener('click', () => switchTab('obsidian'))
+  tabHistory.addEventListener('click', () => switchTab('history'))
 
   /* ===== Open the in-page settings modal ===== */
   openPageConfigBtn?.addEventListener('click', async () => {
@@ -323,6 +330,55 @@
   }
 
   notesRefreshBtn.addEventListener('click', loadAndRenderNotes)
+
+  /* ===== History ===== */
+
+  function formatTime(ts: number): string {
+    return new Date(ts).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  }
+
+  async function loadAndRenderHistory() {
+    const res: any = await chrome.runtime.sendMessage({ target: 'background', type: 'GET_HISTORY' })
+    const items: any[] = res?.history || []
+    historyCount.textContent = String(items.length)
+    historyList.textContent = ''
+
+    if (items.length === 0) {
+      historyList.style.display = 'none'
+      historyEmpty.style.display = 'block'
+      return
+    }
+    historyList.style.display = 'flex'
+    historyEmpty.style.display = 'none'
+
+    items.forEach((item: any) => {
+      const el = document.createElement('div')
+      el.className = 'history-item'
+      el.innerHTML = `
+        <div class="history-item-title" title="${escapeHtml(item.pageTitle || '')}">${escapeHtml(item.pageTitle || '未知页面')}</div>
+        <div class="history-item-meta">
+          <span>&#x1F550; ${formatTime(item.startedAt)}</span>
+          <span>&#x1F3AF; ${item.subtitleCount || 0} 条字幕</span>
+          <span>${escapeHtml(item.sourceLang || '')} → ${escapeHtml(item.targetLang || '')}</span>
+        </div>
+        <div class="history-item-actions">
+          <button class="btn btn-sm btn-secondary" data-action="delete">删除</button>
+        </div>
+      `
+      el.querySelector('[data-action="delete"]')?.addEventListener('click', (e) => {
+        e.stopPropagation()
+        chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_HISTORY', id: item.id })
+          .then(() => loadAndRenderHistory())
+      })
+      historyList.appendChild(el)
+    })
+  }
+
+  function escapeHtml(text: string): string {
+    const div = document.createElement('div')
+    div.textContent = text
+    return div.innerHTML
+  }
 
   /* ===== Obsidian ===== */
   async function renderObsidianConfig() {

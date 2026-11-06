@@ -33,6 +33,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
         Obsidian
       </button>
+      <button id="tab-history" type="button" class="tab-btn" data-tab="history" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        历史
+      </button>
     </div>
 
     <main class="panel-main">
@@ -117,6 +121,20 @@
               </div>
             </div>
           </div>
+        </section>
+      </div>
+      <div id="panel-history" class="tab-content">
+        <section class="config-section">
+          <div class="section-header">
+            <h2 class="section-title">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              转写历史
+            </h2>
+            <span class="section-badge" id="history-count">0</span>
+          </div>
+          <p class="section-desc">每次停止转写后自动保存。历史记录存储在浏览器本地。</p>
+          <div id="history-list" style="margin-top:12px;display:flex;flex-direction:column;gap:8px;min-height:60px;"></div>
+          <div id="history-empty" style="text-align:center;padding:28px 8px;color:var(--text-muted);font-size:13px;display:none">还没有历史记录</div>
         </section>
       </div>
     </main>

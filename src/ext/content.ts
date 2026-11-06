@@ -231,9 +231,11 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
 
   /* ===== Toolbar visibility (persisted) ===== */
   const UI_HIDDEN_KEY = 'snooper.ui-hidden.v1';
-  let uiHidden = (() => {
-    try { return localStorage.getItem(UI_HIDDEN_KEY) === '1'; } catch { return false; }
-  })();
+  // Toolbar starts hidden on every page load. Users click the Chrome
+  // extension icon to toggle it. The show-pill (reopen affordance) appears
+  // only after the toolbar has been opened once and then closed.
+  let uiHidden = true;
+  let hasBeenShownOnce = false;
 
   function persistUiHidden() {
     try { localStorage.setItem(UI_HIDDEN_KEY, uiHidden ? '1' : '0'); } catch { /* ignore */ }
@@ -241,7 +243,9 @@ const DEMO_SUBTITLES: Array<{ source: string; target: string; delay: number }> =
 
   function applyUiHidden() {
     bar.classList.toggle('hidden', uiHidden);
-    showBtn.style.display = uiHidden ? 'flex' : 'none';
+    // Only show pill after toolbar has been opened once (so user knows
+    // about it) but not on first page load
+    showBtn.style.display = uiHidden && hasBeenShownOnce ? 'flex' : 'none';
     hideBtn.style.display = uiHidden ? 'none' : '';
     if (uiHidden) {
       subBox.classList.add('hidden');
@@ -1532,6 +1536,14 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     }
   }
 
+  async function fetchAsDataUrl(url: string): Promise<string> {
+    try {
+      const res = await bg('FETCH_URL', { url });
+      if (res.ok && res.dataUrl) return res.dataUrl;
+    } catch { /* fallback */ }
+    return url;
+  }
+
   /* ===== Toast ===== */
   function toast(message: string, tone: 'info' | 'ok' | 'err' = 'info') {
     const el = document.createElement('div');
@@ -1807,13 +1819,16 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     }
   }
 
-  function saveImageToNotes() {
+  async function saveImageToNotes() {
     if (!lastImageUrl) return;
+    const dataUrl = lastImageUrl.startsWith('data:')
+      ? lastImageUrl
+      : await fetchAsDataUrl(lastImageUrl);
     addNoteEntry({
       id: `image_${Date.now()}`,
       type: 'image',
       at: Date.now(),
-      imageUrl: lastImageUrl,
+      imageUrl: dataUrl,
       text: imgPrompt.value.trim().slice(0, 80) || '生成配图',
     });
     toast('已存入笔记', 'ok');
@@ -2369,10 +2384,11 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     uiHidden = true;
     persistUiHidden();
     applyUiHidden();
-    toast('工具已关闭，点右上角「显示工具」可重新打开', 'ok');
+    toast('工具已关闭', 'ok');
   });
   showBtn.addEventListener('click', () => {
     uiHidden = false;
+    hasBeenShownOnce = true;
     persistUiHidden();
     applyUiHidden();
     render();
@@ -2922,6 +2938,24 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
 
   /* ===== Background push ===== */
   chrome.runtime.onMessage.addListener((msg: any) => {
+    if (msg && msg.type === 'TOGGLE_TOOLBAR') {
+      hasBeenShownOnce = true;
+      if (uiHidden) {
+        uiHidden = false;
+        persistUiHidden();
+        applyUiHidden();
+        render();
+        if (session.state === 'idle' && session.subtitles.length === 0) {
+          subPlaceholder.textContent = '点击「录音」开始实时转写';
+        }
+      } else {
+        uiHidden = true;
+        persistUiHidden();
+        applyUiHidden();
+      }
+      return;
+    }
+
     if (msg && msg.type === 'OPEN_PAGE_SETTINGS') {
       openSettings();
       return;
@@ -2979,15 +3013,9 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
         activeNoteId: session.activeNoteId,
         isDemoMode: false,
       };
-      render();
-      renderNotes();
-    } else {
-      // No active session — start demo mode automatically
-      session.isDemoMode = true;
-      render();
-      renderNotes();
-      startDemoSubtitles();
     }
+    render();
+    renderNotes();
   })();
 
   console.log('[snooper-browser] content script v0.6 loaded');

@@ -97,6 +97,7 @@
     const noticeBanner = document.getElementById("noticeBanner");
     const tabNotes = document.getElementById("tab-notes");
     const tabObsidian = document.getElementById("tab-obsidian");
+    const tabHistory = document.getElementById("tab-history");
     const notesList = document.getElementById("notes-list");
     const notesRefreshBtn = document.getElementById("notes-refresh-btn");
     const openPageConfigBtn = document.getElementById("open-page-config");
@@ -108,6 +109,9 @@
     const obsidianTest = document.getElementById("obsidian-test");
     const obsidianTestStatus = document.getElementById("obsidian-test-status");
     const saveConfigBtn = document.getElementById("saveConfigBtn");
+    const historyList = document.getElementById("history-list");
+    const historyEmpty = document.getElementById("history-empty");
+    const historyCount = document.getElementById("history-count");
     function showNotice(text, isError = false) {
       noticeBanner.textContent = text;
       noticeBanner.className = `notice-banner ${isError ? "error" : "success"}`;
@@ -127,9 +131,11 @@
       nextTab?.setAttribute("aria-selected", "true");
       document.getElementById(`panel-${tab}`)?.classList.add("active");
       if (tab === "notes") void loadAndRenderNotes();
+      if (tab === "history") void loadAndRenderHistory();
     }
     tabNotes.addEventListener("click", () => switchTab("notes"));
     tabObsidian.addEventListener("click", () => switchTab("obsidian"));
+    tabHistory.addEventListener("click", () => switchTab("history"));
     openPageConfigBtn?.addEventListener("click", async () => {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -266,6 +272,47 @@
       showNotice("\u7B14\u8BB0\u5DF2\u5BFC\u51FA");
     }
     notesRefreshBtn.addEventListener("click", loadAndRenderNotes);
+    function formatTime(ts) {
+      return new Date(ts).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    }
+    async function loadAndRenderHistory() {
+      const res = await chrome.runtime.sendMessage({ target: "background", type: "GET_HISTORY" });
+      const items = res?.history || [];
+      historyCount.textContent = String(items.length);
+      historyList.textContent = "";
+      if (items.length === 0) {
+        historyList.style.display = "none";
+        historyEmpty.style.display = "block";
+        return;
+      }
+      historyList.style.display = "flex";
+      historyEmpty.style.display = "none";
+      items.forEach((item) => {
+        const el = document.createElement("div");
+        el.className = "history-item";
+        el.innerHTML = `
+        <div class="history-item-title" title="${escapeHtml(item.pageTitle || "")}">${escapeHtml(item.pageTitle || "\u672A\u77E5\u9875\u9762")}</div>
+        <div class="history-item-meta">
+          <span>&#x1F550; ${formatTime(item.startedAt)}</span>
+          <span>&#x1F3AF; ${item.subtitleCount || 0} \u6761\u5B57\u5E55</span>
+          <span>${escapeHtml(item.sourceLang || "")} \u2192 ${escapeHtml(item.targetLang || "")}</span>
+        </div>
+        <div class="history-item-actions">
+          <button class="btn btn-sm btn-secondary" data-action="delete">\u5220\u9664</button>
+        </div>
+      `;
+        el.querySelector('[data-action="delete"]')?.addEventListener("click", (e) => {
+          e.stopPropagation();
+          chrome.runtime.sendMessage({ target: "background", type: "DELETE_HISTORY", id: item.id }).then(() => loadAndRenderHistory());
+        });
+        historyList.appendChild(el);
+      });
+    }
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      return div.innerHTML;
+    }
     async function renderObsidianConfig() {
       obsidianCfg = await loadObsidianConfig();
       obsidianEnabled.checked = obsidianCfg.enabled;

@@ -943,6 +943,34 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
       return false;
     }
 
+    case 'CAPTURE_FRAME': {
+      const sess = captureSessions.get(tabId);
+      if (!sess || sess.aborted || !sess.videoEl || !sess.videoEl.videoWidth) {
+        sendResponse({ ok: false, error: '没有可用的视频帧' });
+        return true;
+      }
+      try {
+        const video = sess.videoEl;
+        if (video.readyState < 2 || !video.videoWidth) {
+          sendResponse({ ok: false, error: '视频尚未就绪' });
+          return true;
+        }
+        const canvas = document.createElement('canvas');
+        let w = video.videoWidth;
+        let h = video.videoHeight;
+        const maxW = 1600;
+        if (w > maxW) { h = Math.round((h * maxW) / w); w = maxW; }
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(video, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+        sendResponse({ ok: true, dataUrl });
+      } catch (err: any) {
+        sendResponse({ ok: false, error: err.message || '帧捕获失败' });
+      }
+      return true;
+    }
+
     case 'ASK_QUESTION': {
       const { tabId, question, requestId, generation, config, context, sourceLang, targetLang } = message;
       const session = captureSessions.get(tabId);

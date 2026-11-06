@@ -249,10 +249,10 @@
       session.recentContext = session.recentContext.slice(-MAX_CONTEXT_ENTRIES);
     }
   }
-  async function startTabCapture({ tabId, streamId, sourceLang, targetLang, config, generation }) {
-    await stopTabCapture(tabId);
+  async function startTabCapture({ tabId: tabId2, streamId, sourceLang, targetLang, config, generation }) {
+    await stopTabCapture(tabId2);
     const session = {
-      tabId,
+      tabId: tabId2,
       generation,
       sourceLang,
       targetLang,
@@ -270,7 +270,7 @@
       currentAskController: null,
       aborted: false
     };
-    captureSessions.set(tabId, session);
+    captureSessions.set(tabId2, session);
     try {
       session.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -291,7 +291,7 @@
       session.workletNode.port.onmessage = (event) => {
         const msg = event.data;
         if (msg.type === "pcm") {
-          onPcmChunk(tabId, msg);
+          onPcmChunk(tabId2, msg);
         }
       };
       sourceNode.connect(session.workletNode);
@@ -302,25 +302,25 @@
       monitorGain.connect(session.monitorAudioCtx.destination);
       chrome.runtime.sendMessage({
         type: "CAPTURE_STARTED",
-        tabId,
+        tabId: tabId2,
         generation
       });
       return { ok: true };
     } catch (err) {
-      await stopTabCapture(tabId);
+      await stopTabCapture(tabId2);
       throw err;
     }
   }
-  function onPcmChunk(tabId, msg) {
-    const session = captureSessions.get(tabId);
+  function onPcmChunk(tabId2, msg) {
+    const session = captureSessions.get(tabId2);
     if (!session) return;
     const pcmData = new Int16Array(msg.buffer);
     session.pcmBuffer.push(pcmData);
     session.lastChunkTime = Date.now();
-    checkSegment(tabId);
+    checkSegment(tabId2);
   }
-  function checkSegment(tabId) {
-    const session = captureSessions.get(tabId);
+  function checkSegment(tabId2) {
+    const session = captureSessions.get(tabId2);
     if (!session || session.aborted) return;
     const now = Date.now();
     const segmentDuration = now - session.segmentStartTime;
@@ -333,14 +333,14 @@
         session.isSilent = true;
         session.lastSilenceTime = now;
       } else if (now - session.lastSilenceTime >= SILENCE_THRESHOLD_MS) {
-        finalizeSegment(tabId);
+        finalizeSegment(tabId2);
       }
     } else {
       session.isSilent = false;
       session.lastSilenceTime = 0;
     }
     if (segmentDuration >= MAX_SEGMENT_DURATION_MS) {
-      finalizeSegment(tabId);
+      finalizeSegment(tabId2);
     }
   }
   function getRecentPcm(session, durationMs) {
@@ -523,8 +523,8 @@ ${contextBlock}` : "",
     const answer = extractChatText(json);
     return answer.trim().replace(/^["“「『]([\s\S]*)["”」』]$/, "$1").trim();
   }
-  async function finalizeSegment(tabId) {
-    const session = captureSessions.get(tabId);
+  async function finalizeSegment(tabId2) {
+    const session = captureSessions.get(tabId2);
     if (!session) return;
     if (session.pendingTranscriptions >= MAX_QUEUE_SIZE) return;
     const segmentStartTime = session.segmentStartTime;
@@ -546,7 +546,7 @@ ${contextBlock}` : "",
       const contextSummary = getContextSummary(session);
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE_STREAMING",
-        tabId,
+        tabId: tabId2,
         generation: session.generation,
         at: segmentStartTime,
         source: transcription,
@@ -567,7 +567,7 @@ ${contextBlock}` : "",
           );
           chrome.runtime.sendMessage({
             type: "CAPTURE_SUBTITLE_STREAMING",
-            tabId,
+            tabId: tabId2,
             generation: session.generation,
             at: segmentStartTime,
             source: transcription,
@@ -586,7 +586,7 @@ ${contextBlock}` : "",
       if (session.aborted) return;
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE",
-        tabId,
+        tabId: tabId2,
         generation: session.generation,
         at: segmentStartTime,
         endedAt: Date.now(),
@@ -599,7 +599,7 @@ ${contextBlock}` : "",
       console.warn("[RTTS] finalizeSegment error:", err.message);
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE_STREAMING",
-        tabId,
+        tabId: tabId2,
         generation: session.generation,
         at: segmentStartTime,
         source: "",
@@ -609,7 +609,7 @@ ${contextBlock}` : "",
       });
       chrome.runtime.sendMessage({
         type: "CAPTURE_ERROR",
-        tabId,
+        tabId: tabId2,
         generation: session.generation,
         error: err.message
       });
@@ -670,8 +670,8 @@ ${question}`
     const output = json.output?.flatMap((item) => item.content || []).map((p) => p.text || "").join("");
     return output || "";
   }
-  async function stopTabCapture(tabId) {
-    const session = captureSessions.get(tabId);
+  async function stopTabCapture(tabId2) {
+    const session = captureSessions.get(tabId2);
     if (!session) return;
     session.aborted = true;
     if (session.currentAskController) {
@@ -692,25 +692,25 @@ ${question}`
     if (session.mediaStream) {
       session.mediaStream.getTracks().forEach((track) => track.stop());
     }
-    captureSessions.delete(tabId);
+    captureSessions.delete(tabId2);
   }
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (sender.id !== chrome.runtime.id) return false;
     if (message?.target && message.target !== "offscreen") return false;
     switch (message.type) {
       case "START_CAPTURE": {
-        const { tabId, streamId, sourceLang, targetLang, config, generation } = message;
-        startTabCapture({ tabId, streamId, sourceLang, targetLang, config, generation }).then((result) => sendResponse(result)).catch((err) => sendResponse({ ok: false, error: err.message }));
+        const { tabId: tabId2, streamId, sourceLang, targetLang, config, generation } = message;
+        startTabCapture({ tabId: tabId2, streamId, sourceLang, targetLang, config, generation }).then((result) => sendResponse(result)).catch((err) => sendResponse({ ok: false, error: err.message }));
         return true;
       }
       case "STOP_CAPTURE": {
-        const tabId = message.tabId;
-        stopTabCapture(tabId).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }));
+        const tabId2 = message.tabId;
+        stopTabCapture(tabId2).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }));
         return true;
       }
       case "SET_LANG": {
-        const tabId = message.tabId;
-        const session = captureSessions.get(tabId);
+        const tabId2 = message.tabId;
+        const session = captureSessions.get(tabId2);
         if (session) {
           if (message.sourceLang) session.sourceLang = message.sourceLang;
           if (message.targetLang) session.targetLang = message.targetLang;
@@ -718,9 +718,40 @@ ${question}`
         sendResponse({ ok: true });
         return false;
       }
+      case "CAPTURE_FRAME": {
+        const sess = captureSessions.get(tabId);
+        if (!sess || sess.aborted || !sess.videoEl || !sess.videoEl.videoWidth) {
+          sendResponse({ ok: false, error: "\u6CA1\u6709\u53EF\u7528\u7684\u89C6\u9891\u5E27" });
+          return true;
+        }
+        try {
+          const video = sess.videoEl;
+          if (video.readyState < 2 || !video.videoWidth) {
+            sendResponse({ ok: false, error: "\u89C6\u9891\u5C1A\u672A\u5C31\u7EEA" });
+            return true;
+          }
+          const canvas = document.createElement("canvas");
+          let w = video.videoWidth;
+          let h = video.videoHeight;
+          const maxW = 1600;
+          if (w > maxW) {
+            h = Math.round(h * maxW / w);
+            w = maxW;
+          }
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(video, 0, 0, w, h);
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+          sendResponse({ ok: true, dataUrl });
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message || "\u5E27\u6355\u83B7\u5931\u8D25" });
+        }
+        return true;
+      }
       case "ASK_QUESTION": {
-        const { tabId, question, requestId, generation, config, context, sourceLang, targetLang } = message;
-        const session = captureSessions.get(tabId);
+        const { tabId: tabId2, question, requestId, generation, config, context, sourceLang, targetLang } = message;
+        const session = captureSessions.get(tabId2);
         if (!session || session.generation !== generation) {
           sendResponse({ ok: false, error: "\u4F1A\u8BDD\u5DF2\u8FC7\u671F" });
           return false;
@@ -745,8 +776,8 @@ ${question}`
     }
   });
   setInterval(() => {
-    for (const tabId of captureSessions.keys()) {
-      checkSegment(tabId);
+    for (const tabId2 of captureSessions.keys()) {
+      checkSegment(tabId2);
     }
   }, 200);
   console.log("[RTTS] Offscreen document v0.5 (TS) initialized");

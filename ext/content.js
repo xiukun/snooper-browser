@@ -92,13 +92,8 @@
     let langPickerOpen = false;
     let notesExpanded = false;
     const UI_HIDDEN_KEY = "snooper.ui-hidden.v1";
-    let uiHidden = (() => {
-      try {
-        return localStorage.getItem(UI_HIDDEN_KEY) === "1";
-      } catch {
-        return false;
-      }
-    })();
+    let uiHidden = true;
+    let hasBeenShownOnce = false;
     function persistUiHidden() {
       try {
         localStorage.setItem(UI_HIDDEN_KEY, uiHidden ? "1" : "0");
@@ -107,7 +102,7 @@
     }
     function applyUiHidden() {
       bar.classList.toggle("hidden", uiHidden);
-      showBtn.style.display = uiHidden ? "flex" : "none";
+      showBtn.style.display = uiHidden && hasBeenShownOnce ? "flex" : "none";
       hideBtn.style.display = uiHidden ? "none" : "";
       if (uiHidden) {
         subBox.classList.add("hidden");
@@ -1348,6 +1343,14 @@
         return { ok: false, error: err.message || "\u540E\u53F0\u901A\u4FE1\u5F02\u5E38" };
       }
     }
+    async function fetchAsDataUrl(url) {
+      try {
+        const res = await bg("FETCH_URL", { url });
+        if (res.ok && res.dataUrl) return res.dataUrl;
+      } catch {
+      }
+      return url;
+    }
     function toast(message, tone = "info") {
       const el = document.createElement("div");
       el.className = "rtts-toast" + (tone === "info" ? "" : ` ${tone}`);
@@ -1586,13 +1589,14 @@
         imgStatus.textContent = res.error || "\u751F\u6210\u5931\u8D25";
       }
     }
-    function saveImageToNotes() {
+    async function saveImageToNotes() {
       if (!lastImageUrl) return;
+      const dataUrl = lastImageUrl.startsWith("data:") ? lastImageUrl : await fetchAsDataUrl(lastImageUrl);
       addNoteEntry({
         id: `image_${Date.now()}`,
         type: "image",
         at: Date.now(),
-        imageUrl: lastImageUrl,
+        imageUrl: dataUrl,
         text: imgPrompt.value.trim().slice(0, 80) || "\u751F\u6210\u914D\u56FE"
       });
       toast("\u5DF2\u5B58\u5165\u7B14\u8BB0", "ok");
@@ -2079,10 +2083,11 @@
       uiHidden = true;
       persistUiHidden();
       applyUiHidden();
-      toast("\u5DE5\u5177\u5DF2\u5173\u95ED\uFF0C\u70B9\u53F3\u4E0A\u89D2\u300C\u663E\u793A\u5DE5\u5177\u300D\u53EF\u91CD\u65B0\u6253\u5F00", "ok");
+      toast("\u5DE5\u5177\u5DF2\u5173\u95ED", "ok");
     });
     showBtn.addEventListener("click", () => {
       uiHidden = false;
+      hasBeenShownOnce = true;
       persistUiHidden();
       applyUiHidden();
       render();
@@ -2559,6 +2564,23 @@
       }
     });
     chrome.runtime.onMessage.addListener((msg) => {
+      if (msg && msg.type === "TOGGLE_TOOLBAR") {
+        hasBeenShownOnce = true;
+        if (uiHidden) {
+          uiHidden = false;
+          persistUiHidden();
+          applyUiHidden();
+          render();
+          if (session.state === "idle" && session.subtitles.length === 0) {
+            subPlaceholder.textContent = "\u70B9\u51FB\u300C\u5F55\u97F3\u300D\u5F00\u59CB\u5B9E\u65F6\u8F6C\u5199";
+          }
+        } else {
+          uiHidden = true;
+          persistUiHidden();
+          applyUiHidden();
+        }
+        return;
+      }
       if (msg && msg.type === "OPEN_PAGE_SETTINGS") {
         openSettings();
         return;
@@ -2606,14 +2628,9 @@
           activeNoteId: session.activeNoteId,
           isDemoMode: false
         };
-        render();
-        renderNotes();
-      } else {
-        session.isDemoMode = true;
-        render();
-        renderNotes();
-        startDemoSubtitles();
       }
+      render();
+      renderNotes();
     })();
     console.log("[snooper-browser] content script v0.6 loaded");
   })();

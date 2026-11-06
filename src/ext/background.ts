@@ -16,6 +16,8 @@ import type { AppConfig } from '../lib/providers'
 
 const CONFIG_KEY = 'snooper.extension.config.v1';
 const SESSION_RECOVERY_KEY = 'snooper.extension.sessions.v1';
+const HISTORY_KEY = 'snooper.extension.history.v1';
+const MAX_HISTORY = 100;
 const OFFSCREEN_PATH = 'offscreen.html';
 const CONTENT_SCRIPT_FILE = 'content.js';
 const FS_BRIDGE_FILE = 'fullscreen-bridge.js';
@@ -73,6 +75,7 @@ interface SessionState {
   sourceLang: string
   targetLang: string
   generation: number
+  createdAt: number
   configSnapshot: AppConfig | null
   subtitles: SubtitleEntry[]
   messages: MessageEntry[]
@@ -97,6 +100,7 @@ function createSession(tabId: number): SessionState {
     sourceLang: 'auto',
     targetLang: 'zh',
     generation: 0,
+    createdAt: Date.now(),
     configSnapshot: null,
     subtitles: [],
     messages: [],
@@ -490,37 +494,85 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
           const negative = String(message.negativePrompt || '').trim();
           if (negative) body.negative_prompt = negative;
 
-          const res = await fetch(`${baseUrl}/images/generations`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${provider.apiKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(body),
-          });
-          const text = await res.text().catch(() => '');
-          if (!res.ok) {
-            let detail = '';
-            try {
-              const parsed = JSON.parse(text) as { error?: { message?: string } };
-              detail = parsed.error?.message || '';
-            } catch {
-              detail = text.slice(0, 200);
+          async function tryGenerate(body: Record<string, unknown>): Promise<string[]> {
+            const res = await fetch(`${baseUrl}/images/generations`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${provider.apiKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(body),
+            });
+            const text = await res.text().catch(() => '');
+            if (!res.ok) {
+              let detail = '';
+              try {
+                const parsed = JSON.parse(text) as { error?: { message?: string } };
+                detail = parsed.error?.message || '';
+              } catch {
+                detail = text.slice(0, 200);
+              }
+              const errMsg = `HTTP ${res.status}${detail ? ` · ${detail}` : ''}`;
+              // Retry once without optional params on 4xx errors
+              if (res.status >= 400 && res.status < 500 && body.prompt_enhance !== undefined) {
+                const retryBody = { ...body };
+                delete retryBody.prompt_enhance;
+                delete retryBody.output_watermark;
+                const r2 = await fetch(`${baseUrl}/images/generations`, {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${provider.apiKey}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify(retryBody),
+                });
+                const text2 = await r2.text().catch(() => '');
+                if (r2.ok) {
+                  const imgs = parseImageResponse(text2);
+                  if (imgs.length > 0) return imgs;
+                }
+                // Retry failed too; show first error
+                throw new Error(`生图失败 ${errMsg}`);
+              }
+              throw new Error(`生图失败 ${errMsg}`);
             }
-            throw new Error(`生图失败 HTTP ${res.status}${detail ? ` · ${detail}` : ''}`);
+            return parseImageResponse(text);
           }
-          let images: string[] = [];
-          try {
-            const payload = JSON.parse(text) as {
-              data?: Array<{ url?: string; b64_json?: string }>;
-            };
-            images = (payload.data || [])
-              .map((item) => item.url || (item.b64_json ? `data:image/png;base64,${item.b64_json}` : ''))
-              .filter(Boolean);
-          } catch {
-            throw new Error('生图接口返回内容无法解析');
+
+          function parseImageResponse(text: string): string[] {
+            const payload = JSON.parse(text);
+            const images: string[] = [];
+            // Standard OpenAI-style: data[{url}], data[{b64_json}]
+            if (Array.isArray(payload.data)) {
+              for (const item of payload.data) {
+                if (item.url) images.push(item.url);
+                else if (item.b64_json) images.push(`data:image/png;base64,${item.b64_json}`);
+              }
+            }
+            // Alternative: images[{url}], images[string]
+            if (payload.images && Array.isArray(payload.images)) {
+              for (const item of payload.images) {
+                if (typeof item === 'string' && item.length > 0) images.push(item);
+                else if (item.url) images.push(item.url);
+                else if (item.b64_json) images.push(`data:image/png;base64,${item.b64_json}`);
+              }
+            }
+            // output field
+            if (images.length === 0 && payload.output) {
+              if (typeof payload.output === 'string' && payload.output.length > 0) images.push(payload.output);
+              else if (Array.isArray(payload.output)) {
+                for (const o of payload.output) {
+                  if (typeof o === 'string' && o.length > 0) images.push(o);
+                  else if (o.url) images.push(o.url);
+                  else if (o.b64_json) images.push(`data:image/png;base64,${o.b64_json}`);
+                }
+              }
+            }
+            if (images.length === 0) throw new Error('生图接口响应中没有找到图片');
+            return images;
           }
-          if (!images.length) throw new Error('生图接口没有返回图片');
+
+          const images = await tryGenerate(body);
           sendResponse({ ok: true, images, model: route?.model || 'moss-image-sft-1.0' });
         } catch (err: any) {
           sendResponse({ ok: false, error: err.message || '生图失败' });
@@ -682,6 +734,10 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         s.streamId = '';
         s.configSnapshot = null;
         s.streamingSubtitle = null;
+        // Save to session history
+        if (s.subtitles && s.subtitles.length > 0) {
+          persistSessionHistory(tabId);
+        }
         pushSession(tabId);
         checkAndCloseOffscreen();
       });
@@ -768,12 +824,48 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
     }
 
     case 'CAPTURE_SCREENSHOT': {
-      // Use chrome.tabs.captureVisibleTab for screenshot
+      // Try visible tab capture first. When a tab has an active audio capture
+      // (tabCapture), this method throws "Cannot capture a tab with an active
+      // stream." In that case we ask offscreen to grab a video frame.
       chrome.tabs.captureVisibleTab({ format: 'png' }).then((dataUrl) => {
         sendResponse({ ok: true, dataUrl });
       }).catch((err) => {
-        sendResponse({ ok: false, error: err.message });
+        if (err.message && /active stream/i.test(err.message)) {
+          // Fallback: ask offscreen for a frame from its capture video element
+          sendToOffscreen({ type: 'CAPTURE_FRAME', tabId }).then((frame: any) => {
+            if (frame && frame.dataUrl) {
+              sendResponse({ ok: true, dataUrl: frame.dataUrl });
+            } else {
+              sendResponse({ ok: false, error: frame?.error || '截图失败：无法获取视频帧' });
+            }
+          }).catch((e) => {
+            sendResponse({ ok: false, error: '截图失败：' + (e.message || '') });
+          });
+        } else {
+          sendResponse({ ok: false, error: err.message || '截图失败' });
+        }
       });
+      return true;
+    }
+
+    case 'FETCH_URL': {
+      const url = String(message.url || '').trim();
+      if (!url) {
+        sendResponse({ ok: false, error: 'URL 为空' });
+        return false;
+      }
+      (async () => {
+        try {
+          const res = await fetch(url);
+          const blob = await res.blob();
+          const reader = new FileReader();
+          reader.onload = () => sendResponse({ ok: true, dataUrl: reader.result });
+          reader.onerror = () => sendResponse({ ok: false, error: '无法读取图片' });
+          reader.readAsDataURL(blob);
+        } catch (err: any) {
+          sendResponse({ ok: false, error: '无法下载图片：' + (err.message || '') });
+        }
+      })();
       return true;
     }
 
@@ -876,6 +968,23 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
           error: '无法连接。请确认 Obsidian 正在运行、Local REST API 插件已启用，并开启「Enable Non-encrypted (HTTP) Server」（端口 27123）',
         });
       })();
+      return true;
+    }
+
+    case 'GET_HISTORY': {
+      readHistory().then((history) => {
+        sendResponse({ ok: true, history });
+      }).catch((err) => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+
+    case 'DELETE_HISTORY': {
+      const id = String(message.id || '');
+      deleteHistoryEntry(id).then(() => sendResponse({ ok: true })).catch(() => {
+        sendResponse({ ok: false });
+      });
       return true;
     }
 
@@ -1001,6 +1110,13 @@ chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: any) => {
     }
   }
 });
+chrome.tabs.onActivated.addListener(async (activeInfo: any) => {
+  // Push current session state to the newly active tab
+  const session = sessions.get(activeInfo.tabId);
+  if (session && (session.state === 'running' || session.state === 'starting')) {
+    pushSession(activeInfo.tabId);
+  }
+});
 
 /* ===== Action Click ===== */
 
@@ -1012,6 +1128,12 @@ chrome.action.onClicked.addListener((tab: any) => {
     world: 'MAIN',
   }).catch((err: any) => {
     console.warn('[RTTS] FS bridge injection error:', err.message);
+  });
+
+  // Toggle the in-page toolbar: it stays hidden on page load and only shows
+  // when the user clicks the extension icon on that tab.
+  chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_TOOLBAR' }).catch(() => {
+    // Content script may not be injected yet (e.g. chrome:// pages); ignore.
   });
 
   // Open side panel for configuration
@@ -1040,6 +1162,58 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 
 /* ===== Recovery on Service Worker Restart ===== */
+
+/* ===== Session History ===== */
+
+interface HistoryEntry {
+  id: string
+  pageTitle: string
+  url: string
+  startedAt: number
+  endedAt: number
+  sourceLang: string
+  targetLang: string
+  subtitleCount: number
+}
+
+async function persistSessionHistory(tabId: number) {
+  const s = sessions.get(tabId);
+  if (!s || !s.subtitles || s.subtitles.length === 0) return;
+  try {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    const entry: HistoryEntry = {
+      id: `h_${Date.now().toString(36)}_${tabId}`,
+      pageTitle: tab?.title || '',
+      url: tab?.url || '',
+      startedAt: s.createdAt || Date.now(),
+      endedAt: Date.now(),
+      sourceLang: s.sourceLang || 'auto',
+      targetLang: s.targetLang || 'zh',
+      subtitleCount: s.subtitles.length,
+    };
+    const got = await chrome.storage.local.get(HISTORY_KEY);
+    const history: HistoryEntry[] = Array.isArray(got[HISTORY_KEY]) ? got[HISTORY_KEY] : [];
+    history.unshift(entry);
+    if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
+    await chrome.storage.local.set({ [HISTORY_KEY]: history });
+  } catch { /* best-effort */ }
+}
+
+async function readHistory(): Promise<HistoryEntry[]> {
+  try {
+    const got = await chrome.storage.local.get(HISTORY_KEY);
+    return Array.isArray(got[HISTORY_KEY]) ? got[HISTORY_KEY] : [];
+  } catch { return []; }
+}
+
+async function deleteHistoryEntry(id: string) {
+  try {
+    const got = await chrome.storage.local.get(HISTORY_KEY);
+    let history: HistoryEntry[] = Array.isArray(got[HISTORY_KEY]) ? got[HISTORY_KEY] : [];
+    history = history.filter((h) => h.id !== id);
+    await chrome.storage.local.set({ [HISTORY_KEY]: history });
+  } catch { /* ignore */ }
+}
 
 async function recoverSessions() {
   try {

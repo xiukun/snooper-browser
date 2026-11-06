@@ -1,21 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none" width="40" height="40">
-  <defs>
-    <linearGradient id="snooper" x1="4" y1="2" x2="36" y2="38" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#B9A8FF" />
-      <stop offset="0.52" stop-color="#6642F5" />
-      <stop offset="1" stop-color="#14C8B8" />
-    </linearGradient>
-  </defs>
-  <rect x="1" y="1" width="38" height="38" rx="12" fill="url(#snooper)" />
-  <rect x="1.5" y="1.5" width="37" height="37" rx="11.5" stroke="#fff" stroke-opacity="0.16" />
-  <path
-    d="M9.2 21.9c3.1-4.85 6.5-7.28 10.1-7.28 3.6 0 7 2.43 10.1 7.28"
-    stroke="#fff"
-    stroke-opacity="0.92"
-    stroke-width="2.5"
-    stroke-linecap="round"
-  />
-  <circle cx="19.5" cy="21.9" r="3.25" fill="#fff" />
-  <circle cx="19.5" cy="21.9" r="1.15" fill="#0B0B11" />
-  <path d="M15.2 27.4h8.6" stroke="#fff" stroke-opacity="0.45" stroke-width="1.8" stroke-linecap="round" />
+  <rect x="1" y="1" width="38" height="38" rx="10" fill="#0B0F19" stroke="#14C8B8" stroke-width="1.4" stroke-opacity="0.35"/>
+  <path d="M7 17.5c3.6-5.5 8.2-8 13-8s9.4 2.5 13 8c-3.6 5.5-8.2 8-13 8s-9.4-2.5-13-8Z" stroke="#FFFFFF" stroke-width="2.2" fill="#141E30" stroke-linejoin="round"/>
+  <circle cx="20" cy="17.5" r="4.2" fill="#FFFFFF"/>
+  <circle cx="20" cy="17.5" r="1.7" fill="#0B0F19"/>
+  <line x1="9.5" y1="29" x2="30.5" y2="29" stroke="#14C8B8" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="13.5" y1="34" x2="26.5" y2="34" stroke="#14C8B8" stroke-width="2" stroke-linecap="round" stroke-opacity="0.8"/>
 </svg>

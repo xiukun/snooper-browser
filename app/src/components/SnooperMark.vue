@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { useId } from 'vue'
-
 withDefaults(
   defineProps<{
     size?: number
@@ -9,8 +7,6 @@ withDefaults(
   }>(),
   { size: 36, glow: false, muted: false },
 )
-
-const gradientId = useId()
 </script>
 
 <template>
@@ -21,55 +17,47 @@ const gradientId = useId()
   >
     <span
       v-if="glow"
-      class="absolute inset-1 -z-10 rounded-[32%] bg-iris-500/50 blur-xl"
+      class="absolute inset-1 -z-10 rounded-[32%] bg-aqua-500/40 blur-xl"
     />
     <svg viewBox="0 0 40 40" class="h-full w-full" fill="none">
-      <defs>
-        <linearGradient
-          :id="gradientId"
-          x1="4"
-          y1="2"
-          x2="36"
-          y2="38"
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop stop-color="#B9A8FF" />
-          <stop offset="0.52" stop-color="#6642F5" />
-          <stop offset="1" stop-color="#14C8B8" />
-        </linearGradient>
-      </defs>
       <rect
         x="1"
         y="1"
         width="38"
         height="38"
-        rx="12"
-        :fill="muted ? 'rgba(255,255,255,0.08)' : `url(#${gradientId})`"
-      />
-      <rect
-        x="1.5"
-        y="1.5"
-        width="37"
-        height="37"
-        rx="11.5"
-        stroke="white"
-        stroke-opacity="0.16"
+        rx="10"
+        :fill="muted ? 'rgba(255,255,255,0.08)' : '#0B0F19'"
+        :stroke="muted ? 'rgba(255,255,255,0.12)' : '#14C8B8'"
+        stroke-width="1.4"
+        :stroke-opacity="muted ? '0.2' : '0.35'"
       />
       <path
-        d="M9.2 21.9c3.1-4.85 6.5-7.28 10.1-7.28 3.6 0 7 2.43 10.1 7.28"
-        stroke="white"
-        stroke-opacity="0.92"
-        stroke-width="2.5"
+        d="M7 17.5c3.6-5.5 8.2-8 13-8s9.4 2.5 13 8c-3.6 5.5-8.2 8-13 8s-9.4-2.5-13-8Z"
+        :stroke="muted ? 'rgba(255,255,255,0.6)' : '#FFFFFF'"
+        stroke-width="2.2"
+        :fill="muted ? 'transparent' : '#141E30'"
+        stroke-linejoin="round"
+      />
+      <circle cx="20" cy="17.5" r="4.2" :fill="muted ? 'rgba(255,255,255,0.6)' : '#FFFFFF'" />
+      <circle cx="20" cy="17.5" r="1.7" :fill="muted ? 'transparent' : '#0B0F19'" />
+      <line
+        x1="9.5"
+        y1="29"
+        x2="30.5"
+        y2="29"
+        :stroke="muted ? 'rgba(255,255,255,0.45)' : '#14C8B8'"
+        stroke-width="2.4"
         stroke-linecap="round"
       />
-      <circle cx="19.5" cy="21.9" r="3.25" fill="white" />
-      <circle cx="19.5" cy="21.9" r="1.15" fill="#0B0B11" />
-      <path
-        d="M15.2 27.4h8.6"
-        stroke="white"
-        stroke-opacity="0.45"
-        stroke-width="1.8"
+      <line
+        x1="13.5"
+        y1="34"
+        x2="26.5"
+        y2="34"
+        :stroke="muted ? 'rgba(255,255,255,0.3)' : '#14C8B8'"
+        stroke-width="2"
         stroke-linecap="round"
+        :stroke-opacity="muted ? '0.6' : '0.8'"
       />
     </svg>
   </span>

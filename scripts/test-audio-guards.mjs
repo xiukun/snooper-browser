@@ -25,7 +25,7 @@ const bundle = (entry, name) => {
   return out;
 };
 
-const { isLikelyAsrHallucination } = await import(
+const { isLikelyAsrHallucination, isLikelyAsrHallucinationSequence } = await import(
   pathToFileURL(bundle('src/lib/asr-guard.ts', 'asr-guard.mjs')).href
 );
 const {
@@ -57,11 +57,13 @@ const hallucinations = [
   'Subtitles by the Amara.org community',
   '123456789',
   '[whistle]',
+  '[whistle',
   '...',
   '请不吝点赞 订阅 转发 打赏支持明镜与点点栏目',
   '字幕由Amara.org社区提供',
   'ご視聴ありがとうございました',
   '啊啊啊啊啊啊啊啊',
+  'One, two, three, four, five, six, seven, eight, nine, ten.',
 ];
 
 const realLines = [
@@ -79,6 +81,23 @@ for (const text of hallucinations) {
 }
 for (const text of realLines) {
   check(`keep real line: ${text.slice(0, 24)}`, isLikelyAsrHallucination(text), false);
+}
+
+// Generic one-liners can be real dialogue. They become suspicious only when
+// they follow the characteristic counting hallucination burst from the ASR.
+{
+  check('keep standalone generic dialogue', isLikelyAsrHallucination("What's up?"), false);
+  const burst = [
+    'One, two, three, four, five, six, seven, eight, nine, ten.',
+    "What's up?",
+    'Keep it up.',
+    'Thank you.',
+  ];
+  const history = [];
+  for (const text of burst) {
+    check(`drop hallucination sequence: ${text.slice(0, 20)}`, isLikelyAsrHallucinationSequence(history, text), true);
+    history.push(text);
+  }
 }
 
 /* ---------- 2. Energy gate + trimming ---------- */

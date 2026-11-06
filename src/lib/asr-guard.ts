@@ -22,6 +22,7 @@
 const STOCK_LINES: RegExp[] = [
   // English
   /^(who are you|i need to go eat|i'?ll reach out to you|thank you for watching|thanks for watching|thanks? for (liking|subscribing)|please subscribe|like and subscribe|see you (next|in the next) (time|video))(?:[\s.!?…]*)$/i,
+  /^one[,.\s]+two[,.\s]+three[,.\s]+four[,.\s]+five[,.\s]+six[,.\s]+seven[,.\s]+eight[,.\s]+nine[,.\s]+ten[.!?…]*$/i,
   /^(subtitles? (by|provided by)|captions? by|transcri(bed|ption) by)\b.*$/i,
   /^(amara\.org|www\.amara\.org).*$/i,
   // Chinese: `\b` never matches between CJK characters, so these use explicit
@@ -51,6 +52,13 @@ function normalize(text: string): string {
     .trim();
 }
 
+function normalizeEnglish(text: string): string {
+  return normalize(text).toLowerCase().replace(/[^a-z]+/g, ' ').trim();
+}
+
+const GENERIC_BURST_LINES = new Set(['what s up', 'keep it up', 'thank you']);
+const COUNTING_BURST_LINE = 'one two three four five six seven eight nine ten';
+
 /**
  * True when the transcript is almost certainly invented rather than heard.
  * Conservative by design: real speech that merely looks odd should pass.
@@ -69,4 +77,20 @@ export function isLikelyAsrHallucination(text: string): boolean {
   if (DEGENERATE_RUN.test(t)) return true;
 
   return false;
+}
+
+/**
+ * Detect the characteristic multi-segment noise burst shown by Whisper-like
+ * models. The generic lines are intentionally not rejected on their own:
+ * they are common, valid dialogue in a real programme.
+ */
+export function isLikelyAsrHallucinationSequence(history: string[], text: string): boolean {
+  if (isLikelyAsrHallucination(text)) return true;
+
+  const current = normalizeEnglish(text);
+  if (!GENERIC_BURST_LINES.has(current)) return false;
+
+  return history
+    .slice(-4)
+    .some((candidate) => normalizeEnglish(candidate) === COUNTING_BURST_LINE);
 }

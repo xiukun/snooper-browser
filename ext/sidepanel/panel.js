@@ -55,7 +55,8 @@
         vaultPath: typeof r.vaultPath === "string" ? r.vaultPath : "",
         apiProtocol: protocol,
         apiPort: port,
-        apiKey: typeof r.apiKey === "string" ? r.apiKey : "",
+        // Users copy the plugin's "Bearer <token>" line; store only the token.
+        apiKey: typeof r.apiKey === "string" ? r.apiKey.trim().replace(/^Bearer\s+/i, "").trim() : "",
         noteFolder: typeof r.noteFolder === "string" && r.noteFolder.trim() ? r.noteFolder.trim() : DEFAULT_OBSIDIAN.noteFolder
       };
     }
@@ -112,6 +113,9 @@
     const historyList = document.getElementById("history-list");
     const historyEmpty = document.getElementById("history-empty");
     const historyCount = document.getElementById("history-count");
+    const historySelectAll = document.getElementById("history-select-all");
+    const historyDeleteSelected = document.getElementById("history-delete-selected");
+    const historyClear = document.getElementById("history-clear");
     function showNotice(text, isError = false) {
       noticeBanner.textContent = text;
       noticeBanner.className = `notice-banner ${isError ? "error" : "success"}`;
@@ -275,6 +279,18 @@
     function formatTime(ts) {
       return new Date(ts).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
     }
+    function getSelectedHistoryIds() {
+      return Array.from(historyList.querySelectorAll("input.history-check:checked")).map((el) => el.dataset.id || "").filter(Boolean);
+    }
+    function updateHistorySelection() {
+      const all = Array.from(historyList.querySelectorAll("input.history-check"));
+      const selected = all.filter((el) => el.checked);
+      historyDeleteSelected.disabled = selected.length === 0;
+      historyDeleteSelected.textContent = selected.length > 0 ? `\u5220\u9664\u6240\u9009 (${selected.length})` : "\u5220\u9664\u6240\u9009";
+      historySelectAll.checked = all.length > 0 && selected.length === all.length;
+      historySelectAll.indeterminate = selected.length > 0 && selected.length < all.length;
+      historySelectAll.disabled = all.length === 0;
+    }
     async function loadAndRenderHistory() {
       const res = await chrome.runtime.sendMessage({ target: "background", type: "GET_HISTORY" });
       const items = res?.history || [];
@@ -283,6 +299,7 @@
       if (items.length === 0) {
         historyList.style.display = "none";
         historyEmpty.style.display = "block";
+        updateHistorySelection();
         return;
       }
       historyList.style.display = "flex";
@@ -290,24 +307,57 @@
       items.forEach((item) => {
         const el = document.createElement("div");
         el.className = "history-item";
-        el.innerHTML = `
+        const check = document.createElement("input");
+        check.type = "checkbox";
+        check.className = "history-check";
+        check.dataset.id = item.id;
+        check.setAttribute("aria-label", `\u9009\u62E9 ${item.pageTitle || "\u8BB0\u5F55"}`);
+        check.addEventListener("change", updateHistorySelection);
+        el.appendChild(check);
+        const main = document.createElement("div");
+        main.className = "history-item-main";
+        main.innerHTML = `
         <div class="history-item-title" title="${escapeHtml(item.pageTitle || "")}">${escapeHtml(item.pageTitle || "\u672A\u77E5\u9875\u9762")}</div>
         <div class="history-item-meta">
           <span>&#x1F550; ${formatTime(item.startedAt)}</span>
           <span>&#x1F3AF; ${item.subtitleCount || 0} \u6761\u5B57\u5E55</span>
           <span>${escapeHtml(item.sourceLang || "")} \u2192 ${escapeHtml(item.targetLang || "")}</span>
         </div>
-        <div class="history-item-actions">
-          <button class="btn btn-sm btn-secondary" data-action="delete">\u5220\u9664</button>
-        </div>
       `;
-        el.querySelector('[data-action="delete"]')?.addEventListener("click", (e) => {
-          e.stopPropagation();
+        el.appendChild(main);
+        const actions = document.createElement("div");
+        actions.className = "history-item-actions";
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "btn btn-sm btn-secondary";
+        del.textContent = "\u5220\u9664";
+        del.addEventListener("click", () => {
+          if (!confirm(`\u786E\u5B9A\u5220\u9664\u300C${item.pageTitle || "\u8FD9\u6761\u8BB0\u5F55"}\u300D\uFF1F`)) return;
           chrome.runtime.sendMessage({ target: "background", type: "DELETE_HISTORY", id: item.id }).then(() => loadAndRenderHistory());
         });
+        actions.appendChild(del);
+        el.appendChild(actions);
         historyList.appendChild(el);
       });
+      updateHistorySelection();
     }
+    historySelectAll.addEventListener("change", () => {
+      const checked = historySelectAll.checked;
+      historyList.querySelectorAll("input.history-check").forEach((el) => {
+        el.checked = checked;
+      });
+      updateHistorySelection();
+    });
+    historyDeleteSelected.addEventListener("click", () => {
+      const ids = getSelectedHistoryIds();
+      if (ids.length === 0) return;
+      if (!confirm(`\u786E\u5B9A\u5220\u9664\u9009\u4E2D\u7684 ${ids.length} \u6761\u5386\u53F2\u8BB0\u5F55\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002`)) return;
+      chrome.runtime.sendMessage({ target: "background", type: "DELETE_HISTORY", ids }).then(() => loadAndRenderHistory());
+    });
+    historyClear.addEventListener("click", () => {
+      if (!confirm("\u786E\u5B9A\u6E05\u7A7A\u5168\u90E8\u5386\u53F2\u8BB0\u5F55\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002")) return;
+      chrome.runtime.sendMessage({ target: "background", type: "DELETE_ALL_HISTORY" }).then(() => loadAndRenderHistory());
+    });
     function escapeHtml(text) {
       const div = document.createElement("div");
       div.textContent = text;

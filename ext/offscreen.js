@@ -249,10 +249,10 @@
       session.recentContext = session.recentContext.slice(-MAX_CONTEXT_ENTRIES);
     }
   }
-  async function startTabCapture({ tabId: tabId2, streamId, sourceLang, targetLang, config, generation }) {
-    await stopTabCapture(tabId2);
+  async function startTabCapture({ tabId, streamId, sourceLang, targetLang, config, generation }) {
+    await stopTabCapture(tabId);
     const session = {
-      tabId: tabId2,
+      tabId,
       generation,
       sourceLang,
       targetLang,
@@ -268,19 +268,66 @@
       isSilent: false,
       pendingTranscriptions: 0,
       currentAskController: null,
-      aborted: false
+      aborted: false,
+      videoEl: null
     };
-    captureSessions.set(tabId2, session);
+    captureSessions.set(tabId, session);
+    ensureKeepAlive();
     try {
-      session.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          mandatory: {
-            chromeMediaSource: "tab",
-            chromeMediaSourceId: streamId
-          }
-        },
-        video: false
-      });
+      const audioConstraints = {
+        mandatory: {
+          chromeMediaSource: "tab",
+          chromeMediaSourceId: streamId
+        }
+      };
+      const videoConstraints = {
+        mandatory: {
+          chromeMediaSource: "tab",
+          chromeMediaSourceId: streamId,
+          maxWidth: 1920,
+          maxHeight: 1080,
+          maxFrameRate: 5
+        }
+      };
+      let mediaStream;
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints,
+          video: videoConstraints
+        });
+      } catch (videoErr) {
+        console.warn("[RTTS] video track unavailable, falling back to audio only:", videoErr);
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints,
+          video: false
+        });
+      }
+      session.mediaStream = mediaStream;
+      for (const track of mediaStream.getTracks()) {
+        track.addEventListener("ended", () => {
+          const current = captureSessions.get(tabId);
+          if (!current || current.aborted || current.generation !== generation) return;
+          chrome.runtime.sendMessage({
+            type: "CAPTURE_ENDED",
+            tabId,
+            generation,
+            reason: track.kind
+          }).catch(() => {
+          });
+          stopTabCapture(tabId);
+        });
+      }
+      if (mediaStream.getVideoTracks().length > 0) {
+        const videoEl = document.createElement("video");
+        videoEl.srcObject = mediaStream;
+        videoEl.muted = true;
+        videoEl.playsInline = true;
+        videoEl.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none";
+        document.body.appendChild(videoEl);
+        videoEl.play().catch(() => {
+        });
+        session.videoEl = videoEl;
+      }
       session.audioCtx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
       session.monitorAudioCtx = new AudioContext();
       const sourceNode = session.audioCtx.createMediaStreamSource(session.mediaStream);
@@ -291,7 +338,7 @@
       session.workletNode.port.onmessage = (event) => {
         const msg = event.data;
         if (msg.type === "pcm") {
-          onPcmChunk(tabId2, msg);
+          onPcmChunk(tabId, msg);
         }
       };
       sourceNode.connect(session.workletNode);
@@ -302,25 +349,25 @@
       monitorGain.connect(session.monitorAudioCtx.destination);
       chrome.runtime.sendMessage({
         type: "CAPTURE_STARTED",
-        tabId: tabId2,
+        tabId,
         generation
       });
       return { ok: true };
     } catch (err) {
-      await stopTabCapture(tabId2);
+      await stopTabCapture(tabId);
       throw err;
     }
   }
-  function onPcmChunk(tabId2, msg) {
-    const session = captureSessions.get(tabId2);
+  function onPcmChunk(tabId, msg) {
+    const session = captureSessions.get(tabId);
     if (!session) return;
     const pcmData = new Int16Array(msg.buffer);
     session.pcmBuffer.push(pcmData);
     session.lastChunkTime = Date.now();
-    checkSegment(tabId2);
+    checkSegment(tabId);
   }
-  function checkSegment(tabId2) {
-    const session = captureSessions.get(tabId2);
+  function checkSegment(tabId) {
+    const session = captureSessions.get(tabId);
     if (!session || session.aborted) return;
     const now = Date.now();
     const segmentDuration = now - session.segmentStartTime;
@@ -333,14 +380,14 @@
         session.isSilent = true;
         session.lastSilenceTime = now;
       } else if (now - session.lastSilenceTime >= SILENCE_THRESHOLD_MS) {
-        finalizeSegment(tabId2);
+        finalizeSegment(tabId);
       }
     } else {
       session.isSilent = false;
       session.lastSilenceTime = 0;
     }
     if (segmentDuration >= MAX_SEGMENT_DURATION_MS) {
-      finalizeSegment(tabId2);
+      finalizeSegment(tabId);
     }
   }
   function getRecentPcm(session, durationMs) {
@@ -523,8 +570,8 @@ ${contextBlock}` : "",
     const answer = extractChatText(json);
     return answer.trim().replace(/^["“「『]([\s\S]*)["”」』]$/, "$1").trim();
   }
-  async function finalizeSegment(tabId2) {
-    const session = captureSessions.get(tabId2);
+  async function finalizeSegment(tabId) {
+    const session = captureSessions.get(tabId);
     if (!session) return;
     if (session.pendingTranscriptions >= MAX_QUEUE_SIZE) return;
     const segmentStartTime = session.segmentStartTime;
@@ -546,7 +593,7 @@ ${contextBlock}` : "",
       const contextSummary = getContextSummary(session);
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE_STREAMING",
-        tabId: tabId2,
+        tabId,
         generation: session.generation,
         at: segmentStartTime,
         source: transcription,
@@ -567,7 +614,7 @@ ${contextBlock}` : "",
           );
           chrome.runtime.sendMessage({
             type: "CAPTURE_SUBTITLE_STREAMING",
-            tabId: tabId2,
+            tabId,
             generation: session.generation,
             at: segmentStartTime,
             source: transcription,
@@ -586,7 +633,7 @@ ${contextBlock}` : "",
       if (session.aborted) return;
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE",
-        tabId: tabId2,
+        tabId,
         generation: session.generation,
         at: segmentStartTime,
         endedAt: Date.now(),
@@ -599,7 +646,7 @@ ${contextBlock}` : "",
       console.warn("[RTTS] finalizeSegment error:", err.message);
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE_STREAMING",
-        tabId: tabId2,
+        tabId,
         generation: session.generation,
         at: segmentStartTime,
         source: "",
@@ -609,7 +656,7 @@ ${contextBlock}` : "",
       });
       chrome.runtime.sendMessage({
         type: "CAPTURE_ERROR",
-        tabId: tabId2,
+        tabId,
         generation: session.generation,
         error: err.message
       });
@@ -670,8 +717,8 @@ ${question}`
     const output = json.output?.flatMap((item) => item.content || []).map((p) => p.text || "").join("");
     return output || "";
   }
-  async function stopTabCapture(tabId2) {
-    const session = captureSessions.get(tabId2);
+  async function stopTabCapture(tabId) {
+    const session = captureSessions.get(tabId);
     if (!session) return;
     session.aborted = true;
     if (session.currentAskController) {
@@ -689,28 +736,70 @@ ${question}`
     if (session.monitorAudioCtx && session.monitorAudioCtx.state !== "closed") {
       await session.monitorAudioCtx.close();
     }
+    if (session.videoEl) {
+      session.videoEl.pause();
+      session.videoEl.srcObject = null;
+      session.videoEl.remove();
+      session.videoEl = null;
+    }
     if (session.mediaStream) {
       session.mediaStream.getTracks().forEach((track) => track.stop());
     }
-    captureSessions.delete(tabId2);
+    captureSessions.delete(tabId);
+    stopKeepAliveIfIdle();
+  }
+  var keepAliveTimer = null;
+  function ensureKeepAlive() {
+    if (keepAliveTimer !== null) return;
+    keepAliveTimer = setInterval(() => {
+      for (const [tabId, session] of captureSessions) {
+        try {
+          chrome.runtime.sendMessage({
+            type: "CAPTURE_KEEPALIVE",
+            tabId,
+            generation: session.generation
+          }).catch(() => {
+          });
+        } catch {
+        }
+      }
+    }, 15e3);
+  }
+  function stopKeepAliveIfIdle() {
+    if (captureSessions.size === 0 && keepAliveTimer !== null) {
+      clearInterval(keepAliveTimer);
+      keepAliveTimer = null;
+    }
   }
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (sender.id !== chrome.runtime.id) return false;
     if (message?.target && message.target !== "offscreen") return false;
     switch (message.type) {
       case "START_CAPTURE": {
-        const { tabId: tabId2, streamId, sourceLang, targetLang, config, generation } = message;
-        startTabCapture({ tabId: tabId2, streamId, sourceLang, targetLang, config, generation }).then((result) => sendResponse(result)).catch((err) => sendResponse({ ok: false, error: err.message }));
+        const { tabId, streamId, sourceLang, targetLang, config, generation } = message;
+        startTabCapture({ tabId, streamId, sourceLang, targetLang, config, generation }).then((result) => sendResponse(result)).catch((err) => sendResponse({ ok: false, error: err.message }));
         return true;
       }
       case "STOP_CAPTURE": {
-        const tabId2 = message.tabId;
-        stopTabCapture(tabId2).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }));
+        const tabId = message.tabId;
+        stopTabCapture(tabId).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }));
         return true;
       }
+      case "GET_CAPTURE_SESSIONS": {
+        const sessions = {};
+        for (const [tabId, session] of captureSessions) {
+          sessions[String(tabId)] = session.generation;
+        }
+        sendResponse({
+          ok: true,
+          tabIds: Array.from(captureSessions.keys()),
+          sessions
+        });
+        return false;
+      }
       case "SET_LANG": {
-        const tabId2 = message.tabId;
-        const session = captureSessions.get(tabId2);
+        const tabId = message.tabId;
+        const session = captureSessions.get(tabId);
         if (session) {
           if (message.sourceLang) session.sourceLang = message.sourceLang;
           if (message.targetLang) session.targetLang = message.targetLang;
@@ -719,6 +808,7 @@ ${question}`
         return false;
       }
       case "CAPTURE_FRAME": {
+        const tabId = message.tabId;
         const sess = captureSessions.get(tabId);
         if (!sess || sess.aborted || !sess.videoEl || !sess.videoEl.videoWidth) {
           sendResponse({ ok: false, error: "\u6CA1\u6709\u53EF\u7528\u7684\u89C6\u9891\u5E27" });
@@ -750,8 +840,8 @@ ${question}`
         return true;
       }
       case "ASK_QUESTION": {
-        const { tabId: tabId2, question, requestId, generation, config, context, sourceLang, targetLang } = message;
-        const session = captureSessions.get(tabId2);
+        const { tabId, question, requestId, generation, config, context, sourceLang, targetLang } = message;
+        const session = captureSessions.get(tabId);
         if (!session || session.generation !== generation) {
           sendResponse({ ok: false, error: "\u4F1A\u8BDD\u5DF2\u8FC7\u671F" });
           return false;
@@ -776,8 +866,8 @@ ${question}`
     }
   });
   setInterval(() => {
-    for (const tabId2 of captureSessions.keys()) {
-      checkSegment(tabId2);
+    for (const tabId of captureSessions.keys()) {
+      checkSegment(tabId);
     }
   }, 200);
   console.log("[RTTS] Offscreen document v0.5 (TS) initialized");

@@ -19,6 +19,15 @@ const SESSION_RECOVERY_KEY = 'snooper.extension.sessions.v1';
 const HISTORY_KEY = 'snooper.extension.history.v1';
 const MAX_HISTORY = 100;
 const OFFSCREEN_PATH = 'offscreen.html';
+
+/**
+ * Obsidian's Local REST API plugin displays the key as "Bearer <token>".
+ * Users copy that whole string; sending it back with another "Bearer " prefix
+ * produces "Bearer Bearer <token>" and a 401. Normalize at every entry point.
+ */
+function normalizeObsidianKey(raw: unknown): string {
+  return String(raw || '').trim().replace(/^Bearer\s+/i, '').trim();
+}
 const CONTENT_SCRIPT_FILE = 'content.js';
 const FS_BRIDGE_FILE = 'fullscreen-bridge.js';
 
@@ -87,7 +96,9 @@ interface SessionState {
 /** @type {Map<number, SessionState>} */
 const sessions = new Map<number, SessionState>();
 
-let generationCounter = 0;
+// Seed with the clock so a restarted service worker never reuses a
+// generation that a still-alive offscreen session already holds.
+let generationCounter = Date.now();
 
 function nextGeneration() {
   return ++generationCounter;
@@ -176,6 +187,48 @@ async function sendToOffscreen(message: Record<string, any>) {
   } catch (err: any) {
     // Offscreen may not be listening yet
     throw new Error('Offscreen 通信失败: ' + (err.message || '未知错误'));
+  }
+}
+
+async function hasOffscreenDocument(): Promise<boolean> {
+  try {
+    return typeof chrome.offscreen !== 'undefined' &&
+      typeof chrome.offscreen.hasDocument === 'function' &&
+      (await chrome.offscreen.hasDocument());
+  } catch {
+    return false;
+  }
+}
+
+/** True when a live offscreen capture session exists for this tab. */
+async function offscreenHasCapture(tabId: number): Promise<boolean> {
+  if (!(await hasOffscreenDocument())) return false;
+  try {
+    const res: any = await chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'GET_CAPTURE_SESSIONS',
+    });
+    return !!res?.ok && Array.isArray(res.tabIds) && res.tabIds.includes(tabId);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stop a capture for a tab without creating the offscreen document. Used
+ * before START: a restarted service worker may have left an old capture
+ * alive, and tabCapture rejects a second stream for the same tab.
+ */
+async function stopOrphanCapture(tabId: number) {
+  if (!(await hasOffscreenDocument())) return;
+  try {
+    await chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'STOP_CAPTURE',
+      tabId,
+    });
+  } catch {
+    // Offscreen may be shutting down; best-effort.
   }
 }
 
@@ -295,6 +348,8 @@ function pushSession(tabId: number) {
   }).catch(() => {
     // Tab may have been closed or content script not loaded
   });
+
+  persistSessionsThrottled();
 }
 
 /**
@@ -614,43 +669,58 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
     }
 
     case 'START': {
-      const s = getOrCreateSession(tabId);
-      if (s.state === 'running' || s.state === 'starting') {
-        sendResponse({ ok: false, error: '当前标签页已在转写中' });
-        return false;
-      }
+      (async () => {
+        const s = getOrCreateSession(tabId);
 
-      s.state = 'starting';
-      s.sourceLang = message.sourceLang || 'auto';
-      s.targetLang = message.targetLang || 'zh';
-      s.generation = nextGeneration();
-      s.subtitles = [];
-      // Don't clear messages – they persist across restarts
-      pushSession(tabId);
-
-      // Load config and take a snapshot
-      loadConfig().then(async (config) => {
-        // Pre-check: verify at least one provider has API key
-        const hasKey = config.providers.some((p) => p.apiKey && p.apiKey.trim().length > 0);
-        if (!hasKey) {
-          throw new Error('尚未配置 API Key。请点击页面悬浮栏的 ⚙ 按钮，在页面内填入密钥后重试');
-        }
-        // Pre-check: audio route must resolve
-        const audioRoute = config.routes.audio;
-        const audioProvider = config.providers.find((p) => p.id === audioRoute.providerId);
-        if (!audioProvider || !audioProvider.apiKey) {
-          throw new Error(`音频转写服务商「${audioProvider?.name || '未配置'}」缺少 API Key，请点击 ⚙ 在页面内配置`);
-        }
-        if (!audioRoute.model) {
-          throw new Error('音频转写未选择模型，请点击悬浮栏的 ⚙ 在页面内配置');
+        if (s.state === 'running' || s.state === 'starting') {
+          // In-memory state can outlive the offscreen capture after a service
+          // worker restart. Only block when a capture is really alive.
+          const live = await offscreenHasCapture(tabId);
+          if (live) {
+            sendResponse({ ok: false, error: '当前标签页已在转写中' });
+            return;
+          }
+          s.state = 'idle';
+          s.streamId = '';
+          s.configSnapshot = null;
+          s.streamingSubtitle = null;
         }
 
-        s.configSnapshot = JSON.parse(JSON.stringify(config));
-        console.log('[RTTS] START:', tabId, 'gen:', s.generation, 'lang:', s.sourceLang, '→', s.targetLang);
+        s.state = 'starting';
+        s.sourceLang = message.sourceLang || 'auto';
+        s.targetLang = message.targetLang || 'zh';
+        s.generation = nextGeneration();
+        s.subtitles = [];
+        s.streamingSubtitle = null;
+        // Don't clear messages – they persist across restarts
+        pushSession(tabId);
 
-        // Get stream ID
         try {
-          const streamId = await new Promise<string>((resolve, reject) => {
+          const config = await loadConfig();
+
+          // Pre-check: verify at least one provider has API key
+          const hasKey = config.providers.some((p) => p.apiKey && p.apiKey.trim().length > 0);
+          if (!hasKey) {
+            throw new Error('尚未配置 API Key。请点击页面悬浮栏的 ⚙ 按钮，在页面内填入密钥后重试');
+          }
+          // Pre-check: audio route must resolve
+          const audioRoute = config.routes.audio;
+          const audioProvider = config.providers.find((p) => p.id === audioRoute.providerId);
+          if (!audioProvider || !audioProvider.apiKey) {
+            throw new Error(`音频转写服务商「${audioProvider?.name || '未配置'}」缺少 API Key，请点击 ⚙ 在页面内配置`);
+          }
+          if (!audioRoute.model) {
+            throw new Error('音频转写未选择模型，请点击悬浮栏的 ⚙ 在页面内配置');
+          }
+
+          s.configSnapshot = JSON.parse(JSON.stringify(config));
+          console.log('[RTTS] START:', tabId, 'gen:', s.generation, 'lang:', s.sourceLang, '→', s.targetLang);
+
+          // Clear an orphaned capture left behind by a restarted service
+          // worker. tabCapture refuses a new stream while one is alive.
+          await stopOrphanCapture(tabId);
+
+          const requestStreamId = () => new Promise<string>((resolve, reject) => {
             chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (id) => {
               if (chrome.runtime.lastError) {
                 reject(new Error(chrome.runtime.lastError.message));
@@ -661,6 +731,18 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
               }
             });
           });
+
+          let streamId: string;
+          try {
+            streamId = await requestStreamId();
+          } catch (err: any) {
+            if (!/active stream/i.test(err?.message || '')) throw err;
+            // Offscreen teardown is asynchronous – clean once more and retry.
+            await stopOrphanCapture(tabId);
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            streamId = await requestStreamId();
+          }
+
           s.streamId = streamId;
           console.log('[RTTS] streamId obtained for tab', tabId);
 
@@ -690,27 +772,33 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
           // tabCapture requires the extension to have host permission for the
           // tab. With <all_urls> host permissions this should never fire, but
           // if it does (e.g. Chrome internal pages), guide the user clearly.
-          if (/not been invoked|activeTab/i.test(msg)) {
+          if (/active stream/i.test(msg)) {
+            friendly = '该标签页仍有残留录音流（扩展后台重启所致）。已自动清理，请再点一次「录音」；若仍失败，请刷新页面后重试';
+          } else if (/not been invoked|activeTab/i.test(msg)) {
             friendly = '需要先完成一次授权：点击浏览器工具栏的 snooper 图标（弹出的面板可立即关闭），之后本页可直接使用';
           } else if (/permission|Permission|not allowed|not permitted/i.test(msg)) {
             friendly = '缺少录音权限：请确认扩展已获得「读取和更改网站数据」权限，然后重试';
           }
           sendResponse({ ok: false, error: friendly });
         }
-      }).catch((err) => {
-        console.warn('[RTTS] START config error:', err.message);
-        s.state = 'idle';
-        s.configSnapshot = null;
-        sendResponse({ ok: false, error: err.message });
-      });
-
+      })();
       return true; // async
     }
 
     case 'STOP': {
       const s = sessions.get(tabId);
-      if (!s || (s.state !== 'running' && s.state !== 'starting')) {
-        sendResponse({ ok: false, error: '当前标签页未在转写' });
+      if (!s) {
+        // Still tear down: a restarted worker has no session object, but the
+        // offscreen capture may be alive and would block the next START.
+        stopOrphanCapture(tabId).catch(() => {});
+        sendResponse({ ok: true });
+        return false;
+      }
+      // Deliberately idempotent. A stop request must always clear the capture;
+      // refusing it with "not transcribing" is how an orphan stream survived.
+      if (s.state === 'idle' && s.generation !== 0) {
+        stopOrphanCapture(tabId).catch(() => {});
+        sendResponse({ ok: true });
         return false;
       }
 
@@ -829,8 +917,14 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
       // stream." In that case we ask offscreen to grab a video frame.
       chrome.tabs.captureVisibleTab({ format: 'png' }).then((dataUrl) => {
         sendResponse({ ok: true, dataUrl });
-      }).catch((err) => {
+      }).catch(async (err) => {
         if (err.message && /active stream/i.test(err.message)) {
+          // Only a running offscreen capture can supply a frame. Do not create
+          // an empty offscreen document just to ask for one.
+          if (!(await hasOffscreenDocument())) {
+            sendResponse({ ok: false, error: '截图失败：标签页正被其他录音占用，请停止后重试' });
+            return;
+          }
           // Fallback: ask offscreen for a frame from its capture video element
           sendToOffscreen({ type: 'CAPTURE_FRAME', tabId }).then((frame: any) => {
             if (frame && frame.dataUrl) {
@@ -887,7 +981,7 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         : oc.apiProtocol === 'http'
           ? 'http'
           : (obsidianPort === 27124 ? 'https' : 'http');
-      const obsidianApiKey = oc.apiKey || '';
+      const obsidianApiKey = normalizeObsidianKey(oc.apiKey);
       const noteFolder = String(oc.noteFolder || 'snooper-notes').replace(/^\/+|\/+$/g, '');
       const fileName = `${title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '_')}.md`;
       const base = `${protocol}://127.0.0.1:${obsidianPort}`;
@@ -926,9 +1020,78 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
       return true;
     }
 
+    case 'OBSIDIAN_UPLOAD_ASSET': {
+      // Upload a note image (data URL or remote URL) to the vault so the
+      // exported markdown can embed it with ![[file]]. Obsidian does not
+      // render data: URLs, which is why exported images used to be blank.
+      const oc = message.obsidianConfig || {};
+      const key = normalizeObsidianKey(oc.apiKey);
+      const port = Number(oc.apiPort) || 27123;
+      const protocol = oc.apiProtocol === 'https' ? 'https' : oc.apiProtocol === 'http' ? 'http' : (port === 27124 ? 'https' : 'http');
+      const folder = String(oc.noteFolder || 'snooper-notes').replace(/^\/+|\/+$/g, '');
+      const fileName = String(message.fileName || '').replace(/[^a-zA-Z0-9._-]/g, '-');
+      if (!fileName) {
+        sendResponse({ ok: false, error: '资产文件名为空' });
+        return false;
+      }
+
+      (async () => {
+        try {
+          let bytes: Uint8Array;
+          let mime = String(message.mimeType || 'image/png');
+          const dataUrl = String(message.dataUrl || '');
+
+          if (dataUrl.startsWith('data:')) {
+            const match = /^data:([^;,]+)?(?:;base64)?,(.*)$/s.exec(dataUrl);
+            if (!match) throw new Error('图片数据格式无法识别');
+            if (match[1]) mime = match[1];
+            const isBase64 = /;base64,/.test(dataUrl);
+            if (isBase64) {
+              const binary = atob(match[2] || '');
+              bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            } else {
+              bytes = new TextEncoder().encode(decodeURIComponent(match[2] || ''));
+            }
+          } else if (/^https?:\/\//i.test(dataUrl)) {
+            const r = await fetch(dataUrl);
+            if (!r.ok) throw new Error(`下载图片失败 HTTP ${r.status}`);
+            const buf = await r.arrayBuffer();
+            bytes = new Uint8Array(buf);
+            mime = r.headers.get('content-type') || mime;
+          } else if (String(message.rawText || '')) {
+            // SVG entries are stored as markup, not as a URL.
+            bytes = new TextEncoder().encode(String(message.rawText));
+            mime = 'image/svg+xml';
+          } else {
+            throw new Error('没有可上传的图片数据');
+          }
+
+          const base = `${protocol}://127.0.0.1:${port}`;
+          const assetPath = folder ? `/vault/${folder}/assets/${encodeURIComponent(fileName)}` : `/vault/assets/${encodeURIComponent(fileName)}`;
+          const res = await fetch(base + assetPath, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': mime,
+              ...(key ? { Authorization: `Bearer ${key}` } : {}),
+            },
+            body: bytes as unknown as BodyInit,
+          });
+          if (!res.ok) {
+            sendResponse({ ok: false, error: `图片上传失败 HTTP ${res.status}` });
+            return;
+          }
+          sendResponse({ ok: true, fileName });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err.message || '图片上传失败' });
+        }
+      })();
+      return true;
+    }
+
     case 'TEST_OBSIDIAN': {
       const oc = message.obsidianConfig || {};
-      const key = oc.apiKey || '';
+      const key = normalizeObsidianKey(oc.apiKey);
       const configuredPort = Number(oc.apiPort) || 27123;
       const configuredProtocol = oc.apiProtocol === 'https' ? 'https' : oc.apiProtocol === 'http' ? 'http' : (configuredPort === 27124 ? 'https' : 'http');
       const seen = new Set<string>();
@@ -981,8 +1144,17 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
     }
 
     case 'DELETE_HISTORY': {
-      const id = String(message.id || '');
-      deleteHistoryEntry(id).then(() => sendResponse({ ok: true })).catch(() => {
+      const ids = Array.isArray(message.ids)
+        ? message.ids.map((id: any) => String(id))
+        : [String(message.id || '')];
+      deleteHistoryEntries(ids).then(() => sendResponse({ ok: true })).catch(() => {
+        sendResponse({ ok: false });
+      });
+      return true;
+    }
+
+    case 'DELETE_ALL_HISTORY': {
+      clearHistory().then(() => sendResponse({ ok: true })).catch(() => {
         sendResponse({ ok: false });
       });
       return true;
@@ -1003,10 +1175,48 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
   }
 
   switch (message.type) {
+    case 'CAPTURE_KEEPALIVE': {
+      // Receiving this message resets the MV3 service-worker idle timer, which
+      // is what keeps the background alive through long silent stretches.
+      const s = sessions.get(message.tabId);
+      // Only finish an in-flight start. Reviving any non-running state would
+      // resurrect a session the user already stopped.
+      if (s && s.state === 'starting' && s.generation === message.generation) {
+        s.state = 'running';
+        pushSession(message.tabId);
+      }
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    case 'CAPTURE_ENDED': {
+      // The captured audio track ended (tab audio stopped, close button in
+      // Chrome's sharing bar, device change...). Reflect reality instead of
+      // leaving the toolbar stuck on "recording".
+      const s = sessions.get(message.tabId);
+      if (s && (s.state === 'running' || s.state === 'starting')) {
+        s.state = 'idle';
+        s.streamId = '';
+        s.configSnapshot = null;
+        s.streamingSubtitle = null;
+        if (s.subtitles.length > 0) persistSessionHistory(message.tabId);
+        pushSession(message.tabId);
+        checkAndCloseOffscreen();
+      }
+      sendResponse({ ok: true });
+      return false;
+    }
+
     case 'CAPTURE_SUBTITLE_STREAMING': {
       const s = sessions.get(message.tabId);
       if (!s || s.generation !== message.generation) {
         // Stale streaming update — ignore
+        return false;
+      }
+      // A session that is no longer running must not keep painting subtitles.
+      // Previously a stray tab-lifecycle stop left the offscreen capture
+      // alive, so subtitles kept streaming into a "stopped" toolbar.
+      if (s.state !== 'running' && s.state !== 'starting') {
         return false;
       }
 
@@ -1093,22 +1303,39 @@ chrome.tabs.onRemoved.addListener((tabId: number) => {
 });
 
 // Clean up on navigation
+function stopSessionForTab(tabId: number) {
+  const s = sessions.get(tabId);
+  if (!s || (s.state !== 'running' && s.state !== 'starting')) return;
+  if (s.subtitles.length > 0) persistSessionHistory(tabId);
+  sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {});
+  s.state = 'idle';
+  s.streamId = '';
+  s.configSnapshot = null;
+  s.subtitles = [];
+  s.streamingSubtitle = null;
+  // Keep messages across navigation
+  pushSession(tabId);
+  checkAndCloseOffscreen();
+}
+
 chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: any) => {
-  if (changeInfo.url) {
-    const s = sessions.get(tabId);
-    if (s && (s.state === 'running' || s.state === 'starting')) {
-      // Navigation while capturing – stop gracefully
-      sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {});
-      s.state = 'idle';
-      s.streamId = '';
-      s.configSnapshot = null;
-      s.subtitles = [];
-      s.streamingSubtitle = null;
-      // Keep messages across navigation
-      pushSession(tabId);
-      checkAndCloseOffscreen();
-    }
+  // Only a real document load (`status: 'loading'`) destroys the content
+  // script and therefore invalidates the capture. SPA history.pushState URL
+  // changes keep the script alive, so stopping there would end a recording
+  // for no reason (e.g. Bilibili switching a player parameter).
+  if (changeInfo.status === 'loading') {
+    stopSessionForTab(tabId);
   }
+});
+
+chrome.tabs.onRemoved.addListener((tabId: number) => {
+  const s = sessions.get(tabId);
+  if (!s) return;
+  if (s.subtitles.length > 0) persistSessionHistory(tabId);
+  sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {});
+  sessions.delete(tabId);
+  persistSessions();
+  checkAndCloseOffscreen();
 });
 chrome.tabs.onActivated.addListener(async (activeInfo: any) => {
   // Push current session state to the newly active tab
@@ -1206,12 +1433,19 @@ async function readHistory(): Promise<HistoryEntry[]> {
   } catch { return []; }
 }
 
-async function deleteHistoryEntry(id: string) {
+async function deleteHistoryEntries(ids: string[]) {
   try {
     const got = await chrome.storage.local.get(HISTORY_KEY);
     let history: HistoryEntry[] = Array.isArray(got[HISTORY_KEY]) ? got[HISTORY_KEY] : [];
-    history = history.filter((h) => h.id !== id);
+    const remove = new Set(ids);
+    history = history.filter((h) => !remove.has(h.id));
     await chrome.storage.local.set({ [HISTORY_KEY]: history });
+  } catch { /* ignore */ }
+}
+
+async function clearHistory() {
+  try {
+    await chrome.storage.local.set({ [HISTORY_KEY]: [] });
   } catch { /* ignore */ }
 }
 
@@ -1221,18 +1455,59 @@ async function recoverSessions() {
     if (!result[SESSION_RECOVERY_KEY]) return;
 
     const recovered = JSON.parse(result[SESSION_RECOVERY_KEY]);
-    for (const [tabIdStr, s] of Object.entries(recovered)) {
-      const tabId = Number(tabIdStr);
-      if ((s as any).state === 'running' || (s as any).state === 'starting') {
-        // Can't recover capture streams after SW restart; set to idle
-        (s as any).state = 'idle';
-        (s as any).streamId = '';
+
+    // The offscreen document outlives a background restart. Ask it which
+    // captures are still alive instead of assuming they are gone: assuming
+    // "gone" left an orphaned tabCapture running with a toolbar that said
+    // "stopped", and the next START failed with "active stream".
+    let liveGenerations: Record<string, number> = {};
+    if (await hasOffscreenDocument()) {
+      try {
+        const live: any = await chrome.runtime.sendMessage({
+          target: 'offscreen',
+          type: 'GET_CAPTURE_SESSIONS',
+        });
+        if (live?.ok && live.sessions && typeof live.sessions === 'object') {
+          liveGenerations = live.sessions;
+        }
+      } catch {
+        // Offscreen may be mid-shutdown; treat as no live captures.
       }
-      sessions.set(tabId, s as SessionState);
+    }
+
+    for (const [tabIdStr, stored] of Object.entries(recovered)) {
+      const tabId = Number(tabIdStr);
+      const s = stored as SessionState;
+      const liveGeneration = liveGenerations[String(tabId)];
+
+      if (typeof liveGeneration === 'number') {
+        // Capture survived: keep the session running so STOP still reaches it
+        // and the content script shows the correct recording state.
+        s.state = 'running';
+        s.generation = liveGeneration;
+        s.streamId = '';
+      } else if (s.state === 'running' || s.state === 'starting') {
+        s.state = 'idle';
+        s.streamId = '';
+        s.configSnapshot = null;
+        s.streamingSubtitle = null;
+      }
+      sessions.set(tabId, s);
+      pushSession(tabId);
     }
   } catch {
     // ignore
   }
+}
+
+// Streaming updates fire often; keep the recovery snapshot fresh without
+// writing to chrome.storage.session on every delta.
+let lastPersistAt = 0;
+function persistSessionsThrottled() {
+  const now = Date.now();
+  if (now - lastPersistAt < 3000) return;
+  lastPersistAt = now;
+  persistSessions();
 }
 
 // Periodically persist sessions for recovery
@@ -1262,11 +1537,9 @@ recoverSessions();
 // Persist every 30 seconds
 setInterval(persistSessions, 30000);
 
-// Also persist on each session change via a pushSession wrapper
-const origPushSession = pushSession;
-pushSession = function (tabId: number) {
-  origPushSession(tabId);
-  persistSessions();
-};
+// Session changes persist through pushSession() itself (throttled), so a
+// service-worker suspension never loses the recovery snapshot. The old code
+// reassigned this function declaration, which TypeScript rejects and which
+// silently stopped working if the file was ever re-ordered.
 
 console.log('[RTTS] Background service worker (TS) initialized');

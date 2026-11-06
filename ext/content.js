@@ -63,19 +63,20 @@
     host.id = HOST_ID;
     const shadow = host.attachShadow({ mode: "closed" });
     const LANGUAGES = [
-      { code: "auto", label: "\u81EA\u52A8\u68C0\u6D4B" },
-      { code: "zh", label: "\u4E2D\u6587" },
-      { code: "en", label: "English" },
-      { code: "ja", label: "\u65E5\u672C\u8A9E" },
-      { code: "ko", label: "\uD55C\uAD6D\uC5B4" },
-      { code: "fr", label: "Fran\xE7ais" },
-      { code: "de", label: "Deutsch" },
-      { code: "es", label: "Espa\xF1ol" },
-      { code: "ru", label: "\u0420\u0443\u0441\u0441\u043A\u0438\u0439" },
-      { code: "ar", label: "\u0627\u0644\u0639\u0631\u0628\u064A\u0629" },
-      { code: "pt", label: "Portugu\xEAs" }
+      { code: "auto", label: "\u81EA\u52A8\u68C0\u6D4B", short: "AUTO" },
+      { code: "zh", label: "\u4E2D\u6587", short: "ZH" },
+      { code: "en", label: "English", short: "EN" },
+      { code: "ja", label: "\u65E5\u672C\u8A9E", short: "JA" },
+      { code: "ko", label: "\uD55C\uAD6D\uC5B4", short: "KO" },
+      { code: "fr", label: "Fran\xE7ais", short: "FR" },
+      { code: "de", label: "Deutsch", short: "DE" },
+      { code: "es", label: "Espa\xF1ol", short: "ES" },
+      { code: "ru", label: "\u0420\u0443\u0441\u0441\u043A\u0438\u0439", short: "RU" },
+      { code: "ar", label: "\u0627\u0644\u0639\u0631\u0628\u064A\u0629", short: "AR" },
+      { code: "pt", label: "Portugu\xEAs", short: "PT" }
     ];
     const LANG_MAP = Object.fromEntries(LANGUAGES.map((l) => [l.code, l.label]));
+    const LANG_SHORT = Object.fromEntries(LANGUAGES.map((l) => [l.code, l.short]));
     let session = {
       state: "idle",
       sourceLang: "auto",
@@ -90,7 +91,7 @@
     let isAskBusy = false;
     let dragState = null;
     let langPickerOpen = false;
-    let notesExpanded = false;
+    let drawerTab = "chat";
     const UI_HIDDEN_KEY = "snooper.ui-hidden.v1";
     let uiHidden = true;
     let hasBeenShownOnce = false;
@@ -107,6 +108,10 @@
       if (uiHidden) {
         subBox.classList.add("hidden");
         langPicker.classList.remove("open");
+        bar.querySelector("#rtts-menu")?.classList.remove("open");
+        bar.querySelector("#rtts-more-btn")?.classList.remove("active");
+        const more = bar.querySelector("#rtts-more-btn");
+        more?.setAttribute("aria-expanded", "false");
       }
     }
     const OBSIDIAN_CONFIG_KEY = "snooper.obsidian-config.v1";
@@ -125,7 +130,9 @@
         enabled: !!cfg.enabled,
         apiProtocol: protocol,
         apiPort: port,
-        apiKey: typeof cfg.apiKey === "string" ? cfg.apiKey : "",
+        // The Obsidian plugin shows the key as "Bearer <token>"; users copy the
+        // whole line. Strip the prefix so callers can safely add their own.
+        apiKey: typeof cfg.apiKey === "string" ? cfg.apiKey.trim().replace(/^Bearer\s+/i, "").trim() : "",
         noteFolder: typeof cfg.noteFolder === "string" && cfg.noteFolder.trim() ? cfg.noteFolder.trim() : DEFAULT_OBSIDIAN_CONFIG.noteFolder
       };
     }
@@ -283,8 +290,6 @@
       background: rgba(124,92,255,0.16);
       border: 1px solid rgba(124,92,255,0.35);
     }
-    #rtts-image-btn { background: rgba(124,92,255,0.12); color: #c9bcff; }
-    #rtts-image-btn:hover { background: rgba(124,92,255,0.22); color: #e2dbff; }
     #rtts-record.running {
       background: #e5484d; border-color: #ff8b8f;
       box-shadow: 0 0 14px rgba(229,72,77,0.55);
@@ -316,6 +321,108 @@
     #rtts-show-btn:hover { background: rgba(24,24,38,0.86); color: #fff; }
     #rtts-show-btn svg { width: 15px; height: 15px; }
     #rtts-show-btn .rtts-show-label { line-height: 1; white-space: nowrap; }
+
+    /* === Labeled primary controls (Viitor-style clarity) === */
+    .rtts-btn-labeled {
+      width: auto; gap: 6px; padding: 0 10px;
+      font-size: 11.5px; font-weight: 500;
+      color: rgba(255,255,255,0.7);
+    }
+    .rtts-btn-labeled span { line-height: 1; white-space: nowrap; }
+    .rtts-btn-labeled svg { width: 15px; height: 15px; }
+
+    #rtts-record.rtts-record-btn {
+      width: auto; gap: 8px; padding: 0 13px;
+      font-size: 12px; font-weight: 600;
+      color: #ded5ff;
+    }
+    #rtts-record.rtts-record-btn.running { color: #fff; }
+    #rtts-record .rtts-btn-label { line-height: 1; white-space: nowrap; }
+
+    #rtts-lang-btn.rtts-lang-chip {
+      width: auto; gap: 6px; padding: 0 10px;
+      font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em;
+      color: rgba(255,255,255,0.6);
+    }
+    #rtts-lang-btn.rtts-lang-chip:hover { color: #fff; }
+    #rtts-lang-label { line-height: 1; white-space: nowrap; }
+
+    /* The hidden attribute must win over display:inline-flex below. */
+    .rtts-badge[hidden] { display: none; }
+    .rtts-badge {
+      min-width: 15px; height: 15px; padding: 0 4px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 999px;
+      background: rgba(124,92,255,0.85); color: #fff;
+      font-size: 9px; font-weight: 700; line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* === Tools menu (replaces 10 cryptic icon buttons) === */
+    #rtts-more-btn.active { background: rgba(124,92,255,0.22); color: #c9bcff; }
+    #rtts-menu {
+      position: absolute; top: calc(100% + 8px); right: 0;
+      width: 248px; max-height: 70vh; overflow-y: auto;
+      padding: 6px;
+      background: rgba(16,16,26,0.97);
+      backdrop-filter: blur(20px) saturate(160%);
+      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px;
+      box-shadow: 0 18px 48px rgba(0,0,0,0.6);
+      z-index: 2147483642;
+      opacity: 0; visibility: hidden; transform: translateY(-6px) scale(0.98);
+      transition: opacity 0.14s ease, transform 0.14s ease, visibility 0.14s;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.14) transparent;
+    }
+    #rtts-menu.open { opacity: 1; visibility: visible; transform: none; }
+    #rtts-menu::-webkit-scrollbar { width: 4px; }
+    #rtts-menu::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.16); }
+
+    .rtts-menu-head {
+      padding: 7px 9px 4px;
+      font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.34);
+    }
+    .rtts-menu-sep {
+      height: 1px; margin: 5px 7px;
+      background: rgba(255,255,255,0.08);
+    }
+    .rtts-menu-item {
+      width: 100%; display: flex; align-items: center; gap: 10px;
+      padding: 8px 9px; border: none; border-radius: 8px;
+      background: none; color: rgba(255,255,255,0.86);
+      font-family: inherit; text-align: left; cursor: pointer;
+      transition: background 0.13s ease;
+    }
+    .rtts-menu-item:hover,
+    .rtts-menu-item:focus-visible { background: rgba(255,255,255,0.08); outline: none; }
+    .rtts-menu-icon {
+      width: 28px; height: 28px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 8px;
+      background: rgba(124,92,255,0.14);
+      color: #c3b6ff;
+    }
+    .rtts-menu-icon svg {
+      width: 15px; height: 15px;
+      fill: none; stroke: currentColor;
+      stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .rtts-menu-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .rtts-menu-text b { font-size: 12px; font-weight: 500; line-height: 1.2; }
+    .rtts-menu-text small {
+      font-size: 10px; line-height: 1.2;
+      color: rgba(255,255,255,0.4);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .rtts-menu-item-danger:hover { background: rgba(239,68,68,0.14); }
+    .rtts-menu-item-danger .rtts-menu-icon {
+      background: rgba(239,68,68,0.14); color: #ff9a9d;
+    }
+    .rtts-menu-item-danger:hover .rtts-menu-text b { color: #ffb4b7; }
 
     /* === Language Picker === */
     #rtts-lang-btn { border-radius: 10px; }
@@ -447,41 +554,36 @@
       flex-shrink: 0;
     }
 
-    /* === Notes Drawer === */
-    #rtts-notes-drawer {
-      position: fixed; top: 0; left: -360px;
-      width: 340px; height: 100vh;
-      background: rgba(14,14,22,0.94); backdrop-filter: blur(28px);
-      -webkit-backdrop-filter: blur(28px);
-      border-right: 1px solid rgba(255,255,255,0.1);
-      box-shadow: 12px 0 40px rgba(0,0,0,0.5);
-      z-index: 2147483645;
-      display: flex; flex-direction: column;
-      transition: left 0.25s cubic-bezier(0.16,1,0.3,1);
+    /* === Unified side drawer: chat + notes tabs === */
+    #rtts-drawer-tabs {
+      display: flex; align-items: center; gap: 4px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 9px; padding: 2px;
     }
-    #rtts-notes-drawer.open { left: 0; }
-    #rtts-notes-drawer-header {
-      padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.07);
-      display: flex; align-items: center; gap: 8px;
+    .rtts-drawer-tab {
+      display: flex; align-items: center; gap: 5px;
+      border: none; background: none; color: rgba(255,255,255,0.5);
+      font-size: 12px; font-weight: 500;
+      padding: 5px 10px; border-radius: 7px; cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
     }
-    #rtts-notes-drawer-header h3 { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .rtts-drawer-tab svg {
+      width: 13px; height: 13px;
+      fill: none; stroke: currentColor;
+      stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .rtts-drawer-tab:hover { color: rgba(255,255,255,0.8); }
+    .rtts-drawer-tab.active { background: rgba(124,92,255,0.3); color: #fff; }
     #rtts-notes-count {
-      font-size: 10px; background: rgba(255,255,255,0.08);
-      padding: 1px 6px; border-radius: 9px;
-      color: rgba(255,255,255,0.5);
+      font-size: 10px; background: rgba(255,255,255,0.12);
+      padding: 0 5px; border-radius: 8px; line-height: 16px;
+      color: rgba(255,255,255,0.65);
     }
-    #rtts-notes-close {
-      margin-left: auto; width: 28px; height: 28px; border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      background: none; border: none; color: rgba(255,255,255,0.45); cursor: pointer;
-    }
-    #rtts-notes-close:hover { background: rgba(255,255,255,0.08); color: #fff; }
-    #rtts-notes-close svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
-    #rtts-notes-body {
-      flex: 1; min-height: 0;
-      display: flex; flex-direction: column; gap: 10px;
-      padding: 12px 12px 14px;
-    }
+    .rtts-pane { display: none; flex: 1; min-height: 0; flex-direction: column; }
+    .rtts-pane.active { display: flex; }
+    #rtts-pane-notes { padding: 12px; gap: 10px; }
     #rtts-notes-list {
       flex: 1; overflow-y: auto;
       scrollbar-width: thin;
@@ -495,7 +597,7 @@
     }
     .note-item {
       display: flex; align-items: flex-start; gap: 4px;
-      padding: 3px 4px; border-radius: 4px;
+      padding: 4px 4px; border-radius: 4px;
       font-size: 11px; color: rgba(255,255,255,0.6);
       line-height: 1.4;
     }
@@ -513,23 +615,102 @@
     }
     .note-item .note-del:hover { color: #ef4444; }
     #rtts-notes-input-row {
-      display: flex; gap: 4px;
+      display: flex; gap: 6px;
     }
     #rtts-notes-input {
-      flex: 1; height: 24px;
+      flex: 1; height: 32px;
       background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 6px; padding: 0 8px; color: #fff; font-size: 11px;
+      border-radius: 8px; padding: 0 10px; color: #fff; font-size: 12px;
       outline: none;
     }
     #rtts-notes-input:focus { border-color: #7c5cff; }
     #rtts-notes-add {
-      width: 24px; height: 24px; border-radius: 6px;
+      width: 32px; height: 32px; border-radius: 8px;
       border: none; background: #7c5cff; color: #fff;
       font-size: 14px; cursor: pointer; display: flex;
       align-items: center; justify-content: center;
       flex-shrink: 0;
     }
     #rtts-notes-add:hover { background: #6642f5; }
+
+    /* === Markdown chat editor === */
+    #rtts-md-shell {
+      display: flex; flex-direction: column;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 11px;
+      background: rgba(255,255,255,0.05);
+      overflow: hidden;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    #rtts-md-shell:focus-within {
+      border-color: rgba(124,92,255,0.65);
+      box-shadow: 0 0 0 3px rgba(124,92,255,0.12);
+    }
+    #rtts-md-toolbar {
+      display: flex; align-items: center; gap: 2px;
+      padding: 4px 5px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    #rtts-md-toolbar button {
+      height: 22px; min-width: 25px; padding: 0 6px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid transparent; border-radius: 6px;
+      background: none; color: rgba(255,255,255,0.45);
+      font-size: 11px; cursor: pointer;
+    }
+    #rtts-md-toolbar button:hover { background: rgba(255,255,255,0.07); color: #fff; }
+    #rtts-md-toolbar button.active { background: rgba(124,92,255,0.25); color: #fff; }
+    #rtts-md-toolbar button b, #rtts-md-toolbar button i { font-size: 12px; }
+    #rtts-md-toolbar #rtts-md-preview-btn { margin-left: auto; }
+    #rtts-chat-editor {
+      min-height: 44px; max-height: 140px; overflow-y: auto;
+      background: none; border: none; border-radius: 0;
+      padding: 8px 10px;
+      color: #fff; font-size: 13px; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-word;
+      outline: none;
+    }
+    #rtts-chat-editor:empty::before {
+      content: attr(data-placeholder);
+      color: rgba(255,255,255,0.3);
+      pointer-events: none;
+    }
+    #rtts-chat-editor code {
+      background: rgba(255,255,255,0.1); border-radius: 3px;
+      padding: 0 3px; font-size: 12px;
+    }
+    .rtts-md-preview {
+      min-height: 44px; max-height: 140px; overflow-y: auto;
+      background: none; border: none; border-radius: 0;
+      padding: 8px 10px;
+      color: rgba(255,255,255,0.88); font-size: 13px; line-height: 1.55;
+    }
+    .rtts-md-preview pre {
+      margin: 6px 0; padding: 8px; border-radius: 6px;
+      background: rgba(0,0,0,0.35); overflow-x: auto;
+    }
+    .rtts-md-preview code {
+      background: rgba(255,255,255,0.1); border-radius: 3px;
+      padding: 0 3px; font-size: 12px;
+    }
+    .rtts-md-preview pre code { background: none; padding: 0; }
+    .rtts-md-preview a { color: #a5b4fc; }
+    .rtts-md-empty { color: rgba(255,255,255,0.35); }
+    #rtts-composer-hint {
+      flex: 1; font-size: 10px; color: rgba(255,255,255,0.28);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .rtts-msg code {
+      background: rgba(255,255,255,0.1); border-radius: 3px;
+      padding: 0 3px; font-size: 12px;
+    }
+    .rtts-msg pre {
+      margin: 6px 0; padding: 8px; border-radius: 6px;
+      background: rgba(0,0,0,0.35); overflow-x: auto;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .rtts-msg pre code { background: none; padding: 0; }
+    .rtts-msg a { color: #a5b4fc; }
 
     /* === Q&A Drawer === */
     #rtts-drawer {
@@ -588,26 +769,17 @@
       padding: 0;
     }
     .rtts-attach button svg { width: 9px; height: 9px; stroke: currentColor; stroke-width: 2.5; fill: none; }
-    #rtts-chat-input-row { display: flex; align-items: flex-end; gap: 8px; }
+    #rtts-chat-input-row { display: flex; align-items: center; gap: 8px; }
     #rtts-chat-attach-btn {
-      width: 36px; height: 36px; flex-shrink: 0; border-radius: 9px;
+      width: 30px; height: 30px; flex-shrink: 0; border-radius: 8px;
       border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05);
       color: rgba(255,255,255,0.6); cursor: pointer;
       display: flex; align-items: center; justify-content: center;
     }
     #rtts-chat-attach-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
-    #rtts-chat-attach-btn svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.8; fill: none; }
-    #rtts-chat-input {
-      flex: 1; min-height: 36px; max-height: 120px;
-      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 9px; padding: 8px 10px; color: #fff; font-size: 13px;
-      line-height: 1.45; font-family: inherit; resize: none; outline: none;
-      overflow-y: auto;
-    }
-    #rtts-chat-input:focus { border-color: #7c5cff; }
-    #rtts-chat-input::placeholder { color: rgba(255,255,255,0.34); }
+    #rtts-chat-attach-btn svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: 1.8; fill: none; }
     #rtts-send {
-      height: 36px; padding: 0 14px; border: none; border-radius: 9px;
+      height: 30px; padding: 0 14px; border: none; border-radius: 8px;
       background: #7c5cff; color: #fff; font-weight: 600; font-size: 12px;
       cursor: pointer; flex-shrink: 0;
     }
@@ -849,7 +1021,6 @@
 
     @media (max-width: 640px) {
       #rtts-drawer { width: 100vw; right: -100vw; }
-      #rtts-notes-drawer { width: 100vw; left: -100vw; }
       #rtts-sub-box { width: 88vw; bottom: 18px; max-height: 28vh; padding: 8px 14px 6px; }
       #rtts-lang-picker {
         left: 50%; right: auto; top: 50%;
@@ -864,6 +1035,10 @@
       }
       #rtts-bar .rtts-divider { display: none; }
       .rtts-btn { width: 32px; height: 32px; }
+      /* Labeled buttons keep their text: it is what makes them findable. */
+      .rtts-btn-labeled { width: auto; padding: 0 9px; font-size: 11px; }
+      #rtts-record.rtts-record-btn { width: auto; padding: 0 11px; }
+      #rtts-lang-btn.rtts-lang-chip { width: auto; padding: 0 8px; }
       .rtts-bar-grip { height: 26px; }
       #rtts-bar .rtts-btn::after { display: none; }
     }
@@ -875,6 +1050,8 @@
     @media (max-height: 560px) {
       #rtts-bar { max-height: 46vh; overflow-y: auto; scrollbar-width: none; }
       #rtts-bar::-webkit-scrollbar { display: none; }
+      /* A tall menu inside a scrollable bar would be clipped. */
+      #rtts-menu { position: fixed; top: 62px; right: 12px; max-height: 60vh; }
     }
   `;
     const html = `
@@ -886,50 +1063,80 @@
           <circle cx="3" cy="13" r="1.2"/><circle cx="7" cy="13" r="1.2"/>
         </svg>
       </div>
-      <button id="rtts-record" class="rtts-btn" data-tip="\u5F00\u59CB\u8F6C\u5199" aria-label="\u5F00\u59CB\u8F6C\u5199">
+
+      <!-- Primary action: always visible, labeled -->
+      <button id="rtts-record" class="rtts-btn rtts-record-btn" data-tip="\u5F00\u59CB\u8F6C\u5199" aria-label="\u5F00\u59CB\u8F6C\u5199">
         <div class="dot"></div>
+        <span id="rtts-record-label" class="rtts-btn-label">\u5B9E\u65F6\u5B57\u5E55</span>
       </button>
-      <div class="rtts-divider"></div>
-      <button id="rtts-lang-btn" class="rtts-btn" data-tip="\u8BED\u8A00\uFF1A\u81EA\u52A8\u68C0\u6D4B \u2192 \u4E2D\u6587" aria-label="\u5207\u6362\u8BED\u8A00">
+
+      <button id="rtts-lang-btn" class="rtts-btn rtts-lang-chip" data-tip="\u8BED\u8A00\uFF1A\u81EA\u52A8\u68C0\u6D4B \u2192 \u4E2D\u6587" aria-label="\u5207\u6362\u8BED\u8A00">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.6 4 5.7 4 9s-1.5 6.4-4 9a14 14 0 0 1 0-18z"/></svg>
-        <span id="rtts-lang-label" hidden>auto \u2192 zh</span>
+        <span id="rtts-lang-label">AUTO\u2192ZH</span>
       </button>
-      <button id="rtts-notes-btn" class="rtts-btn" data-tip="\u7B14\u8BB0" aria-label="\u6253\u5F00\u7B14\u8BB0">
-        <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-      </button>
-      <button id="rtts-chat-btn" class="rtts-btn" data-tip="AI \u4F34\u5B66" aria-label="AI \u4F34\u5B66">
+
+      <div class="rtts-divider"></div>
+
+      <!-- Two daily-use surfaces, labeled -->
+      <button id="rtts-chat-btn" class="rtts-btn rtts-btn-labeled" data-tip="AI \u4F34\u5B66" aria-label="AI \u4F34\u5B66">
         <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span>AI</span>
       </button>
-      <div class="rtts-divider"></div>
-      <button id="rtts-note-btn" class="rtts-btn" data-tip="\u8BB0\u5165\u7B14\u8BB0" aria-label="\u8BB0\u5165\u7B14\u8BB0">
-        <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+      <button id="rtts-notes-btn" class="rtts-btn rtts-btn-labeled" data-tip="\u7B14\u8BB0" aria-label="\u6253\u5F00\u7B14\u8BB0">
+        <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        <span>\u7B14\u8BB0</span>
+        <span id="rtts-notes-badge" class="rtts-badge" hidden>0</span>
       </button>
-      <button id="rtts-image-btn" class="rtts-btn" data-tip="\u751F\u6210\u914D\u56FE" aria-label="\u751F\u6210\u914D\u56FE">
-        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+
+      <button id="rtts-more-btn" class="rtts-btn" data-tip="\u66F4\u591A\u5DE5\u5177" aria-label="\u66F4\u591A\u5DE5\u5177" aria-haspopup="menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>
       </button>
-      <button id="rtts-screenshot-btn" class="rtts-btn" data-tip="\u9875\u9762\u622A\u56FE" aria-label="\u9875\u9762\u622A\u56FE">
-        <svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
-      </button>
-      <div class="rtts-divider"></div>
-      <button id="rtts-copy-btn" class="rtts-btn" data-tip="\u590D\u5236\u5168\u90E8\u5B57\u5E55" aria-label="\u590D\u5236\u5168\u90E8\u5B57\u5E55">
-        <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-      </button>
-      <button id="rtts-export-txt-btn" class="rtts-btn" data-tip="\u5BFC\u51FA TXT" aria-label="\u5BFC\u51FA TXT">
-        <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      </button>
-      <button id="rtts-export-md-btn" class="rtts-btn" data-tip="\u5BFC\u51FA Markdown" aria-label="\u5BFC\u51FA Markdown">
-        <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-      </button>
-      <button id="rtts-obsidian-btn" class="rtts-btn" data-tip="\u53D1\u9001\u5230 Obsidian" aria-label="\u53D1\u9001\u5230 Obsidian">
-        <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6"/></svg>
-      </button>
-      <div class="rtts-divider"></div>
-      <button id="rtts-settings-btn" class="rtts-btn" data-tip="\u914D\u7F6E" aria-label="\u914D\u7F6E">
-        <svg viewBox="0 0 24 24"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
-      </button>
-      <button id="rtts-hide-btn" class="rtts-btn" data-tip="\u5173\u95ED\u5DE5\u5177" aria-label="\u5173\u95ED\u5DE5\u5177">
-        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
+
+      <!-- Advanced tools live in one labeled menu instead of 10 icon buttons -->
+      <div id="rtts-menu" role="menu" aria-label="\u66F4\u591A\u5DE5\u5177">
+        <div class="rtts-menu-head">\u5DE5\u5177</div>
+        <button id="rtts-note-btn" class="rtts-menu-item" type="button" role="menuitem">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg></span>
+          <span class="rtts-menu-text"><b>\u8BB0\u5165\u7B14\u8BB0</b><small>\u4FDD\u5B58\u5F53\u524D\u5B57\u5E55\u5230\u7B14\u8BB0</small></span>
+        </button>
+        <button id="rtts-screenshot-btn" class="rtts-menu-item" type="button" role="menuitem">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg></span>
+          <span class="rtts-menu-text"><b>\u9875\u9762\u622A\u56FE</b><small>\u5F55\u5236\u4E2D\u4E5F\u80FD\u622A\u53D6\u89C6\u9891\u753B\u9762</small></span>
+        </button>
+        <button id="rtts-image-btn" class="rtts-menu-item" type="button" role="menuitem">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></span>
+          <span class="rtts-menu-text"><b>\u751F\u6210\u914D\u56FE</b><small>\u6839\u636E\u63D0\u793A\u8BCD\u751F\u6210\u56FE\u7247</small></span>
+        </button>
+        <button id="rtts-copy-btn" class="rtts-menu-item" type="button" role="menuitem">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>
+          <span class="rtts-menu-text"><b>\u590D\u5236\u5B57\u5E55</b><small>\u590D\u5236\u5168\u90E8\u5B57\u5E55\u6587\u672C</small></span>
+        </button>
+
+        <div class="rtts-menu-sep"></div>
+        <div class="rtts-menu-head">\u5BFC\u51FA\u4E0E\u540C\u6B65</div>
+        <button id="rtts-export-txt-btn" class="rtts-menu-item" type="button" role="menuitem">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+          <span class="rtts-menu-text"><b>\u5BFC\u51FA TXT</b><small>\u7EAF\u6587\u672C\u5B57\u5E55</small></span>
+        </button>
+        <button id="rtts-export-md-btn" class="rtts-menu-item" type="button" role="menuitem">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span>
+          <span class="rtts-menu-text"><b>\u5BFC\u51FA Markdown</b><small>\u8868\u683C + \u7B14\u8BB0</small></span>
+        </button>
+        <button id="rtts-obsidian-btn" class="rtts-menu-item" type="button" role="menuitem">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6"/></svg></span>
+          <span class="rtts-menu-text"><b>\u53D1\u9001\u5230 Obsidian</b><small>\u56FE\u7247\u81EA\u52A8\u4E0A\u4F20\u5230\u4ED3\u5E93</small></span>
+        </button>
+
+        <div class="rtts-menu-sep"></div>
+        <button id="rtts-settings-btn" class="rtts-menu-item" type="button" role="menuitem">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg></span>
+          <span class="rtts-menu-text"><b>\u8BBE\u7F6E</b><small>\u6A21\u578B\u3001\u5BC6\u94A5\u4E0E Obsidian</small></span>
+        </button>
+        <button id="rtts-hide-btn" class="rtts-menu-item rtts-menu-item-danger" type="button" role="menuitem">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>
+          <span class="rtts-menu-text"><b>\u5173\u95ED\u5DE5\u5177</b><small>\u70B9\u6269\u5C55\u56FE\u6807\u53EF\u91CD\u65B0\u6253\u5F00</small></span>
+        </button>
+      </div>
     </div>
 
     <button id="rtts-show-btn" class="rtts-btn" data-tip="\u91CD\u65B0\u6253\u5F00 snooper \u5DE5\u5177\u680F" aria-label="\u663E\u793A\u5DE5\u5177" style="display:none">
@@ -960,19 +1167,49 @@
       <div id="rtts-sub-placeholder">\u70B9\u51FB\u300C\u5F55\u97F3\u300D\u5F00\u59CB\u5B9E\u65F6\u8F6C\u5199</div>
     </div>
 
-    <!-- Notes Drawer -->
-    <div id="rtts-notes-drawer" aria-label="\u7B14\u8BB0">
-      <div id="rtts-notes-drawer-header">
-        <h3>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7c5cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-          \u7B14\u8BB0
-          <span id="rtts-notes-count">0</span>
-        </h3>
-        <button id="rtts-notes-close" type="button" aria-label="\u5173\u95ED\u7B14\u8BB0">
-          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
+    <!-- Unified side drawer: chat + notes tabs -->
+    <div id="rtts-drawer" aria-label="AI \u4F34\u5B66\u4E0E\u7B14\u8BB0">
+      <div id="rtts-drawer-header">
+        <div id="rtts-drawer-tabs" role="tablist" aria-label="\u9762\u677F\u5207\u6362">
+          <button id="rtts-tab-chat" class="rtts-drawer-tab active" type="button" role="tab" aria-selected="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            \u4F34\u5B66
+          </button>
+          <button id="rtts-tab-notes" class="rtts-drawer-tab" type="button" role="tab" aria-selected="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            \u7B14\u8BB0 <span id="rtts-notes-count">0</span>
+          </button>
+        </div>
+        <button id="rtts-drawer-close" aria-label="\u5173\u95ED"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
-      <div id="rtts-notes-body">
+
+      <div id="rtts-pane-chat" class="rtts-pane active" role="tabpanel" aria-label="AI \u4F34\u5B66">
+        <div id="rtts-chat"></div>
+        <div id="rtts-chat-composer">
+          <div id="rtts-chat-attachments" aria-live="polite"></div>
+          <div id="rtts-md-shell">
+            <div id="rtts-md-toolbar" role="toolbar" aria-label="Markdown \u5FEB\u6377\u64CD\u4F5C">
+              <button type="button" data-md="bold" title="\u52A0\u7C97\uFF08Ctrl/\u2318+B\uFF09" aria-label="\u52A0\u7C97"><b>B</b></button>
+              <button type="button" data-md="italic" title="\u659C\u4F53\uFF08Ctrl/\u2318+I\uFF09" aria-label="\u659C\u4F53"><i>I</i></button>
+              <button type="button" data-md="code" title="\u884C\u5185\u4EE3\u7801" aria-label="\u884C\u5185\u4EE3\u7801"><span>&lt;/&gt;</span></button>
+              <button type="button" data-md="link" title="\u94FE\u63A5" aria-label="\u63D2\u5165\u94FE\u63A5">\u{1F517}</button>
+              <button type="button" id="rtts-md-preview-btn" title="\u9884\u89C8 Markdown">\u9884\u89C8</button>
+            </div>
+            <div id="rtts-chat-editor" contenteditable="plaintext-only" role="textbox" aria-multiline="true" aria-label="\u63D0\u95EE" data-placeholder="\u8F93\u5165\u95EE\u9898\uFF0C\u652F\u6301 Markdown\u3002Enter \u53D1\u9001\uFF0CShift+Enter \u6362\u884C"></div>
+            <div id="rtts-chat-preview" class="rtts-md-preview" hidden></div>
+          </div>
+          <div id="rtts-chat-input-row">
+            <button id="rtts-chat-attach-btn" type="button" aria-label="\u6DFB\u52A0\u56FE\u7247" data-tip="\u6DFB\u52A0\u56FE\u7247">
+              <svg viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+            </button>
+            <span id="rtts-composer-hint">Markdown \xB7 Enter \u53D1\u9001</span>
+            <button id="rtts-send" type="button">\u53D1\u9001</button>
+          </div>
+          <input id="rtts-chat-file" type="file" accept="image/*" multiple hidden>
+        </div>
+      </div>
+
+      <div id="rtts-pane-notes" class="rtts-pane" role="tabpanel" aria-label="\u7B14\u8BB0">
         <div id="rtts-notes-list"></div>
         <div id="rtts-notes-input-row">
           <input id="rtts-notes-input" type="text" placeholder="\u8F93\u5165\u5FEB\u901F\u7B14\u8BB0\u2026" aria-label="\u65B0\u7B14\u8BB0">
@@ -982,26 +1219,6 @@
     </div>
 
     <div id="rtts-fs-warn" class="hidden"></div>
-
-    <!-- Q&A Drawer -->
-    <div id="rtts-drawer">
-      <div id="rtts-drawer-header">
-        <h3><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7c5cff" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg> AI \u4F34\u5B66</h3>
-        <button id="rtts-drawer-close" aria-label="\u5173\u95ED"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-      </div>
-      <div id="rtts-chat"></div>
-      <div id="rtts-chat-composer">
-        <div id="rtts-chat-attachments" aria-live="polite"></div>
-        <div id="rtts-chat-input-row">
-          <button id="rtts-chat-attach-btn" type="button" aria-label="\u6DFB\u52A0\u56FE\u7247" data-tip="\u6DFB\u52A0\u56FE\u7247">
-            <svg viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-          </button>
-          <textarea id="rtts-chat-input" rows="1" placeholder="\u63D0\u95EE\uFF0C\u6216\u7C98\u8D34\u56FE\u7247\u2026" aria-label="\u63D0\u95EE"></textarea>
-          <button id="rtts-send" type="button">\u53D1\u9001</button>
-        </div>
-        <input id="rtts-chat-file" type="file" accept="image/*" multiple hidden>
-      </div>
-    </div>
 
     <!-- In-page settings modal -->
     <div id="rtts-settings-modal" class="rtts-modal-mask">
@@ -1174,6 +1391,9 @@
     const bar = shadow.getElementById("rtts-bar");
     const barGrip = shadow.getElementById("rtts-bar-grip");
     const recordBtn = shadow.getElementById("rtts-record");
+    const recordLabelEl = shadow.getElementById("rtts-record-label");
+    const moreBtn = shadow.getElementById("rtts-more-btn");
+    const toolsMenu = shadow.getElementById("rtts-menu");
     const langBtn = shadow.getElementById("rtts-lang-btn");
     const langLabel = shadow.getElementById("rtts-lang-label");
     const langPicker = shadow.getElementById("rtts-lang-picker");
@@ -1193,8 +1413,15 @@
     const streamingLabel = shadow.getElementById("rtts-streaming-label");
     const drawer = shadow.getElementById("rtts-drawer");
     const chatEl = shadow.getElementById("rtts-chat");
-    const chatInput = shadow.getElementById("rtts-chat-input");
     const chatComposer = shadow.getElementById("rtts-chat-composer");
+    const chatEditor = shadow.getElementById("rtts-chat-editor");
+    const chatPreview = shadow.getElementById("rtts-chat-preview");
+    const mdPreviewBtn = shadow.getElementById("rtts-md-preview-btn");
+    const drawerTabChat = shadow.getElementById("rtts-tab-chat");
+    const drawerTabNotes = shadow.getElementById("rtts-tab-notes");
+    const paneChat = shadow.getElementById("rtts-pane-chat");
+    const paneNotes = shadow.getElementById("rtts-pane-notes");
+    const chatBtn = shadow.getElementById("rtts-chat-btn");
     const chatAttachBtn = shadow.getElementById("rtts-chat-attach-btn");
     const chatFile = shadow.getElementById("rtts-chat-file");
     const chatAttachments = shadow.getElementById("rtts-chat-attachments");
@@ -1206,9 +1433,8 @@
     const imageBtn = shadow.getElementById("rtts-image-btn");
     const screenshotBtn = shadow.getElementById("rtts-screenshot-btn");
     const notesCount = shadow.getElementById("rtts-notes-count");
-    const notesDrawer = shadow.getElementById("rtts-notes-drawer");
+    const notesBadge = shadow.getElementById("rtts-notes-badge");
     const notesBtn = shadow.getElementById("rtts-notes-btn");
-    const notesClose = shadow.getElementById("rtts-notes-close");
     const notesList = shadow.getElementById("rtts-notes-list");
     const notesInput = shadow.getElementById("rtts-notes-input");
     const notesAdd = shadow.getElementById("rtts-notes-add");
@@ -1295,7 +1521,9 @@
     function updateLangLabel() {
       const src = LANG_MAP[session.sourceLang] || session.sourceLang;
       const tgt = LANG_MAP[session.targetLang] || session.targetLang;
-      langLabel.textContent = `${src} \u2192 ${tgt}`;
+      const srcShort = LANG_SHORT[session.sourceLang] || String(session.sourceLang).toUpperCase();
+      const tgtShort = LANG_SHORT[session.targetLang] || String(session.targetLang).toUpperCase();
+      langLabel.textContent = `${srcShort}\u2192${tgtShort}`;
       langBtn.setAttribute("data-tip", `\u8BED\u8A00\uFF1A${src} \u2192 ${tgt}`);
     }
     langBtn.addEventListener("click", (e) => {
@@ -1620,9 +1848,11 @@
     imgDownload.addEventListener("click", downloadImage);
     function render() {
       const s = session.state;
-      recordBtn.className = "rtts-btn" + (s === "running" ? " running" : "");
+      recordBtn.className = "rtts-btn rtts-record-btn" + (s === "running" ? " running" : "");
       const recordLabel = session.isDemoMode ? s === "running" ? "\u505C\u6B62\u6F14\u793A" : "\u5F00\u59CB\u771F\u5B9E\u8F6C\u5199" : s === "running" ? "\u505C\u6B62\u8F6C\u5199" : s === "starting" ? "\u542F\u52A8\u4E2D" : "\u5F00\u59CB\u8F6C\u5199";
       recordBtn.setAttribute("data-tip", recordLabel);
+      recordLabelEl.textContent = session.isDemoMode ? s === "running" ? "\u505C\u6B62\u6F14\u793A" : "\u6F14\u793A" : s === "running" ? "\u505C\u6B62" : s === "starting" ? "\u542F\u52A8\u4E2D" : "\u5B9E\u65F6\u5B57\u5E55";
+      recordBtn.setAttribute("aria-label", recordLabel);
       updateLangLabel();
       const subs = session.subtitles || [];
       const streaming = session.streamingSubtitle;
@@ -1683,7 +1913,7 @@
           const b = document.createElement("div");
           b.className = `rtts-msg ${m.role === "user" ? "user" : "assistant"}`;
           const contentEl = document.createElement("div");
-          contentEl.textContent = m.content || "";
+          contentEl.innerHTML = renderMarkdownLite(m.content || "");
           b.appendChild(contentEl);
           if (Array.isArray(m.images) && m.images.length > 0) {
             const imgGrid = document.createElement("div");
@@ -1912,24 +2142,139 @@
         }
       }
     });
-    shadow.getElementById("rtts-chat-btn").addEventListener("click", () => {
-      isDrawerOpen = !isDrawerOpen;
-      drawer.classList.toggle("open", isDrawerOpen);
-      if (isDrawerOpen) {
-        setNotesExpanded(false);
-        chatInput.focus();
-      }
-    });
-    shadow.getElementById("rtts-drawer-close").addEventListener("click", () => {
+    function syncDrawerButtons() {
+      chatBtn.classList.toggle("active", isDrawerOpen && drawerTab === "chat");
+      notesBtn.classList.toggle("active", isDrawerOpen && drawerTab === "notes");
+    }
+    function setDrawerTab(tab) {
+      drawerTab = tab;
+      drawerTabChat.classList.toggle("active", tab === "chat");
+      drawerTabNotes.classList.toggle("active", tab === "notes");
+      drawerTabChat.setAttribute("aria-selected", String(tab === "chat"));
+      drawerTabNotes.setAttribute("aria-selected", String(tab === "notes"));
+      paneChat.classList.toggle("active", tab === "chat");
+      paneNotes.classList.toggle("active", tab === "notes");
+      if (tab === "notes") renderNotes();
+      syncDrawerButtons();
+    }
+    function openDrawer(tab) {
+      isDrawerOpen = true;
+      drawer.classList.add("open");
+      setDrawerTab(tab);
+      if (tab === "notes") notesInput.focus();
+      else chatEditor.focus();
+    }
+    function closeDrawer() {
       isDrawerOpen = false;
       drawer.classList.remove("open");
-    });
-    let pendingImages = [];
-    function autoGrow(el) {
-      el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 120) + "px";
+      syncDrawerButtons();
     }
-    chatInput.addEventListener("input", () => autoGrow(chatInput));
+    chatBtn.addEventListener("click", () => {
+      if (isDrawerOpen && drawerTab === "chat") closeDrawer();
+      else openDrawer("chat");
+    });
+    notesBtn.addEventListener("click", () => {
+      if (isDrawerOpen && drawerTab === "notes") closeDrawer();
+      else openDrawer("notes");
+    });
+    drawerTabChat.addEventListener("click", () => setDrawerTab("chat"));
+    drawerTabNotes.addEventListener("click", () => setDrawerTab("notes"));
+    shadow.getElementById("rtts-drawer-close").addEventListener("click", closeDrawer);
+    function renderMarkdownLite(text) {
+      const escaped = String(text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      const codeBlocks = [];
+      let html2 = escaped.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, (_match, lang, code) => {
+        const body = code.replace(/^\n+|\n+$/g, "");
+        codeBlocks.push(`<pre><code>${body}</code></pre>`);
+        return `\0CODEBLOCK${codeBlocks.length - 1}\0`;
+      });
+      const inlineCodes = [];
+      html2 = html2.replace(/`([^`\n]+)`/g, (_match, code) => {
+        inlineCodes.push(`<code>${code}</code>`);
+        return `\0INLINECODE${inlineCodes.length - 1}\0`;
+      });
+      html2 = html2.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>").replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>').replace(/\n/g, "<br>");
+      inlineCodes.forEach((code, index) => {
+        html2 = html2.replace(`\0INLINECODE${index}\0`, code);
+      });
+      codeBlocks.forEach((block, index) => {
+        html2 = html2.replace(`\0CODEBLOCK${index}\0`, block);
+      });
+      return html2;
+    }
+    let pendingImages = [];
+    let isPreviewing = false;
+    function getChatText() {
+      const raw = (chatEditor.innerText || chatEditor.textContent || "").replace(/\u00a0/g, " ");
+      return raw.replace(/\n{3,}/g, "\n\n").trim();
+    }
+    function clearChatEditor() {
+      chatEditor.innerHTML = "";
+    }
+    function refreshEditorPlaceholder() {
+      if (isPreviewing) return;
+      if (!(chatEditor.textContent || "").trim() && !chatEditor.querySelector("img")) {
+        chatEditor.innerHTML = "";
+      }
+    }
+    let editorComposing = false;
+    chatEditor.addEventListener("compositionstart", () => {
+      editorComposing = true;
+    });
+    chatEditor.addEventListener("compositionend", () => {
+      editorComposing = false;
+      refreshEditorPlaceholder();
+    });
+    chatEditor.addEventListener("input", (e) => {
+      if (editorComposing || e.isComposing) return;
+      refreshEditorPlaceholder();
+    });
+    function insertMarkdown(prefix, suffix, placeholder) {
+      chatEditor.focus();
+      const selection = window.getSelection();
+      let selected = "";
+      if (selection && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0);
+        if (chatEditor.contains(range.commonAncestorContainer)) {
+          selected = range.toString();
+        }
+      }
+      document.execCommand("insertText", false, prefix + (selected || placeholder) + suffix);
+      refreshEditorPlaceholder();
+    }
+    shadow.querySelectorAll("#rtts-md-toolbar [data-md]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const kind = button.dataset.md;
+        if (kind === "bold") insertMarkdown("**", "**", "\u52A0\u7C97\u6587\u5B57");
+        else if (kind === "italic") insertMarkdown("*", "*", "\u659C\u4F53\u6587\u5B57");
+        else if (kind === "code") insertMarkdown("`", "`", "\u4EE3\u7801");
+        else if (kind === "link") insertMarkdown("[", "](https://)", "\u94FE\u63A5\u6587\u5B57");
+      });
+    });
+    chatEditor.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "i")) {
+        e.preventDefault();
+        if (e.key === "b") insertMarkdown("**", "**", "\u52A0\u7C97\u6587\u5B57");
+        else insertMarkdown("*", "*", "\u659C\u4F53\u6587\u5B57");
+      }
+    });
+    function togglePreview() {
+      isPreviewing = !isPreviewing;
+      mdPreviewBtn.classList.toggle("active", isPreviewing);
+      if (isPreviewing) {
+        const text = getChatText();
+        chatPreview.innerHTML = text ? renderMarkdownLite(text) : '<span class="rtts-md-empty">\u6CA1\u6709\u53EF\u9884\u89C8\u7684\u5185\u5BB9</span>';
+        chatPreview.hidden = false;
+        chatEditor.hidden = true;
+        mdPreviewBtn.textContent = "\u7F16\u8F91";
+      } else {
+        chatPreview.hidden = true;
+        chatEditor.hidden = false;
+        mdPreviewBtn.textContent = "\u9884\u89C8";
+        chatEditor.focus();
+      }
+    }
+    mdPreviewBtn.addEventListener("click", togglePreview);
     function renderAttachments() {
       chatAttachments.textContent = "";
       if (pendingImages.length === 0) return;
@@ -2014,7 +2359,7 @@
         chatFile.value = "";
       }
     });
-    chatInput.addEventListener("paste", (e) => {
+    chatEditor.addEventListener("paste", (e) => {
       const items = e.clipboardData?.items;
       if (!items) return;
       const imageFiles = [];
@@ -2042,17 +2387,17 @@
     });
     async function sendQuestion() {
       if (isAskBusy) return;
-      const q = chatInput.value.trim();
+      if (isPreviewing) togglePreview();
+      const q = getChatText();
       const imgs = pendingImages.slice();
       if (!q && imgs.length === 0) return;
       isAskBusy = true;
-      chatInput.value = "";
+      clearChatEditor();
       pendingImages = [];
       renderAttachments();
-      chatInput.disabled = true;
+      chatEditor.setAttribute("contenteditable", "false");
       sendBtn.disabled = true;
       sendBtn.textContent = "...";
-      autoGrow(chatInput);
       if (!session.messages) session.messages = [];
       session.messages.push({ role: "user", content: q || "\uFF08\u56FE\u7247\uFF09", images: imgs.length > 0 ? imgs : void 0 });
       updateChat();
@@ -2063,18 +2408,69 @@
         content: res.ok && res.answer ? res.answer : "\u8BF7\u6C42\u5931\u8D25\uFF1A" + (res.error || "\u672A\u77E5\u9519\u8BEF")
       });
       isAskBusy = false;
-      chatInput.disabled = false;
+      chatEditor.setAttribute("contenteditable", "plaintext-only");
       sendBtn.disabled = false;
       sendBtn.textContent = "\u53D1\u9001";
       updateChat();
-      chatInput.focus();
+      chatEditor.focus();
     }
     sendBtn.addEventListener("click", sendQuestion);
-    chatInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
+    chatEditor.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isPreviewing) {
         e.preventDefault();
-        sendQuestion();
+        void sendQuestion();
       }
+    });
+    function setMenuOpen(open) {
+      toolsMenu.classList.toggle("open", open);
+      moreBtn.classList.toggle("active", open);
+      moreBtn.setAttribute("aria-expanded", String(open));
+    }
+    moreBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setMenuOpen(!toolsMenu.classList.contains("open"));
+    });
+    toolsMenu.addEventListener("click", () => setMenuOpen(false));
+    function menuItems() {
+      return Array.from(toolsMenu.querySelectorAll(".rtts-menu-item"));
+    }
+    moreBtn.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      e.preventDefault();
+      setMenuOpen(true);
+      const items = menuItems();
+      (e.key === "ArrowDown" ? items[0] : items[items.length - 1])?.focus();
+    });
+    toolsMenu.addEventListener("keydown", (e) => {
+      const items = menuItems();
+      if (items.length === 0) return;
+      const active = shadow.activeElement;
+      const index = active ? items.indexOf(active) : -1;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        items[(index + 1) % items.length].focus();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        items[(index - 1 + items.length) % items.length].focus();
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        items[0].focus();
+      } else if (e.key === "End") {
+        e.preventDefault();
+        items[items.length - 1].focus();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setMenuOpen(false);
+        moreBtn.focus();
+      } else if (e.key === "Tab") {
+        setMenuOpen(false);
+      }
+    });
+    shadow.addEventListener("click", (e) => {
+      if (!toolsMenu.classList.contains("open")) return;
+      const path = e.composedPath?.() || [];
+      if (path.includes(moreBtn) || path.includes(toolsMenu)) return;
+      setMenuOpen(false);
     });
     shadow.getElementById("rtts-settings-btn").addEventListener("click", () => {
       openSettings();
@@ -2144,8 +2540,11 @@
     }
     function renderNotes() {
       const active = session.activeNoteId ? session.notes.find((n) => n.id === session.activeNoteId) : null;
-      notesCount.textContent = String(active?.entries.length ?? 0);
-      notesBtn.setAttribute("data-tip", `\u7B14\u8BB0${active?.entries.length ? `\uFF08${active.entries.length}\uFF09` : ""}`);
+      const noteCount = active?.entries.length ?? 0;
+      notesCount.textContent = String(noteCount);
+      notesBtn.setAttribute("data-tip", `\u7B14\u8BB0${noteCount ? `\uFF08${noteCount}\uFF09` : ""}`);
+      notesBadge.textContent = noteCount > 99 ? "99+" : String(noteCount);
+      notesBadge.hidden = noteCount === 0;
       notesList.textContent = "";
       const hasEntries = !!(active && active.entries.length > 0);
       if (!hasEntries) {
@@ -2333,7 +2732,32 @@
         return `${t}${s}`;
       }).join("\n");
     }
-    function getSubtitleMarkdown() {
+    function collectNoteAssets(note) {
+      if (!note) return [];
+      const assets = [];
+      const stamp = Date.now();
+      note.entries.forEach((entry, index) => {
+        if ((entry.type === "image" || entry.type === "screenshot") && entry.imageUrl) {
+          const mime = /^data:([^;,]+)/.exec(entry.imageUrl)?.[1] || "image/png";
+          const ext = mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : mime.includes("svg") ? "svg" : mime.includes("gif") ? "gif" : "png";
+          assets.push({
+            entryId: entry.id,
+            fileName: `snooper-${stamp}-${index + 1}.${ext}`,
+            dataUrl: entry.imageUrl,
+            mimeType: mime
+          });
+        } else if (entry.type === "svg" && entry.svg) {
+          assets.push({
+            entryId: entry.id,
+            fileName: `snooper-${stamp}-${index + 1}.svg`,
+            rawText: entry.svg,
+            mimeType: "image/svg+xml"
+          });
+        }
+      });
+      return assets;
+    }
+    function getSubtitleMarkdown(assetNames) {
       const lines = [
         `# snooper-browser \u7FFB\u8BD1\u8BB0\u5F55`,
         ``,
@@ -2356,8 +2780,24 @@
       if (active && active.entries.length > 0) {
         lines.push(``, `---`, ``, `## \u7B14\u8BB0`, ``);
         active.entries.forEach((entry) => {
-          if (entry.target) lines.push(`- ${entry.target} ${entry.source ? `\uFF08${entry.source}\uFF09` : ""}`);
-          else if (entry.text) lines.push(`- ${entry.text}`);
+          const label = entry.text || entry.target || "\u7B14\u8BB0";
+          const isVisual = entry.type === "image" || entry.type === "screenshot" || entry.type === "svg";
+          if (isVisual) {
+            const uploaded = assetNames?.get(entry.id);
+            if (uploaded) {
+              lines.push(`![[${uploaded}]]`);
+              if (entry.text) lines.push(``, `*${entry.text}*`, ``);
+            } else if (entry.imageUrl && /^https?:\/\//i.test(entry.imageUrl)) {
+              lines.push(`![${label}](${entry.imageUrl})`);
+              if (entry.text) lines.push(``, `*${entry.text}*`, ``);
+            } else {
+              lines.push(`> [\u56FE\u7247\uFF1A${label} \u2014 \u56FE\u7247\u6570\u636E\u65E0\u6CD5\u76F4\u63A5\u5D4C\u5165 Markdown\uFF0C\u8BF7\u5728 snooper \u7B14\u8BB0\u4E2D\u67E5\u770B]`);
+            }
+          } else if (entry.target) {
+            lines.push(`- ${entry.target} ${entry.source ? `\uFF08${entry.source}\uFF09` : ""}`);
+          } else if (entry.text) {
+            lines.push(`- ${entry.text}`);
+          }
         });
       }
       return lines.join("\n");
@@ -2469,25 +2909,10 @@
         screenshotBtn.classList.remove("busy");
       }
     });
-    function setNotesExpanded(expanded) {
-      notesExpanded = expanded;
-      notesDrawer.classList.toggle("open", expanded);
-      notesBtn.classList.toggle("active", expanded);
-      if (expanded) {
-        isDrawerOpen = false;
-        drawer.classList.remove("open");
-      }
-    }
-    notesBtn.addEventListener("click", () => setNotesExpanded(!notesExpanded));
-    notesClose.addEventListener("click", () => setNotesExpanded(false));
-    notesBtn.setAttribute("data-tip", "\u7B14\u8BB0");
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
-      if (notesExpanded) setNotesExpanded(false);
-      if (isDrawerOpen) {
-        isDrawerOpen = false;
-        drawer.classList.remove("open");
-      }
+      setMenuOpen(false);
+      if (isDrawerOpen) closeDrawer();
     });
     function addQuickNote() {
       const text = notesInput.value.trim();
@@ -2499,9 +2924,6 @@
         text
       });
       notesInput.value = "";
-      if (!notesExpanded) {
-        setNotesExpanded(true);
-      }
     }
     notesAdd.addEventListener("click", addQuickNote);
     notesInput.addEventListener("keydown", (e) => {
@@ -2511,11 +2933,6 @@
       }
     });
     obsidianBtn.addEventListener("click", async () => {
-      const md = getSubtitleMarkdown();
-      if (!md) {
-        toast("\u6CA1\u6709\u5185\u5BB9\u53EF\u5BFC\u51FA", "err");
-        return;
-      }
       const obsidianConfig = await loadObsidianConfig();
       if (!obsidianConfig.apiKey) {
         toast("\u8BF7\u5148\u586B\u5199 Obsidian API Key", "err");
@@ -2523,6 +2940,36 @@
         cfgObKey.focus();
         return;
       }
+      const activeNote = session.activeNoteId ? session.notes.find((n) => n.id === session.activeNoteId) || null : null;
+      const assets = collectNoteAssets(activeNote);
+      const uploadedNames = /* @__PURE__ */ new Map();
+      let uploadedCount = 0;
+      let failedCount = 0;
+      if (assets.length > 0) {
+        toast(`\u6B63\u5728\u4E0A\u4F20 ${assets.length} \u5F20\u56FE\u7247\u5230 Obsidian\u2026`, "ok");
+        for (const asset of assets) {
+          try {
+            const up = await bg("OBSIDIAN_UPLOAD_ASSET", {
+              obsidianConfig,
+              fileName: asset.fileName,
+              dataUrl: asset.dataUrl || "",
+              rawText: asset.rawText || "",
+              mimeType: asset.mimeType
+            });
+            if (up.ok) {
+              uploadedNames.set(asset.entryId, asset.fileName);
+              uploadedCount += 1;
+            } else {
+              failedCount += 1;
+            }
+          } catch {
+            failedCount += 1;
+          }
+        }
+      }
+      const md = getSubtitleMarkdown(uploadedNames);
+      const imageNote = uploadedCount > 0 ? `\uFF0C\u542B ${uploadedCount} \u5F20\u56FE\u7247` : "";
+      const failNote = failedCount > 0 ? `\uFF1B${failedCount} \u5F20\u56FE\u7247\u4E0A\u4F20\u5931\u8D25\uFF0C\u5DF2\u7528\u6587\u5B57\u5360\u4F4D` : "";
       try {
         const res = await bg("EXPORT_TO_OBSIDIAN", {
           content: md,
@@ -2531,7 +2978,7 @@
         });
         if (res.ok) {
           flashChip(obsidianBtn, 2e3);
-          toast("\u5DF2\u53D1\u9001\u5230 Obsidian", "ok");
+          toast(`\u5DF2\u53D1\u9001\u5230 Obsidian${imageNote}${failNote}`, failedCount > 0 ? "err" : "ok");
         } else {
           toast("Obsidian \u5BFC\u51FA\u5931\u8D25\uFF1A" + (res.error || "\u8BF7\u786E\u8BA4\u5DF2\u5B89\u88C5 Obsidian Local REST API \u63D2\u4EF6"), "err");
         }

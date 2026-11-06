@@ -92,7 +92,10 @@
       vaultPath: typeof r.vaultPath === 'string' ? r.vaultPath : '',
       apiProtocol: protocol,
       apiPort: port,
-      apiKey: typeof r.apiKey === 'string' ? r.apiKey : '',
+      // Users copy the plugin's "Bearer <token>" line; store only the token.
+      apiKey: typeof r.apiKey === 'string'
+        ? r.apiKey.trim().replace(/^Bearer\s+/i, '').trim()
+        : '',
       noteFolder: typeof r.noteFolder === 'string' && r.noteFolder.trim()
         ? r.noteFolder.trim()
         : DEFAULT_OBSIDIAN.noteFolder,
@@ -149,6 +152,9 @@
   const historyList = document.getElementById('history-list')!
   const historyEmpty = document.getElementById('history-empty')!
   const historyCount = document.getElementById('history-count')!
+  const historySelectAll = document.getElementById('history-select-all') as HTMLInputElement
+  const historyDeleteSelected = document.getElementById('history-delete-selected') as HTMLButtonElement
+  const historyClear = document.getElementById('history-clear') as HTMLButtonElement
 
   /* ===== Utilities ===== */
   function showNotice(text: string, isError = false) {
@@ -337,6 +343,24 @@
     return new Date(ts).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
   }
 
+  function getSelectedHistoryIds(): string[] {
+    return Array.from(historyList.querySelectorAll<HTMLInputElement>('input.history-check:checked'))
+      .map((el) => el.dataset.id || '')
+      .filter(Boolean)
+  }
+
+  function updateHistorySelection() {
+    const all = Array.from(historyList.querySelectorAll<HTMLInputElement>('input.history-check'))
+    const selected = all.filter((el) => el.checked)
+    historyDeleteSelected.disabled = selected.length === 0
+    historyDeleteSelected.textContent = selected.length > 0
+      ? `删除所选 (${selected.length})`
+      : '删除所选'
+    historySelectAll.checked = all.length > 0 && selected.length === all.length
+    historySelectAll.indeterminate = selected.length > 0 && selected.length < all.length
+    historySelectAll.disabled = all.length === 0
+  }
+
   async function loadAndRenderHistory() {
     const res: any = await chrome.runtime.sendMessage({ target: 'background', type: 'GET_HISTORY' })
     const items: any[] = res?.history || []
@@ -346,6 +370,7 @@
     if (items.length === 0) {
       historyList.style.display = 'none'
       historyEmpty.style.display = 'block'
+      updateHistorySelection()
       return
     }
     historyList.style.display = 'flex'
@@ -354,25 +379,68 @@
     items.forEach((item: any) => {
       const el = document.createElement('div')
       el.className = 'history-item'
-      el.innerHTML = `
+
+      const check = document.createElement('input')
+      check.type = 'checkbox'
+      check.className = 'history-check'
+      check.dataset.id = item.id
+      check.setAttribute('aria-label', `选择 ${item.pageTitle || '记录'}`)
+      check.addEventListener('change', updateHistorySelection)
+      el.appendChild(check)
+
+      const main = document.createElement('div')
+      main.className = 'history-item-main'
+      main.innerHTML = `
         <div class="history-item-title" title="${escapeHtml(item.pageTitle || '')}">${escapeHtml(item.pageTitle || '未知页面')}</div>
         <div class="history-item-meta">
           <span>&#x1F550; ${formatTime(item.startedAt)}</span>
           <span>&#x1F3AF; ${item.subtitleCount || 0} 条字幕</span>
           <span>${escapeHtml(item.sourceLang || '')} → ${escapeHtml(item.targetLang || '')}</span>
         </div>
-        <div class="history-item-actions">
-          <button class="btn btn-sm btn-secondary" data-action="delete">删除</button>
-        </div>
       `
-      el.querySelector('[data-action="delete"]')?.addEventListener('click', (e) => {
-        e.stopPropagation()
+      el.appendChild(main)
+
+      const actions = document.createElement('div')
+      actions.className = 'history-item-actions'
+      const del = document.createElement('button')
+      del.type = 'button'
+      del.className = 'btn btn-sm btn-secondary'
+      del.textContent = '删除'
+      del.addEventListener('click', () => {
+        if (!confirm(`确定删除「${item.pageTitle || '这条记录'}」？`)) return
         chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_HISTORY', id: item.id })
           .then(() => loadAndRenderHistory())
       })
+      actions.appendChild(del)
+      el.appendChild(actions)
+
       historyList.appendChild(el)
     })
+
+    updateHistorySelection()
   }
+
+  historySelectAll.addEventListener('change', () => {
+    const checked = historySelectAll.checked
+    historyList.querySelectorAll<HTMLInputElement>('input.history-check').forEach((el) => {
+      el.checked = checked
+    })
+    updateHistorySelection()
+  })
+
+  historyDeleteSelected.addEventListener('click', () => {
+    const ids = getSelectedHistoryIds()
+    if (ids.length === 0) return
+    if (!confirm(`确定删除选中的 ${ids.length} 条历史记录？此操作不可恢复。`)) return
+    chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_HISTORY', ids })
+      .then(() => loadAndRenderHistory())
+  })
+
+  historyClear.addEventListener('click', () => {
+    if (!confirm('确定清空全部历史记录？此操作不可恢复。')) return
+    chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_ALL_HISTORY' })
+      .then(() => loadAndRenderHistory())
+  })
 
   function escapeHtml(text: string): string {
     const div = document.createElement('div')

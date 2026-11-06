@@ -418,15 +418,44 @@ body {
 }
 
 /* History list */
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+.history-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-right: auto;
+  user-select: none;
+}
+.history-check {
+  accent-color: var(--accent-primary);
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  cursor: pointer;
+  margin-top: 2px;
+}
 .history-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
   background: rgba(255,255,255,0.03);
   border: 1px solid var(--border-color);
   border-radius: 10px;
   padding: 10px 12px;
-  cursor: pointer;
   transition: background 0.15s;
 }
 .history-item:hover { background: rgba(255,255,255,0.06); }
+.history-item-main { flex: 1; min-width: 0; }
 .history-item-title {
   font-size: 13px;
   font-weight: 500;
@@ -442,16 +471,31 @@ body {
   display: flex;
   gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
 }
 .history-item-actions {
   display: flex;
   gap: 6px;
-  margin-top: 6px;
+  flex-shrink: 0;
+  align-self: center;
 }
 .history-item-actions button {
   height: 26px;
   padding: 0 8px;
   font-size: 11px;
+}
+.btn-danger {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.32);
+  color: var(--danger);
+}
+.btn-danger:hover {
+  background: rgba(239, 68, 68, 0.24);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .btn-save {

@@ -312,6 +312,7 @@ interface CaptureSession {
   pendingTranscriptions: number
   currentAskController: AbortController | null
   aborted: boolean
+  videoEl: HTMLVideoElement | null
   recentContext?: { source: string; target: string }[]
 }
 
@@ -369,19 +370,76 @@ async function startTabCapture({ tabId, streamId, sourceLang, targetLang, config
     pendingTranscriptions: 0,
     currentAskController: null,
     aborted: false,
+    videoEl: null,
   };
   captureSessions.set(tabId, session);
+  ensureKeepAlive();
 
   try {
-    session.mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        mandatory: {
-          chromeMediaSource: 'tab',
-          chromeMediaSourceId: streamId,
-        },
-      } as any,
-      video: false,
-    });
+    const audioConstraints = {
+      mandatory: {
+        chromeMediaSource: 'tab',
+        chromeMediaSourceId: streamId,
+      },
+    } as any;
+    // A low-frame-rate video track lets CAPTURE_FRAME grab the visible tab
+    // while recording: chrome.tabs.captureVisibleTab refuses to work then.
+    const videoConstraints = {
+      mandatory: {
+        chromeMediaSource: 'tab',
+        chromeMediaSourceId: streamId,
+        maxWidth: 1920,
+        maxHeight: 1080,
+        maxFrameRate: 5,
+      },
+    } as any;
+
+    let mediaStream: MediaStream;
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: audioConstraints,
+        video: videoConstraints,
+      });
+    } catch (videoErr) {
+      // A few tabs (DRM players, occluded windows) reject the video track.
+      // Recording must never fail because of it; screenshots just degrade.
+      console.warn('[RTTS] video track unavailable, falling back to audio only:', videoErr);
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: audioConstraints,
+        video: false,
+      });
+    }
+    session.mediaStream = mediaStream;
+
+    // A captured tab ignores (or pauses) tabCapture streams when the track
+    // ends – e.g. the user stops sharing or the tab crashes. Without this the
+    // toolbar kept saying "recording" forever.
+    for (const track of mediaStream.getTracks()) {
+      track.addEventListener('ended', () => {
+        const current = captureSessions.get(tabId);
+        // `stop()` normally does not fire `ended`, but guard anyway so a
+        // teardown can never re-enter stopTabCapture.
+        if (!current || current.aborted || current.generation !== generation) return;
+        chrome.runtime.sendMessage({
+          type: 'CAPTURE_ENDED',
+          tabId,
+          generation,
+          reason: track.kind,
+        }).catch(() => {});
+        stopTabCapture(tabId);
+      });
+    }
+
+    if (mediaStream.getVideoTracks().length > 0) {
+      const videoEl = document.createElement('video');
+      videoEl.srcObject = mediaStream;
+      videoEl.muted = true;
+      videoEl.playsInline = true;
+      videoEl.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none';
+      document.body.appendChild(videoEl);
+      videoEl.play().catch(() => {});
+      session.videoEl = videoEl;
+    }
 
     session.audioCtx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
     session.monitorAudioCtx = new AudioContext();
@@ -904,11 +962,52 @@ async function stopTabCapture(tabId: number) {
     await session.monitorAudioCtx.close();
   }
 
+  if (session.videoEl) {
+    session.videoEl.pause();
+    session.videoEl.srcObject = null;
+    session.videoEl.remove();
+    session.videoEl = null;
+  }
+
   if (session.mediaStream) {
     session.mediaStream.getTracks().forEach((track) => track.stop());
   }
 
   captureSessions.delete(tabId);
+  stopKeepAliveIfIdle();
+}
+
+/* ===== Service-worker keepalive =====
+ * MV3 background workers are suspended after ~30 s without events. A silent
+ * stretch of video produced no subtitle messages, so the worker died; the
+ * offscreen capture kept running, the toolbar showed "stopped", and starting
+ * again failed with "Cannot capture a tab with an active stream." A message
+ * every 15 s keeps the worker alive for as long as a capture exists.
+ */
+let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+
+function ensureKeepAlive() {
+  if (keepAliveTimer !== null) return;
+  keepAliveTimer = setInterval(() => {
+    for (const [tabId, session] of captureSessions) {
+      try {
+        chrome.runtime.sendMessage({
+          type: 'CAPTURE_KEEPALIVE',
+          tabId,
+          generation: session.generation,
+        }).catch(() => {});
+      } catch {
+        // Extension context may be gone; the next stop will clear the timer.
+      }
+    }
+  }, 15000);
+}
+
+function stopKeepAliveIfIdle() {
+  if (captureSessions.size === 0 && keepAliveTimer !== null) {
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+  }
 }
 
 /* ===== Message Handler ===== */
@@ -932,6 +1031,19 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
       return true;
     }
 
+    case 'GET_CAPTURE_SESSIONS': {
+      const sessions: Record<string, number> = {};
+      for (const [tabId, session] of captureSessions) {
+        sessions[String(tabId)] = session.generation;
+      }
+      sendResponse({
+        ok: true,
+        tabIds: Array.from(captureSessions.keys()),
+        sessions,
+      });
+      return false;
+    }
+
     case 'SET_LANG': {
       const tabId = message.tabId;
       const session = captureSessions.get(tabId);
@@ -944,6 +1056,7 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
     }
 
     case 'CAPTURE_FRAME': {
+      const tabId = message.tabId;
       const sess = captureSessions.get(tabId);
       if (!sess || sess.aborted || !sess.videoEl || !sess.videoEl.videoWidth) {
         sendResponse({ ok: false, error: '没有可用的视频帧' });

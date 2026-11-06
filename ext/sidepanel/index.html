@@ -133,7 +133,15 @@
             <span class="section-badge" id="history-count">0</span>
           </div>
           <p class="section-desc">每次停止转写后自动保存。历史记录存储在浏览器本地。</p>
-          <div id="history-list" style="margin-top:12px;display:flex;flex-direction:column;gap:8px;min-height:60px;"></div>
+          <div id="history-toolbar" class="history-toolbar">
+            <label class="history-select-all">
+              <input id="history-select-all" type="checkbox">
+              全选
+            </label>
+            <button id="history-delete-selected" type="button" class="btn btn-sm btn-secondary" disabled>删除所选</button>
+            <button id="history-clear" type="button" class="btn btn-sm btn-danger">清空全部</button>
+          </div>
+          <div id="history-list" style="display:flex;flex-direction:column;gap:8px;min-height:60px;"></div>
           <div id="history-empty" style="text-align:center;padding:28px 8px;color:var(--text-muted);font-size:13px;display:none">还没有历史记录</div>
         </section>
       </div>

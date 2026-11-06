@@ -4,6 +4,9 @@ var SESSION_RECOVERY_KEY = "snooper.extension.sessions.v1";
 var HISTORY_KEY = "snooper.extension.history.v1";
 var MAX_HISTORY = 100;
 var OFFSCREEN_PATH = "offscreen.html";
+function normalizeObsidianKey(raw) {
+  return String(raw || "").trim().replace(/^Bearer\s+/i, "").trim();
+}
 var FS_BRIDGE_FILE = "fullscreen-bridge.js";
 var DEFAULT_CONFIG = {
   providers: [
@@ -28,7 +31,7 @@ var DEFAULT_CONFIG = {
   }
 };
 var sessions = /* @__PURE__ */ new Map();
-var generationCounter = 0;
+var generationCounter = Date.now();
 function nextGeneration() {
   return ++generationCounter;
 }
@@ -100,6 +103,36 @@ async function sendToOffscreen(message) {
     return resp;
   } catch (err) {
     throw new Error("Offscreen \u901A\u4FE1\u5931\u8D25: " + (err.message || "\u672A\u77E5\u9519\u8BEF"));
+  }
+}
+async function hasOffscreenDocument() {
+  try {
+    return typeof chrome.offscreen !== "undefined" && typeof chrome.offscreen.hasDocument === "function" && await chrome.offscreen.hasDocument();
+  } catch {
+    return false;
+  }
+}
+async function offscreenHasCapture(tabId) {
+  if (!await hasOffscreenDocument()) return false;
+  try {
+    const res = await chrome.runtime.sendMessage({
+      target: "offscreen",
+      type: "GET_CAPTURE_SESSIONS"
+    });
+    return !!res?.ok && Array.isArray(res.tabIds) && res.tabIds.includes(tabId);
+  } catch {
+    return false;
+  }
+}
+async function stopOrphanCapture(tabId) {
+  if (!await hasOffscreenDocument()) return;
+  try {
+    await chrome.runtime.sendMessage({
+      target: "offscreen",
+      type: "STOP_CAPTURE",
+      tabId
+    });
+  } catch {
   }
 }
 async function checkAndCloseOffscreen() {
@@ -174,6 +207,7 @@ function pushSession(tabId) {
     session: safeSession
   }).catch(() => {
   });
+  persistSessionsThrottled();
 }
 function pushStreamingUpdate(tabId) {
   const s = sessions.get(tabId);
@@ -449,34 +483,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     case "START": {
-      const s = getOrCreateSession(tabId);
-      if (s.state === "running" || s.state === "starting") {
-        sendResponse({ ok: false, error: "\u5F53\u524D\u6807\u7B7E\u9875\u5DF2\u5728\u8F6C\u5199\u4E2D" });
-        return false;
-      }
-      s.state = "starting";
-      s.sourceLang = message.sourceLang || "auto";
-      s.targetLang = message.targetLang || "zh";
-      s.generation = nextGeneration();
-      s.subtitles = [];
-      pushSession(tabId);
-      loadConfig().then(async (config) => {
-        const hasKey = config.providers.some((p) => p.apiKey && p.apiKey.trim().length > 0);
-        if (!hasKey) {
-          throw new Error("\u5C1A\u672A\u914D\u7F6E API Key\u3002\u8BF7\u70B9\u51FB\u9875\u9762\u60AC\u6D6E\u680F\u7684 \u2699 \u6309\u94AE\uFF0C\u5728\u9875\u9762\u5185\u586B\u5165\u5BC6\u94A5\u540E\u91CD\u8BD5");
+      (async () => {
+        const s = getOrCreateSession(tabId);
+        if (s.state === "running" || s.state === "starting") {
+          const live = await offscreenHasCapture(tabId);
+          if (live) {
+            sendResponse({ ok: false, error: "\u5F53\u524D\u6807\u7B7E\u9875\u5DF2\u5728\u8F6C\u5199\u4E2D" });
+            return;
+          }
+          s.state = "idle";
+          s.streamId = "";
+          s.configSnapshot = null;
+          s.streamingSubtitle = null;
         }
-        const audioRoute = config.routes.audio;
-        const audioProvider = config.providers.find((p) => p.id === audioRoute.providerId);
-        if (!audioProvider || !audioProvider.apiKey) {
-          throw new Error(`\u97F3\u9891\u8F6C\u5199\u670D\u52A1\u5546\u300C${audioProvider?.name || "\u672A\u914D\u7F6E"}\u300D\u7F3A\u5C11 API Key\uFF0C\u8BF7\u70B9\u51FB \u2699 \u5728\u9875\u9762\u5185\u914D\u7F6E`);
-        }
-        if (!audioRoute.model) {
-          throw new Error("\u97F3\u9891\u8F6C\u5199\u672A\u9009\u62E9\u6A21\u578B\uFF0C\u8BF7\u70B9\u51FB\u60AC\u6D6E\u680F\u7684 \u2699 \u5728\u9875\u9762\u5185\u914D\u7F6E");
-        }
-        s.configSnapshot = JSON.parse(JSON.stringify(config));
-        console.log("[RTTS] START:", tabId, "gen:", s.generation, "lang:", s.sourceLang, "\u2192", s.targetLang);
+        s.state = "starting";
+        s.sourceLang = message.sourceLang || "auto";
+        s.targetLang = message.targetLang || "zh";
+        s.generation = nextGeneration();
+        s.subtitles = [];
+        s.streamingSubtitle = null;
+        pushSession(tabId);
         try {
-          const streamId = await new Promise((resolve, reject) => {
+          const config = await loadConfig();
+          const hasKey = config.providers.some((p) => p.apiKey && p.apiKey.trim().length > 0);
+          if (!hasKey) {
+            throw new Error("\u5C1A\u672A\u914D\u7F6E API Key\u3002\u8BF7\u70B9\u51FB\u9875\u9762\u60AC\u6D6E\u680F\u7684 \u2699 \u6309\u94AE\uFF0C\u5728\u9875\u9762\u5185\u586B\u5165\u5BC6\u94A5\u540E\u91CD\u8BD5");
+          }
+          const audioRoute = config.routes.audio;
+          const audioProvider = config.providers.find((p) => p.id === audioRoute.providerId);
+          if (!audioProvider || !audioProvider.apiKey) {
+            throw new Error(`\u97F3\u9891\u8F6C\u5199\u670D\u52A1\u5546\u300C${audioProvider?.name || "\u672A\u914D\u7F6E"}\u300D\u7F3A\u5C11 API Key\uFF0C\u8BF7\u70B9\u51FB \u2699 \u5728\u9875\u9762\u5185\u914D\u7F6E`);
+          }
+          if (!audioRoute.model) {
+            throw new Error("\u97F3\u9891\u8F6C\u5199\u672A\u9009\u62E9\u6A21\u578B\uFF0C\u8BF7\u70B9\u51FB\u60AC\u6D6E\u680F\u7684 \u2699 \u5728\u9875\u9762\u5185\u914D\u7F6E");
+          }
+          s.configSnapshot = JSON.parse(JSON.stringify(config));
+          console.log("[RTTS] START:", tabId, "gen:", s.generation, "lang:", s.sourceLang, "\u2192", s.targetLang);
+          await stopOrphanCapture(tabId);
+          const requestStreamId = () => new Promise((resolve, reject) => {
             chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (id) => {
               if (chrome.runtime.lastError) {
                 reject(new Error(chrome.runtime.lastError.message));
@@ -487,6 +531,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               }
             });
           });
+          let streamId;
+          try {
+            streamId = await requestStreamId();
+          } catch (err) {
+            if (!/active stream/i.test(err?.message || "")) throw err;
+            await stopOrphanCapture(tabId);
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            streamId = await requestStreamId();
+          }
           s.streamId = streamId;
           console.log("[RTTS] streamId obtained for tab", tabId);
           await sendToOffscreen({
@@ -510,25 +563,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           pushSession(tabId);
           const msg = err && err.message || String(err);
           let friendly = msg;
-          if (/not been invoked|activeTab/i.test(msg)) {
+          if (/active stream/i.test(msg)) {
+            friendly = "\u8BE5\u6807\u7B7E\u9875\u4ECD\u6709\u6B8B\u7559\u5F55\u97F3\u6D41\uFF08\u6269\u5C55\u540E\u53F0\u91CD\u542F\u6240\u81F4\uFF09\u3002\u5DF2\u81EA\u52A8\u6E05\u7406\uFF0C\u8BF7\u518D\u70B9\u4E00\u6B21\u300C\u5F55\u97F3\u300D\uFF1B\u82E5\u4ECD\u5931\u8D25\uFF0C\u8BF7\u5237\u65B0\u9875\u9762\u540E\u91CD\u8BD5";
+          } else if (/not been invoked|activeTab/i.test(msg)) {
             friendly = "\u9700\u8981\u5148\u5B8C\u6210\u4E00\u6B21\u6388\u6743\uFF1A\u70B9\u51FB\u6D4F\u89C8\u5668\u5DE5\u5177\u680F\u7684 snooper \u56FE\u6807\uFF08\u5F39\u51FA\u7684\u9762\u677F\u53EF\u7ACB\u5373\u5173\u95ED\uFF09\uFF0C\u4E4B\u540E\u672C\u9875\u53EF\u76F4\u63A5\u4F7F\u7528";
           } else if (/permission|Permission|not allowed|not permitted/i.test(msg)) {
             friendly = "\u7F3A\u5C11\u5F55\u97F3\u6743\u9650\uFF1A\u8BF7\u786E\u8BA4\u6269\u5C55\u5DF2\u83B7\u5F97\u300C\u8BFB\u53D6\u548C\u66F4\u6539\u7F51\u7AD9\u6570\u636E\u300D\u6743\u9650\uFF0C\u7136\u540E\u91CD\u8BD5";
           }
           sendResponse({ ok: false, error: friendly });
         }
-      }).catch((err) => {
-        console.warn("[RTTS] START config error:", err.message);
-        s.state = "idle";
-        s.configSnapshot = null;
-        sendResponse({ ok: false, error: err.message });
-      });
+      })();
       return true;
     }
     case "STOP": {
       const s = sessions.get(tabId);
-      if (!s || s.state !== "running" && s.state !== "starting") {
-        sendResponse({ ok: false, error: "\u5F53\u524D\u6807\u7B7E\u9875\u672A\u5728\u8F6C\u5199" });
+      if (!s) {
+        stopOrphanCapture(tabId).catch(() => {
+        });
+        sendResponse({ ok: true });
+        return false;
+      }
+      if (s.state === "idle" && s.generation !== 0) {
+        stopOrphanCapture(tabId).catch(() => {
+        });
+        sendResponse({ ok: true });
         return false;
       }
       s.state = "stopping";
@@ -616,8 +674,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "CAPTURE_SCREENSHOT": {
       chrome.tabs.captureVisibleTab({ format: "png" }).then((dataUrl) => {
         sendResponse({ ok: true, dataUrl });
-      }).catch((err) => {
+      }).catch(async (err) => {
         if (err.message && /active stream/i.test(err.message)) {
+          if (!await hasOffscreenDocument()) {
+            sendResponse({ ok: false, error: "\u622A\u56FE\u5931\u8D25\uFF1A\u6807\u7B7E\u9875\u6B63\u88AB\u5176\u4ED6\u5F55\u97F3\u5360\u7528\uFF0C\u8BF7\u505C\u6B62\u540E\u91CD\u8BD5" });
+            return;
+          }
           sendToOffscreen({ type: "CAPTURE_FRAME", tabId }).then((frame) => {
             if (frame && frame.dataUrl) {
               sendResponse({ ok: true, dataUrl: frame.dataUrl });
@@ -663,7 +725,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const oc = message.obsidianConfig || {};
       const obsidianPort = Number(oc.apiPort) || 27123;
       const protocol = oc.apiProtocol === "https" ? "https" : oc.apiProtocol === "http" ? "http" : obsidianPort === 27124 ? "https" : "http";
-      const obsidianApiKey = oc.apiKey || "";
+      const obsidianApiKey = normalizeObsidianKey(oc.apiKey);
       const noteFolder = String(oc.noteFolder || "snooper-notes").replace(/^\/+|\/+$/g, "");
       const fileName = `${title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_")}.md`;
       const base = `${protocol}://127.0.0.1:${obsidianPort}`;
@@ -698,9 +760,70 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })();
       return true;
     }
+    case "OBSIDIAN_UPLOAD_ASSET": {
+      const oc = message.obsidianConfig || {};
+      const key = normalizeObsidianKey(oc.apiKey);
+      const port = Number(oc.apiPort) || 27123;
+      const protocol = oc.apiProtocol === "https" ? "https" : oc.apiProtocol === "http" ? "http" : port === 27124 ? "https" : "http";
+      const folder = String(oc.noteFolder || "snooper-notes").replace(/^\/+|\/+$/g, "");
+      const fileName = String(message.fileName || "").replace(/[^a-zA-Z0-9._-]/g, "-");
+      if (!fileName) {
+        sendResponse({ ok: false, error: "\u8D44\u4EA7\u6587\u4EF6\u540D\u4E3A\u7A7A" });
+        return false;
+      }
+      (async () => {
+        try {
+          let bytes;
+          let mime = String(message.mimeType || "image/png");
+          const dataUrl = String(message.dataUrl || "");
+          if (dataUrl.startsWith("data:")) {
+            const match = /^data:([^;,]+)?(?:;base64)?,(.*)$/s.exec(dataUrl);
+            if (!match) throw new Error("\u56FE\u7247\u6570\u636E\u683C\u5F0F\u65E0\u6CD5\u8BC6\u522B");
+            if (match[1]) mime = match[1];
+            const isBase64 = /;base64,/.test(dataUrl);
+            if (isBase64) {
+              const binary = atob(match[2] || "");
+              bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            } else {
+              bytes = new TextEncoder().encode(decodeURIComponent(match[2] || ""));
+            }
+          } else if (/^https?:\/\//i.test(dataUrl)) {
+            const r = await fetch(dataUrl);
+            if (!r.ok) throw new Error(`\u4E0B\u8F7D\u56FE\u7247\u5931\u8D25 HTTP ${r.status}`);
+            const buf = await r.arrayBuffer();
+            bytes = new Uint8Array(buf);
+            mime = r.headers.get("content-type") || mime;
+          } else if (String(message.rawText || "")) {
+            bytes = new TextEncoder().encode(String(message.rawText));
+            mime = "image/svg+xml";
+          } else {
+            throw new Error("\u6CA1\u6709\u53EF\u4E0A\u4F20\u7684\u56FE\u7247\u6570\u636E");
+          }
+          const base = `${protocol}://127.0.0.1:${port}`;
+          const assetPath = folder ? `/vault/${folder}/assets/${encodeURIComponent(fileName)}` : `/vault/assets/${encodeURIComponent(fileName)}`;
+          const res = await fetch(base + assetPath, {
+            method: "PUT",
+            headers: {
+              "Content-Type": mime,
+              ...key ? { Authorization: `Bearer ${key}` } : {}
+            },
+            body: bytes
+          });
+          if (!res.ok) {
+            sendResponse({ ok: false, error: `\u56FE\u7247\u4E0A\u4F20\u5931\u8D25 HTTP ${res.status}` });
+            return;
+          }
+          sendResponse({ ok: true, fileName });
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message || "\u56FE\u7247\u4E0A\u4F20\u5931\u8D25" });
+        }
+      })();
+      return true;
+    }
     case "TEST_OBSIDIAN": {
       const oc = message.obsidianConfig || {};
-      const key = oc.apiKey || "";
+      const key = normalizeObsidianKey(oc.apiKey);
       const configuredPort = Number(oc.apiPort) || 27123;
       const configuredProtocol = oc.apiProtocol === "https" ? "https" : oc.apiProtocol === "http" ? "http" : configuredPort === 27124 ? "https" : "http";
       const seen = /* @__PURE__ */ new Set();
@@ -754,8 +877,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     case "DELETE_HISTORY": {
-      const id = String(message.id || "");
-      deleteHistoryEntry(id).then(() => sendResponse({ ok: true })).catch(() => {
+      const ids = Array.isArray(message.ids) ? message.ids.map((id) => String(id)) : [String(message.id || "")];
+      deleteHistoryEntries(ids).then(() => sendResponse({ ok: true })).catch(() => {
+        sendResponse({ ok: false });
+      });
+      return true;
+    }
+    case "DELETE_ALL_HISTORY": {
+      clearHistory().then(() => sendResponse({ ok: true })).catch(() => {
         sendResponse({ ok: false });
       });
       return true;
@@ -770,9 +899,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   switch (message.type) {
+    case "CAPTURE_KEEPALIVE": {
+      const s = sessions.get(message.tabId);
+      if (s && s.state === "starting" && s.generation === message.generation) {
+        s.state = "running";
+        pushSession(message.tabId);
+      }
+      sendResponse({ ok: true });
+      return false;
+    }
+    case "CAPTURE_ENDED": {
+      const s = sessions.get(message.tabId);
+      if (s && (s.state === "running" || s.state === "starting")) {
+        s.state = "idle";
+        s.streamId = "";
+        s.configSnapshot = null;
+        s.streamingSubtitle = null;
+        if (s.subtitles.length > 0) persistSessionHistory(message.tabId);
+        pushSession(message.tabId);
+        checkAndCloseOffscreen();
+      }
+      sendResponse({ ok: true });
+      return false;
+    }
     case "CAPTURE_SUBTITLE_STREAMING": {
       const s = sessions.get(message.tabId);
       if (!s || s.generation !== message.generation) {
+        return false;
+      }
+      if (s.state !== "running" && s.state !== "starting") {
         return false;
       }
       if (!message.source && !message.partialTarget) {
@@ -830,21 +985,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   removeSession(tabId);
 });
+function stopSessionForTab(tabId) {
+  const s = sessions.get(tabId);
+  if (!s || s.state !== "running" && s.state !== "starting") return;
+  if (s.subtitles.length > 0) persistSessionHistory(tabId);
+  sendToOffscreen({ type: "STOP_CAPTURE", tabId, generation: s.generation }).catch(() => {
+  });
+  s.state = "idle";
+  s.streamId = "";
+  s.configSnapshot = null;
+  s.subtitles = [];
+  s.streamingSubtitle = null;
+  pushSession(tabId);
+  checkAndCloseOffscreen();
+}
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.url) {
-    const s = sessions.get(tabId);
-    if (s && (s.state === "running" || s.state === "starting")) {
-      sendToOffscreen({ type: "STOP_CAPTURE", tabId, generation: s.generation }).catch(() => {
-      });
-      s.state = "idle";
-      s.streamId = "";
-      s.configSnapshot = null;
-      s.subtitles = [];
-      s.streamingSubtitle = null;
-      pushSession(tabId);
-      checkAndCloseOffscreen();
-    }
+  if (changeInfo.status === "loading") {
+    stopSessionForTab(tabId);
   }
+});
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const s = sessions.get(tabId);
+  if (!s) return;
+  if (s.subtitles.length > 0) persistSessionHistory(tabId);
+  sendToOffscreen({ type: "STOP_CAPTURE", tabId, generation: s.generation }).catch(() => {
+  });
+  sessions.delete(tabId);
+  persistSessions();
+  checkAndCloseOffscreen();
 });
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   const session = sessions.get(activeInfo.tabId);
@@ -910,12 +1078,19 @@ async function readHistory() {
     return [];
   }
 }
-async function deleteHistoryEntry(id) {
+async function deleteHistoryEntries(ids) {
   try {
     const got = await chrome.storage.local.get(HISTORY_KEY);
     let history = Array.isArray(got[HISTORY_KEY]) ? got[HISTORY_KEY] : [];
-    history = history.filter((h) => h.id !== id);
+    const remove = new Set(ids);
+    history = history.filter((h) => !remove.has(h.id));
     await chrome.storage.local.set({ [HISTORY_KEY]: history });
+  } catch {
+  }
+}
+async function clearHistory() {
+  try {
+    await chrome.storage.local.set({ [HISTORY_KEY]: [] });
   } catch {
   }
 }
@@ -924,16 +1099,45 @@ async function recoverSessions() {
     const result = await chrome.storage.session.get(SESSION_RECOVERY_KEY);
     if (!result[SESSION_RECOVERY_KEY]) return;
     const recovered = JSON.parse(result[SESSION_RECOVERY_KEY]);
-    for (const [tabIdStr, s] of Object.entries(recovered)) {
+    let liveGenerations = {};
+    if (await hasOffscreenDocument()) {
+      try {
+        const live = await chrome.runtime.sendMessage({
+          target: "offscreen",
+          type: "GET_CAPTURE_SESSIONS"
+        });
+        if (live?.ok && live.sessions && typeof live.sessions === "object") {
+          liveGenerations = live.sessions;
+        }
+      } catch {
+      }
+    }
+    for (const [tabIdStr, stored] of Object.entries(recovered)) {
       const tabId = Number(tabIdStr);
-      if (s.state === "running" || s.state === "starting") {
+      const s = stored;
+      const liveGeneration = liveGenerations[String(tabId)];
+      if (typeof liveGeneration === "number") {
+        s.state = "running";
+        s.generation = liveGeneration;
+        s.streamId = "";
+      } else if (s.state === "running" || s.state === "starting") {
         s.state = "idle";
         s.streamId = "";
+        s.configSnapshot = null;
+        s.streamingSubtitle = null;
       }
       sessions.set(tabId, s);
+      pushSession(tabId);
     }
   } catch {
   }
+}
+var lastPersistAt = 0;
+function persistSessionsThrottled() {
+  const now = Date.now();
+  if (now - lastPersistAt < 3e3) return;
+  lastPersistAt = now;
+  persistSessions();
 }
 function persistSessions() {
   const obj = {};
@@ -955,9 +1159,4 @@ function persistSessions() {
 }
 recoverSessions();
 setInterval(persistSessions, 3e4);
-var origPushSession = pushSession;
-pushSession = function(tabId) {
-  origPushSession(tabId);
-  persistSessions();
-};
 console.log("[RTTS] Background service worker (TS) initialized");

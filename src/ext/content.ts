@@ -794,6 +794,24 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     .note-item:hover { background: rgba(255,255,255,0.04); }
     .note-item .note-text { flex: 1; min-width: 0; }
     .note-item .note-text.truncated { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* Markdown notes: keep the rendered formatting, clamp to four lines. */
+    .note-item .note-text.note-md {
+      white-space: normal; overflow: hidden;
+      display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+      color: rgba(255,255,255,0.72);
+    }
+    .note-item .note-text.note-md strong { color: #fff; font-weight: 600; }
+    .note-item .note-text.note-md em { color: rgba(255,255,255,0.85); }
+    .note-item .note-text.note-md code {
+      background: rgba(255,255,255,0.1); border-radius: 3px;
+      padding: 0 3px; font-size: 10.5px;
+    }
+    .note-item .note-text.note-md pre {
+      margin: 3px 0; padding: 4px 5px; border-radius: 4px;
+      background: rgba(0,0,0,0.3); overflow-x: auto;
+    }
+    .note-item .note-text.note-md pre code { background: none; padding: 0; }
+    .note-item .note-text.note-md a { color: #a5b4fc; }
     .note-item .note-type {
       font-size: 9px; color: rgba(255,255,255,0.25);
       flex-shrink: 0; margin-top: 1px;
@@ -804,27 +822,8 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
       flex-shrink: 0;
     }
     .note-item .note-del:hover { color: #ef4444; }
-    #rtts-notes-input-row {
-      display: flex; gap: 6px;
-    }
-    #rtts-notes-input {
-      flex: 1; height: 32px;
-      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 8px; padding: 0 10px; color: #fff; font-size: 12px;
-      outline: none;
-    }
-    #rtts-notes-input:focus { border-color: #7c5cff; }
-    #rtts-notes-add {
-      width: 32px; height: 32px; border-radius: 8px;
-      border: none; background: #7c5cff; color: #fff;
-      font-size: 14px; cursor: pointer; display: flex;
-      align-items: center; justify-content: center;
-      flex-shrink: 0;
-    }
-    #rtts-notes-add:hover { background: #6642f5; }
-
-    /* === Markdown chat editor === */
-    #rtts-md-shell {
+    /* === Shared Markdown editor shell (chat + notes) === */
+    .rtts-md-shell {
       display: flex; flex-direction: column;
       border: 1px solid rgba(255,255,255,0.1);
       border-radius: 11px;
@@ -832,47 +831,70 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
       overflow: hidden;
       transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
-    #rtts-md-shell:focus-within {
+    .rtts-md-shell:focus-within {
       border-color: rgba(124,92,255,0.65);
       box-shadow: 0 0 0 3px rgba(124,92,255,0.12);
     }
-    #rtts-md-toolbar {
+    .rtts-md-toolbar {
       display: flex; align-items: center; gap: 2px;
       padding: 4px 5px;
       border-bottom: 1px solid rgba(255,255,255,0.06);
     }
-    #rtts-md-toolbar button {
+    .rtts-md-toolbar button {
       height: 22px; min-width: 25px; padding: 0 6px;
-      display: inline-flex; align-items: center; justify-content: center;
+      display: inline-flex; align-items: center; justify-content: center; gap: 4px;
       border: 1px solid transparent; border-radius: 6px;
       background: none; color: rgba(255,255,255,0.45);
       font-size: 11px; cursor: pointer;
     }
-    #rtts-md-toolbar button:hover { background: rgba(255,255,255,0.07); color: #fff; }
-    #rtts-md-toolbar button.active { background: rgba(124,92,255,0.25); color: #fff; }
-    #rtts-md-toolbar button b, #rtts-md-toolbar button i { font-size: 12px; }
-    #rtts-md-toolbar #rtts-md-preview-btn { margin-left: auto; }
-    #rtts-chat-editor {
-      min-height: 44px; max-height: 140px; overflow-y: auto;
-      background: none; border: none; border-radius: 0;
-      padding: 8px 10px;
+    .rtts-md-toolbar button:hover { background: rgba(255,255,255,0.07); color: #fff; }
+    .rtts-md-toolbar button.active { background: rgba(124,92,255,0.25); color: #fff; }
+    .rtts-md-toolbar button b, .rtts-md-toolbar button i { font-size: 12px; }
+    .rtts-md-toolbar button svg {
+      width: 13px; height: 13px;
+      fill: none; stroke: currentColor; stroke-width: 1.8;
+      stroke-linecap: round; stroke-linejoin: round;
+    }
+    .rtts-md-toolbar .rtts-md-tail { margin-left: auto; }
+    #rtts-cite-btn { color: rgba(160,196,255,0.72); }
+    #rtts-cite-btn:hover { color: #fff; }
+
+    /* Attach + input + send share one row. */
+    #rtts-chat-input-row,
+    #rtts-notes-row {
+      display: flex; align-items: flex-end; gap: 6px;
+      padding: 6px 7px;
+    }
+    #rtts-chat-editor,
+    #rtts-notes-editor {
+      flex: 1; min-width: 0;
+      min-height: 26px; max-height: 120px; overflow-y: auto;
+      padding: 4px 2px;
       color: #fff; font-size: 13px; line-height: 1.5;
       white-space: pre-wrap; word-break: break-word;
       outline: none;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.14) transparent;
     }
-    #rtts-chat-editor:empty::before {
+    #rtts-chat-editor::-webkit-scrollbar,
+    #rtts-notes-editor::-webkit-scrollbar { width: 4px; }
+    #rtts-chat-editor::-webkit-scrollbar-thumb,
+    #rtts-notes-editor::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.16); }
+    #rtts-chat-editor:empty::before,
+    #rtts-notes-editor:empty::before {
       content: attr(data-placeholder);
       color: rgba(255,255,255,0.3);
       pointer-events: none;
     }
-    #rtts-chat-editor code {
+    #rtts-chat-editor code,
+    #rtts-notes-editor code {
       background: rgba(255,255,255,0.1); border-radius: 3px;
       padding: 0 3px; font-size: 12px;
     }
     .rtts-md-preview {
-      min-height: 44px; max-height: 140px; overflow-y: auto;
-      background: none; border: none; border-radius: 0;
-      padding: 8px 10px;
+      flex: 1; min-width: 0;
+      min-height: 26px; max-height: 120px; overflow-y: auto;
+      padding: 4px 2px;
       color: rgba(255,255,255,0.88); font-size: 13px; line-height: 1.55;
     }
     .rtts-md-preview pre {
@@ -886,10 +908,57 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     .rtts-md-preview pre code { background: none; padding: 0; }
     .rtts-md-preview a { color: #a5b4fc; }
     .rtts-md-empty { color: rgba(255,255,255,0.35); }
-    #rtts-composer-hint {
-      flex: 1; font-size: 10px; color: rgba(255,255,255,0.28);
+
+    /* === Cite popover (reference note screenshots from chat) === */
+    .rtts-cite-popover {
+      position: absolute; left: 12px; right: 12px; bottom: 96px;
+      max-height: 46vh; overflow-y: auto;
+      padding: 8px;
+      background: rgba(18,18,28,0.98);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      box-shadow: 0 18px 44px rgba(0,0,0,0.6);
+      z-index: 2147483646;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.16) transparent;
+    }
+    .rtts-cite-popover[hidden] { display: none; }
+    .rtts-cite-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 2px 4px 8px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      color: rgba(255,255,255,0.55);
+    }
+    .rtts-cite-head button {
+      border: none; background: none; color: rgba(255,255,255,0.4);
+      font-size: 12px; cursor: pointer; padding: 2px 4px;
+    }
+    .rtts-cite-head button:hover { color: #fff; }
+    .rtts-cite-list {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+    }
+    .rtts-cite-item {
+      position: relative;
+      padding: 0; border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px; overflow: hidden; background: rgba(255,255,255,0.04);
+      cursor: pointer; aspect-ratio: 16 / 10;
+    }
+    .rtts-cite-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .rtts-cite-item span {
+      position: absolute; left: 0; right: 0; bottom: 0;
+      padding: 3px 5px; font-size: 9px; text-align: left;
+      color: rgba(255,255,255,0.85);
+      background: linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,0.75));
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+    .rtts-cite-item:hover { border-color: rgba(124,92,255,0.7); }
+    .rtts-cite-item.used { opacity: 0.45; }
+    .rtts-cite-empty {
+      padding: 14px 8px; text-align: center;
+      font-size: 11px; line-height: 1.6; color: rgba(255,255,255,0.4);
+    }
+    .rtts-cite-empty[hidden] { display: none; }
+
     .rtts-msg code {
       background: rgba(255,255,255,0.1); border-radius: 3px;
       padding: 0 3px; font-size: 12px;
@@ -939,7 +1008,8 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
       border: 1px solid rgba(255,255,255,0.14); cursor: zoom-in; display: block;
     }
     #rtts-chat-composer {
-      padding: 10px 14px 12px; border-top: 1px solid rgba(255,255,255,0.06);
+      position: relative;
+      padding: 10px 12px 12px; border-top: 1px solid rgba(255,255,255,0.06);
       display: flex; flex-direction: column; gap: 8px;
     }
     #rtts-chat-attachments {
@@ -959,20 +1029,21 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
       padding: 0;
     }
     .rtts-attach button svg { width: 9px; height: 9px; stroke: currentColor; stroke-width: 2.5; fill: none; }
-    #rtts-chat-input-row { display: flex; align-items: center; gap: 8px; }
     #rtts-chat-attach-btn {
-      width: 30px; height: 30px; flex-shrink: 0; border-radius: 8px;
+      width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px;
       border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05);
       color: rgba(255,255,255,0.6); cursor: pointer;
       display: flex; align-items: center; justify-content: center;
+      margin-bottom: 1px;
     }
     #rtts-chat-attach-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
-    #rtts-chat-attach-btn svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: 1.8; fill: none; }
-    #rtts-send {
-      height: 30px; padding: 0 14px; border: none; border-radius: 8px;
+    #rtts-chat-attach-btn svg { width: 14px; height: 14px; stroke: currentColor; stroke-width: 1.8; fill: none; }
+    #rtts-send, #rtts-notes-add {
+      height: 26px; padding: 0 13px; border: none; border-radius: 7px;
       background: #7c5cff; color: #fff; font-weight: 600; font-size: 12px;
-      cursor: pointer; flex-shrink: 0;
+      cursor: pointer; flex-shrink: 0; margin-bottom: 1px;
     }
+    #rtts-send:hover, #rtts-notes-add:hover { background: #6d4cf0; }
     #rtts-send:disabled { opacity: 0.4; cursor: not-allowed; }
     #rtts-chat-composer.dragover { background: rgba(124,92,255,0.1); }
 
@@ -993,8 +1064,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     /* === Notes === */
     .note-item { padding: 7px 8px; border-radius: 8px; }
     .note-item .note-text { font-size: 12px; }
-    #rtts-notes-input { height: 30px; border-radius: 8px; }
-    #rtts-notes-add { width: 30px; height: 30px; border-radius: 8px; background: #7c5cff; }
+    #rtts-notes-add { height: 26px; }
 
     /* === Modal shell === */
     .rtts-modal-mask {
@@ -1380,35 +1450,64 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
         <div id="rtts-chat"></div>
         <div id="rtts-chat-composer">
           <div id="rtts-chat-attachments" aria-live="polite"></div>
-          <div id="rtts-md-shell">
-            <div id="rtts-md-toolbar" role="toolbar" aria-label="Markdown 快捷操作">
+
+          <div class="rtts-md-shell">
+            <div class="rtts-md-toolbar" id="rtts-chat-toolbar" role="toolbar" aria-label="Markdown 快捷操作">
               <button type="button" data-md="bold" title="加粗（Ctrl/⌘+B）" aria-label="加粗"><b>B</b></button>
               <button type="button" data-md="italic" title="斜体（Ctrl/⌘+I）" aria-label="斜体"><i>I</i></button>
               <button type="button" data-md="code" title="行内代码" aria-label="行内代码"><span>&lt;/&gt;</span></button>
               <button type="button" data-md="link" title="链接" aria-label="插入链接">🔗</button>
+              <button type="button" id="rtts-cite-btn" class="rtts-md-cite rtts-md-tail" title="引用笔记里的截图" aria-label="引用笔记里的截图" aria-haspopup="dialog" aria-expanded="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+                <span>引用</span>
+              </button>
               <button type="button" id="rtts-md-preview-btn" title="预览 Markdown">预览</button>
             </div>
-            <div id="rtts-chat-editor" contenteditable="plaintext-only" role="textbox" aria-multiline="true" aria-label="提问" data-placeholder="输入问题，支持 Markdown。Enter 发送，Shift+Enter 换行"></div>
-            <div id="rtts-chat-preview" class="rtts-md-preview" hidden></div>
+
+            <!-- Attach, input and send share one row: the upload control is part
+                 of the input, not a separate toolbar underneath it. -->
+            <div id="rtts-chat-input-row">
+              <button id="rtts-chat-attach-btn" type="button" aria-label="上传图片" title="上传图片">
+                <svg viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              </button>
+              <div id="rtts-chat-editor" contenteditable="plaintext-only" role="textbox" aria-multiline="true" aria-label="提问" data-placeholder="问点什么，支持 Markdown…"></div>
+              <div id="rtts-chat-preview" class="rtts-md-preview" hidden></div>
+              <button id="rtts-send" type="button">发送</button>
+            </div>
           </div>
-          <div id="rtts-chat-input-row">
-            <button id="rtts-chat-attach-btn" type="button" aria-label="添加图片" data-tip="添加图片">
-              <svg viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-            </button>
-            <span id="rtts-composer-hint">Markdown · Enter 发送</span>
-            <button id="rtts-send" type="button">发送</button>
+
+          <div id="rtts-cite-popover" class="rtts-cite-popover" hidden role="dialog" aria-label="引用笔记截图">
+            <div class="rtts-cite-head">
+              <span>引用笔记截图</span>
+              <button id="rtts-cite-close" type="button" aria-label="关闭">✕</button>
+            </div>
+            <div id="rtts-cite-list" class="rtts-cite-list"></div>
+            <div id="rtts-cite-empty" class="rtts-cite-empty">还没有截图。先用工具栏的「页面截图」或「记入笔记」存一张。</div>
           </div>
+
           <input id="rtts-chat-file" type="file" accept="image/*" multiple hidden>
         </div>
       </div>
 
       <div id="rtts-pane-notes" class="rtts-pane" role="tabpanel" aria-label="笔记">
         <div id="rtts-notes-list"></div>
-        <div id="rtts-notes-input-row">
-          <input id="rtts-notes-input" type="text" placeholder="输入快速笔记…" aria-label="新笔记">
-          <button id="rtts-notes-add" type="button" aria-label="添加笔记"><svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+
+        <div class="rtts-md-shell" id="rtts-notes-shell">
+          <div class="rtts-md-toolbar" id="rtts-notes-toolbar" role="toolbar" aria-label="笔记 Markdown 快捷操作">
+            <button type="button" data-md="bold" title="加粗（Ctrl/⌘+B）" aria-label="加粗"><b>B</b></button>
+            <button type="button" data-md="italic" title="斜体（Ctrl/⌘+I）" aria-label="斜体"><i>I</i></button>
+            <button type="button" data-md="code" title="行内代码" aria-label="行内代码"><span>&lt;/&gt;</span></button>
+            <button type="button" data-md="link" title="链接" aria-label="插入链接">🔗</button>
+            <button type="button" id="rtts-notes-preview-btn" class="rtts-md-tail" title="预览 Markdown">预览</button>
+          </div>
+          <div id="rtts-notes-row">
+            <div id="rtts-notes-editor" contenteditable="plaintext-only" role="textbox" aria-multiline="true" aria-label="新笔记" data-placeholder="记一条笔记，支持 Markdown…"></div>
+            <div id="rtts-notes-preview" class="rtts-md-preview" hidden></div>
+            <button id="rtts-notes-add" type="button" title="添加笔记（Ctrl/⌘+Enter）">添加</button>
+          </div>
         </div>
       </div>
+
     </div>
 
     <div id="rtts-fs-warn" class="hidden"></div>
@@ -1614,6 +1713,14 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   const chatEditor = shadow.getElementById('rtts-chat-editor') as HTMLElement;
   const chatPreview = shadow.getElementById('rtts-chat-preview') as HTMLElement;
   const mdPreviewBtn = shadow.getElementById('rtts-md-preview-btn') as HTMLButtonElement;
+  const citeBtn = shadow.getElementById('rtts-cite-btn') as HTMLButtonElement;
+  const citePopover = shadow.getElementById('rtts-cite-popover') as HTMLElement;
+  const citeList = shadow.getElementById('rtts-cite-list')!;
+  const citeEmpty = shadow.getElementById('rtts-cite-empty')!;
+  const citeClose = shadow.getElementById('rtts-cite-close') as HTMLButtonElement;
+  const notesEditor = shadow.getElementById('rtts-notes-editor') as HTMLElement;
+  const notesPreview = shadow.getElementById('rtts-notes-preview') as HTMLElement;
+  const notesPreviewBtn = shadow.getElementById('rtts-notes-preview-btn') as HTMLButtonElement;
   const drawerTabChat = shadow.getElementById('rtts-tab-chat') as HTMLButtonElement;
   const drawerTabNotes = shadow.getElementById('rtts-tab-notes') as HTMLButtonElement;
   const paneChat = shadow.getElementById('rtts-pane-chat')!;
@@ -1634,7 +1741,6 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   const notesBadge = shadow.getElementById('rtts-notes-badge')!;
   const notesBtn = shadow.getElementById('rtts-notes-btn')!;
   const notesList = shadow.getElementById('rtts-notes-list')!;
-  const notesInput = shadow.getElementById('rtts-notes-input') as HTMLInputElement;
   const notesAdd = shadow.getElementById('rtts-notes-add')!;
   const obsidianBtn = shadow.getElementById('rtts-obsidian-btn')!;
 
@@ -2480,7 +2586,10 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     drawerTabNotes.setAttribute('aria-selected', String(tab === 'notes'));
     paneChat.classList.toggle('active', tab === 'chat');
     paneNotes.classList.toggle('active', tab === 'notes');
-    if (tab === 'notes') renderNotes();
+    if (tab === 'notes') {
+      setCiteOpen(false);
+      renderNotes();
+    }
     syncDrawerButtons();
   }
 
@@ -2488,13 +2597,14 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     isDrawerOpen = true;
     drawer.classList.add('open');
     setDrawerTab(tab);
-    if (tab === 'notes') notesInput.focus();
+    if (tab === 'notes') notesEditor.focus();
     else chatEditor.focus();
   }
 
   function closeDrawer() {
     isDrawerOpen = false;
     drawer.classList.remove('open');
+    setCiteOpen(false);
     syncDrawerButtons();
   }
 
@@ -2553,9 +2663,13 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   let pendingImages: string[] = [];
   let isPreviewing = false;
 
-  function getChatText(): string {
-    const raw = (chatEditor.innerText || chatEditor.textContent || '').replace(/\u00a0/g, ' ');
+  function getEditorText(editor: HTMLElement): string {
+    const raw = (editor.innerText || editor.textContent || '').replace(/\u00a0/g, ' ');
     return raw.replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function getChatText(): string {
+    return getEditorText(chatEditor);
   }
 
   function clearChatEditor() {
@@ -2564,56 +2678,79 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
 
   // contenteditable="plaintext-only" can leave a lone <br> after the user
   // deletes everything; clear it so the CSS :empty placeholder comes back.
-  function refreshEditorPlaceholder() {
-    if (isPreviewing) return;
-    if (!(chatEditor.textContent || '').trim() && !chatEditor.querySelector('img')) {
-      chatEditor.innerHTML = '';
+  function refreshEditorPlaceholder(editor: HTMLElement, previewing: boolean) {
+    if (previewing) return;
+    if (!(editor.textContent || '').trim() && !editor.querySelector('img')) {
+      editor.innerHTML = '';
     }
   }
 
   // Never rewrite the node while an IME composition is active: clearing the
   // DOM mid-composition dismisses the Chinese/Japanese candidate window.
-  let editorComposing = false;
-  chatEditor.addEventListener('compositionstart', () => { editorComposing = true; });
-  chatEditor.addEventListener('compositionend', () => {
-    editorComposing = false;
-    refreshEditorPlaceholder();
-  });
-  chatEditor.addEventListener('input', (e) => {
-    if (editorComposing || (e as InputEvent).isComposing) return;
-    refreshEditorPlaceholder();
-  });
+  function bindEditorInput(editor: HTMLElement, isPreviewingFn: () => boolean) {
+    let composing = false;
+    editor.addEventListener('compositionstart', () => { composing = true; });
+    editor.addEventListener('compositionend', () => {
+      composing = false;
+      refreshEditorPlaceholder(editor, isPreviewingFn());
+    });
+    editor.addEventListener('input', (e) => {
+      if (composing || (e as InputEvent).isComposing) return;
+      refreshEditorPlaceholder(editor, isPreviewingFn());
+    });
+  }
 
-  function insertMarkdown(prefix: string, suffix: string, placeholder: string) {
-    chatEditor.focus();
+  bindEditorInput(chatEditor, () => isPreviewing);
+
+  function insertMarkdown(
+    editor: HTMLElement,
+    prefix: string,
+    suffix: string,
+    placeholder: string,
+    isPreviewingFn: () => boolean,
+  ) {
+    editor.focus();
     const selection = window.getSelection();
     let selected = '';
     if (selection && selection.rangeCount > 0) {
       const range = selection.getRangeAt(0);
-      if (chatEditor.contains(range.commonAncestorContainer)) {
+      if (editor.contains(range.commonAncestorContainer)) {
         selected = range.toString();
       }
     }
     document.execCommand('insertText', false, prefix + (selected || placeholder) + suffix);
-    refreshEditorPlaceholder();
+    refreshEditorPlaceholder(editor, isPreviewingFn());
   }
 
-  shadow.querySelectorAll('#rtts-md-toolbar [data-md]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const kind = (button as HTMLElement).dataset.md;
-      if (kind === 'bold') insertMarkdown('**', '**', '加粗文字');
-      else if (kind === 'italic') insertMarkdown('*', '*', '斜体文字');
-      else if (kind === 'code') insertMarkdown('`', '`', '代码');
-      else if (kind === 'link') insertMarkdown('[', '](https://)', '链接文字');
+  function bindMarkdownToolbar(
+    toolbarId: string,
+    editor: HTMLElement,
+    isPreviewingFn: () => boolean,
+    leavePreview: () => void,
+  ) {
+    shadow.querySelectorAll(`#${toolbarId} [data-md]`).forEach((button) => {
+      button.addEventListener('click', () => {
+        // Formatting a hidden editor is a no-op: leave preview first.
+        if (isPreviewingFn()) leavePreview();
+        const kind = (button as HTMLElement).dataset.md;
+        if (kind === 'bold') insertMarkdown(editor, '**', '**', '加粗文字', isPreviewingFn);
+        else if (kind === 'italic') insertMarkdown(editor, '*', '*', '斜体文字', isPreviewingFn);
+        else if (kind === 'code') insertMarkdown(editor, '`', '`', '代码', isPreviewingFn);
+        else if (kind === 'link') insertMarkdown(editor, '[', '](https://)', '链接文字', isPreviewingFn);
+      });
     });
-  });
 
-  chatEditor.addEventListener('keydown', (e) => {
-    if ((e.metaKey || e.ctrlKey) && (e.key === 'b' || e.key === 'i')) {
-      e.preventDefault();
-      if (e.key === 'b') insertMarkdown('**', '**', '加粗文字');
-      else insertMarkdown('*', '*', '斜体文字');
-    }
+    editor.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'b' || e.key === 'i')) {
+        e.preventDefault();
+        if (e.key === 'b') insertMarkdown(editor, '**', '**', '加粗文字', isPreviewingFn);
+        else insertMarkdown(editor, '*', '*', '斜体文字', isPreviewingFn);
+      }
+    });
+  }
+
+  bindMarkdownToolbar('rtts-chat-toolbar', chatEditor, () => isPreviewing, () => {
+    if (isPreviewing) togglePreview();
   });
 
   function togglePreview() {
@@ -2659,6 +2796,162 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
       chatAttachments.appendChild(chip);
     }
   }
+
+  /* ===== Notes composer (Markdown) ===== */
+
+  let isNotesPreviewing = false;
+
+  bindEditorInput(notesEditor, () => isNotesPreviewing);
+  bindMarkdownToolbar('rtts-notes-toolbar', notesEditor, () => isNotesPreviewing, () => {
+    if (isNotesPreviewing) toggleNotesPreview();
+  });
+
+  function toggleNotesPreview() {
+    isNotesPreviewing = !isNotesPreviewing;
+    notesPreviewBtn.classList.toggle('active', isNotesPreviewing);
+    if (isNotesPreviewing) {
+      const text = getEditorText(notesEditor);
+      notesPreview.innerHTML = text
+        ? renderMarkdownLite(text)
+        : '<span class="rtts-md-empty">没有可预览的内容</span>';
+      notesPreview.hidden = false;
+      notesEditor.hidden = true;
+      notesPreviewBtn.textContent = '编辑';
+    } else {
+      notesPreview.hidden = true;
+      notesEditor.hidden = false;
+      notesPreviewBtn.textContent = '预览';
+      notesEditor.focus();
+    }
+  }
+
+  notesPreviewBtn.addEventListener('click', toggleNotesPreview);
+
+  // Enter inserts a newline (Markdown is multi-line). Cmd/Ctrl+Enter adds.
+  notesEditor.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      addQuickNote();
+    }
+  });
+
+  /* ===== Cite a note screenshot from the chat composer ===== */
+
+  function citeCandidates(): Array<{ url: string; label: string }> {
+    const seen = new Set<string>();
+    const out: Array<{ url: string; label: string }> = [];
+    const notes = [...(session.notes || [])].sort((a, b) => b.updatedAt - a.updatedAt);
+    for (const note of notes) {
+      for (let i = note.entries.length - 1; i >= 0; i--) {
+        const entry = note.entries[i]!;
+        if (entry.type !== 'screenshot' && entry.type !== 'image') continue;
+        if (!entry.imageUrl || seen.has(entry.imageUrl)) continue;
+        seen.add(entry.imageUrl);
+        const time = new Date(entry.at).toLocaleTimeString('zh-CN', {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        out.push({
+          url: entry.imageUrl,
+          label: `${entry.type === 'screenshot' ? '截图' : '图片'} · ${time}`,
+        });
+      }
+    }
+    return out.slice(0, 24);
+  }
+
+  function renderCiteList() {
+    const candidates = citeCandidates();
+    citeList.textContent = '';
+    citeEmpty.hidden = candidates.length > 0;
+
+    for (const candidate of candidates) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'rtts-cite-item';
+      if (pendingImages.includes(candidate.url)) item.classList.add('used');
+      item.setAttribute('aria-label', `引用${candidate.label}`);
+
+      const img = document.createElement('img');
+      img.src = candidate.url;
+      img.alt = candidate.label;
+      item.appendChild(img);
+
+      const caption = document.createElement('span');
+      caption.textContent = candidate.label;
+      item.appendChild(caption);
+
+      item.addEventListener('click', () => {
+        if (pendingImages.includes(candidate.url)) {
+          toast('这张截图已经引用了', 'ok');
+          return;
+        }
+        if (pendingImages.length >= 4) {
+          toast('最多引用 4 张图片', 'err');
+          return;
+        }
+        pendingImages.push(candidate.url);
+        renderAttachments();
+        positionCitePopover();
+        item.classList.add('used');
+        toast('已引用截图，可以继续提问', 'ok');
+      });
+
+      citeList.appendChild(item);
+    }
+  }
+
+  /**
+   * Anchor the picker above the composer shell instead of at a fixed offset.
+   * The composer grows when text wraps or attachments are added, and a fixed
+   * `bottom` would start covering the toolbar.
+   */
+  function positionCitePopover() {
+    const composer = citePopover.parentElement;
+    const shell = composer?.querySelector<HTMLElement>('.rtts-md-shell');
+    if (!composer || !shell) return;
+    const shellTop = shell.getBoundingClientRect().top;
+    const gap = 6;
+    const top = Math.max(8, shellTop - gap);
+    citePopover.style.bottom = `${Math.max(8, composer.getBoundingClientRect().bottom - top)}px`;
+    citePopover.style.maxHeight = `${Math.max(140, top - 12)}px`;
+  }
+
+  function setCiteOpen(open: boolean) {
+    if (open) renderCiteList();
+    // Never strand focus on a node that is about to become hidden.
+    if (!open && citePopover.contains(shadow.activeElement)) citeBtn.focus();
+    citePopover.hidden = !open;
+    citeBtn.setAttribute('aria-expanded', String(open));
+    citeBtn.classList.toggle('active', open);
+    if (open) {
+      positionCitePopover();
+      const first = citeList.querySelector<HTMLButtonElement>('.rtts-cite-item');
+      first?.focus();
+    }
+  }
+
+  // Keep it anchored while the drawer resizes or the editor grows.
+  window.addEventListener('resize', () => {
+    if (!citePopover.hidden) positionCitePopover();
+  });
+  chatEditor.addEventListener('input', () => {
+    if (!citePopover.hidden) positionCitePopover();
+  });
+
+  citeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setCiteOpen(citePopover.hidden !== false);
+  });
+  citeClose.addEventListener('click', () => {
+    setCiteOpen(false);
+    chatEditor.focus();
+  });
+  document.addEventListener('click', (e) => {
+    if (citePopover.hidden) return;
+    if (e.composedPath().includes(citePopover) || e.composedPath().includes(citeBtn)) return;
+    setCiteOpen(false);
+  });
 
   async function compressImage(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -2742,6 +3035,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
 
   async function sendQuestion() {
     if (isAskBusy) return;
+    setCiteOpen(false);
     // Leave preview first: a hidden editor reports '' from innerText.
     if (isPreviewing) togglePreview();
     const q = getChatText();
@@ -2983,8 +3277,16 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
         row.style.cssText = 'display:flex;align-items:flex-start;gap:4px;width:100%'
 
         const text = document.createElement('span')
-        text.className = 'note-text truncated'
-        text.textContent = entry.text || entry.target || entry.source || '笔记'
+        const content = entry.text || entry.target || entry.source || '笔记'
+        if (entry.type === 'text') {
+          // Notes are Markdown now: render the same safe subset the composer
+          // preview uses instead of showing raw asterisks and backticks.
+          text.className = 'note-text note-md'
+          text.innerHTML = renderMarkdownLite(content)
+        } else {
+          text.className = 'note-text truncated'
+          text.textContent = content
+        }
         row.appendChild(text)
 
         const typeLabel = document.createElement('span')
@@ -3008,6 +3310,8 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
         item.appendChild(row)
         notesList.appendChild(item)
       })
+      // Newest entry is at the bottom; keep it in view after adding.
+      notesList.scrollTop = notesList.scrollHeight
     }
   }
 
@@ -3366,12 +3670,15 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return
     setMenuOpen(false)
+    if (!citePopover.hidden) { setCiteOpen(false); return }
     if (isDrawerOpen) closeDrawer()
   })
 
-  // Add quick note
+  // Add a Markdown note
   function addQuickNote() {
-    const text = notesInput.value.trim()
+    // A hidden editor reports '' from innerText, so leave preview first.
+    if (isNotesPreviewing) toggleNotesPreview()
+    const text = getEditorText(notesEditor)
     if (!text) return
     addNoteEntry({
       id: `text_${Date.now()}`,
@@ -3379,13 +3686,11 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
       at: Date.now(),
       text,
     })
-    notesInput.value = ''
+    notesEditor.innerHTML = ''
+    notesEditor.focus()
   }
 
   notesAdd.addEventListener('click', addQuickNote)
-  notesInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); addQuickNote(); }
-  })
 
   // Obsidian export
   obsidianBtn.addEventListener('click', async () => {

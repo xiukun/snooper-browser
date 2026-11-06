@@ -614,6 +614,24 @@
     .note-item:hover { background: rgba(255,255,255,0.04); }
     .note-item .note-text { flex: 1; min-width: 0; }
     .note-item .note-text.truncated { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* Markdown notes: keep the rendered formatting, clamp to four lines. */
+    .note-item .note-text.note-md {
+      white-space: normal; overflow: hidden;
+      display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+      color: rgba(255,255,255,0.72);
+    }
+    .note-item .note-text.note-md strong { color: #fff; font-weight: 600; }
+    .note-item .note-text.note-md em { color: rgba(255,255,255,0.85); }
+    .note-item .note-text.note-md code {
+      background: rgba(255,255,255,0.1); border-radius: 3px;
+      padding: 0 3px; font-size: 10.5px;
+    }
+    .note-item .note-text.note-md pre {
+      margin: 3px 0; padding: 4px 5px; border-radius: 4px;
+      background: rgba(0,0,0,0.3); overflow-x: auto;
+    }
+    .note-item .note-text.note-md pre code { background: none; padding: 0; }
+    .note-item .note-text.note-md a { color: #a5b4fc; }
     .note-item .note-type {
       font-size: 9px; color: rgba(255,255,255,0.25);
       flex-shrink: 0; margin-top: 1px;
@@ -624,27 +642,8 @@
       flex-shrink: 0;
     }
     .note-item .note-del:hover { color: #ef4444; }
-    #rtts-notes-input-row {
-      display: flex; gap: 6px;
-    }
-    #rtts-notes-input {
-      flex: 1; height: 32px;
-      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 8px; padding: 0 10px; color: #fff; font-size: 12px;
-      outline: none;
-    }
-    #rtts-notes-input:focus { border-color: #7c5cff; }
-    #rtts-notes-add {
-      width: 32px; height: 32px; border-radius: 8px;
-      border: none; background: #7c5cff; color: #fff;
-      font-size: 14px; cursor: pointer; display: flex;
-      align-items: center; justify-content: center;
-      flex-shrink: 0;
-    }
-    #rtts-notes-add:hover { background: #6642f5; }
-
-    /* === Markdown chat editor === */
-    #rtts-md-shell {
+    /* === Shared Markdown editor shell (chat + notes) === */
+    .rtts-md-shell {
       display: flex; flex-direction: column;
       border: 1px solid rgba(255,255,255,0.1);
       border-radius: 11px;
@@ -652,47 +651,70 @@
       overflow: hidden;
       transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
-    #rtts-md-shell:focus-within {
+    .rtts-md-shell:focus-within {
       border-color: rgba(124,92,255,0.65);
       box-shadow: 0 0 0 3px rgba(124,92,255,0.12);
     }
-    #rtts-md-toolbar {
+    .rtts-md-toolbar {
       display: flex; align-items: center; gap: 2px;
       padding: 4px 5px;
       border-bottom: 1px solid rgba(255,255,255,0.06);
     }
-    #rtts-md-toolbar button {
+    .rtts-md-toolbar button {
       height: 22px; min-width: 25px; padding: 0 6px;
-      display: inline-flex; align-items: center; justify-content: center;
+      display: inline-flex; align-items: center; justify-content: center; gap: 4px;
       border: 1px solid transparent; border-radius: 6px;
       background: none; color: rgba(255,255,255,0.45);
       font-size: 11px; cursor: pointer;
     }
-    #rtts-md-toolbar button:hover { background: rgba(255,255,255,0.07); color: #fff; }
-    #rtts-md-toolbar button.active { background: rgba(124,92,255,0.25); color: #fff; }
-    #rtts-md-toolbar button b, #rtts-md-toolbar button i { font-size: 12px; }
-    #rtts-md-toolbar #rtts-md-preview-btn { margin-left: auto; }
-    #rtts-chat-editor {
-      min-height: 44px; max-height: 140px; overflow-y: auto;
-      background: none; border: none; border-radius: 0;
-      padding: 8px 10px;
+    .rtts-md-toolbar button:hover { background: rgba(255,255,255,0.07); color: #fff; }
+    .rtts-md-toolbar button.active { background: rgba(124,92,255,0.25); color: #fff; }
+    .rtts-md-toolbar button b, .rtts-md-toolbar button i { font-size: 12px; }
+    .rtts-md-toolbar button svg {
+      width: 13px; height: 13px;
+      fill: none; stroke: currentColor; stroke-width: 1.8;
+      stroke-linecap: round; stroke-linejoin: round;
+    }
+    .rtts-md-toolbar .rtts-md-tail { margin-left: auto; }
+    #rtts-cite-btn { color: rgba(160,196,255,0.72); }
+    #rtts-cite-btn:hover { color: #fff; }
+
+    /* Attach + input + send share one row. */
+    #rtts-chat-input-row,
+    #rtts-notes-row {
+      display: flex; align-items: flex-end; gap: 6px;
+      padding: 6px 7px;
+    }
+    #rtts-chat-editor,
+    #rtts-notes-editor {
+      flex: 1; min-width: 0;
+      min-height: 26px; max-height: 120px; overflow-y: auto;
+      padding: 4px 2px;
       color: #fff; font-size: 13px; line-height: 1.5;
       white-space: pre-wrap; word-break: break-word;
       outline: none;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.14) transparent;
     }
-    #rtts-chat-editor:empty::before {
+    #rtts-chat-editor::-webkit-scrollbar,
+    #rtts-notes-editor::-webkit-scrollbar { width: 4px; }
+    #rtts-chat-editor::-webkit-scrollbar-thumb,
+    #rtts-notes-editor::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.16); }
+    #rtts-chat-editor:empty::before,
+    #rtts-notes-editor:empty::before {
       content: attr(data-placeholder);
       color: rgba(255,255,255,0.3);
       pointer-events: none;
     }
-    #rtts-chat-editor code {
+    #rtts-chat-editor code,
+    #rtts-notes-editor code {
       background: rgba(255,255,255,0.1); border-radius: 3px;
       padding: 0 3px; font-size: 12px;
     }
     .rtts-md-preview {
-      min-height: 44px; max-height: 140px; overflow-y: auto;
-      background: none; border: none; border-radius: 0;
-      padding: 8px 10px;
+      flex: 1; min-width: 0;
+      min-height: 26px; max-height: 120px; overflow-y: auto;
+      padding: 4px 2px;
       color: rgba(255,255,255,0.88); font-size: 13px; line-height: 1.55;
     }
     .rtts-md-preview pre {
@@ -706,10 +728,57 @@
     .rtts-md-preview pre code { background: none; padding: 0; }
     .rtts-md-preview a { color: #a5b4fc; }
     .rtts-md-empty { color: rgba(255,255,255,0.35); }
-    #rtts-composer-hint {
-      flex: 1; font-size: 10px; color: rgba(255,255,255,0.28);
+
+    /* === Cite popover (reference note screenshots from chat) === */
+    .rtts-cite-popover {
+      position: absolute; left: 12px; right: 12px; bottom: 96px;
+      max-height: 46vh; overflow-y: auto;
+      padding: 8px;
+      background: rgba(18,18,28,0.98);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      box-shadow: 0 18px 44px rgba(0,0,0,0.6);
+      z-index: 2147483646;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.16) transparent;
+    }
+    .rtts-cite-popover[hidden] { display: none; }
+    .rtts-cite-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 2px 4px 8px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      color: rgba(255,255,255,0.55);
+    }
+    .rtts-cite-head button {
+      border: none; background: none; color: rgba(255,255,255,0.4);
+      font-size: 12px; cursor: pointer; padding: 2px 4px;
+    }
+    .rtts-cite-head button:hover { color: #fff; }
+    .rtts-cite-list {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+    }
+    .rtts-cite-item {
+      position: relative;
+      padding: 0; border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px; overflow: hidden; background: rgba(255,255,255,0.04);
+      cursor: pointer; aspect-ratio: 16 / 10;
+    }
+    .rtts-cite-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .rtts-cite-item span {
+      position: absolute; left: 0; right: 0; bottom: 0;
+      padding: 3px 5px; font-size: 9px; text-align: left;
+      color: rgba(255,255,255,0.85);
+      background: linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,0.75));
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+    .rtts-cite-item:hover { border-color: rgba(124,92,255,0.7); }
+    .rtts-cite-item.used { opacity: 0.45; }
+    .rtts-cite-empty {
+      padding: 14px 8px; text-align: center;
+      font-size: 11px; line-height: 1.6; color: rgba(255,255,255,0.4);
+    }
+    .rtts-cite-empty[hidden] { display: none; }
+
     .rtts-msg code {
       background: rgba(255,255,255,0.1); border-radius: 3px;
       padding: 0 3px; font-size: 12px;
@@ -759,7 +828,8 @@
       border: 1px solid rgba(255,255,255,0.14); cursor: zoom-in; display: block;
     }
     #rtts-chat-composer {
-      padding: 10px 14px 12px; border-top: 1px solid rgba(255,255,255,0.06);
+      position: relative;
+      padding: 10px 12px 12px; border-top: 1px solid rgba(255,255,255,0.06);
       display: flex; flex-direction: column; gap: 8px;
     }
     #rtts-chat-attachments {
@@ -779,20 +849,21 @@
       padding: 0;
     }
     .rtts-attach button svg { width: 9px; height: 9px; stroke: currentColor; stroke-width: 2.5; fill: none; }
-    #rtts-chat-input-row { display: flex; align-items: center; gap: 8px; }
     #rtts-chat-attach-btn {
-      width: 30px; height: 30px; flex-shrink: 0; border-radius: 8px;
+      width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px;
       border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05);
       color: rgba(255,255,255,0.6); cursor: pointer;
       display: flex; align-items: center; justify-content: center;
+      margin-bottom: 1px;
     }
     #rtts-chat-attach-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
-    #rtts-chat-attach-btn svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: 1.8; fill: none; }
-    #rtts-send {
-      height: 30px; padding: 0 14px; border: none; border-radius: 8px;
+    #rtts-chat-attach-btn svg { width: 14px; height: 14px; stroke: currentColor; stroke-width: 1.8; fill: none; }
+    #rtts-send, #rtts-notes-add {
+      height: 26px; padding: 0 13px; border: none; border-radius: 7px;
       background: #7c5cff; color: #fff; font-weight: 600; font-size: 12px;
-      cursor: pointer; flex-shrink: 0;
+      cursor: pointer; flex-shrink: 0; margin-bottom: 1px;
     }
+    #rtts-send:hover, #rtts-notes-add:hover { background: #6d4cf0; }
     #rtts-send:disabled { opacity: 0.4; cursor: not-allowed; }
     #rtts-chat-composer.dragover { background: rgba(124,92,255,0.1); }
 
@@ -813,8 +884,7 @@
     /* === Notes === */
     .note-item { padding: 7px 8px; border-radius: 8px; }
     .note-item .note-text { font-size: 12px; }
-    #rtts-notes-input { height: 30px; border-radius: 8px; }
-    #rtts-notes-add { width: 30px; height: 30px; border-radius: 8px; background: #7c5cff; }
+    #rtts-notes-add { height: 26px; }
 
     /* === Modal shell === */
     .rtts-modal-mask {
@@ -1198,35 +1268,64 @@
         <div id="rtts-chat"></div>
         <div id="rtts-chat-composer">
           <div id="rtts-chat-attachments" aria-live="polite"></div>
-          <div id="rtts-md-shell">
-            <div id="rtts-md-toolbar" role="toolbar" aria-label="Markdown \u5FEB\u6377\u64CD\u4F5C">
+
+          <div class="rtts-md-shell">
+            <div class="rtts-md-toolbar" id="rtts-chat-toolbar" role="toolbar" aria-label="Markdown \u5FEB\u6377\u64CD\u4F5C">
               <button type="button" data-md="bold" title="\u52A0\u7C97\uFF08Ctrl/\u2318+B\uFF09" aria-label="\u52A0\u7C97"><b>B</b></button>
               <button type="button" data-md="italic" title="\u659C\u4F53\uFF08Ctrl/\u2318+I\uFF09" aria-label="\u659C\u4F53"><i>I</i></button>
               <button type="button" data-md="code" title="\u884C\u5185\u4EE3\u7801" aria-label="\u884C\u5185\u4EE3\u7801"><span>&lt;/&gt;</span></button>
               <button type="button" data-md="link" title="\u94FE\u63A5" aria-label="\u63D2\u5165\u94FE\u63A5">\u{1F517}</button>
+              <button type="button" id="rtts-cite-btn" class="rtts-md-cite rtts-md-tail" title="\u5F15\u7528\u7B14\u8BB0\u91CC\u7684\u622A\u56FE" aria-label="\u5F15\u7528\u7B14\u8BB0\u91CC\u7684\u622A\u56FE" aria-haspopup="dialog" aria-expanded="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+                <span>\u5F15\u7528</span>
+              </button>
               <button type="button" id="rtts-md-preview-btn" title="\u9884\u89C8 Markdown">\u9884\u89C8</button>
             </div>
-            <div id="rtts-chat-editor" contenteditable="plaintext-only" role="textbox" aria-multiline="true" aria-label="\u63D0\u95EE" data-placeholder="\u8F93\u5165\u95EE\u9898\uFF0C\u652F\u6301 Markdown\u3002Enter \u53D1\u9001\uFF0CShift+Enter \u6362\u884C"></div>
-            <div id="rtts-chat-preview" class="rtts-md-preview" hidden></div>
+
+            <!-- Attach, input and send share one row: the upload control is part
+                 of the input, not a separate toolbar underneath it. -->
+            <div id="rtts-chat-input-row">
+              <button id="rtts-chat-attach-btn" type="button" aria-label="\u4E0A\u4F20\u56FE\u7247" title="\u4E0A\u4F20\u56FE\u7247">
+                <svg viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              </button>
+              <div id="rtts-chat-editor" contenteditable="plaintext-only" role="textbox" aria-multiline="true" aria-label="\u63D0\u95EE" data-placeholder="\u95EE\u70B9\u4EC0\u4E48\uFF0C\u652F\u6301 Markdown\u2026"></div>
+              <div id="rtts-chat-preview" class="rtts-md-preview" hidden></div>
+              <button id="rtts-send" type="button">\u53D1\u9001</button>
+            </div>
           </div>
-          <div id="rtts-chat-input-row">
-            <button id="rtts-chat-attach-btn" type="button" aria-label="\u6DFB\u52A0\u56FE\u7247" data-tip="\u6DFB\u52A0\u56FE\u7247">
-              <svg viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-            </button>
-            <span id="rtts-composer-hint">Markdown \xB7 Enter \u53D1\u9001</span>
-            <button id="rtts-send" type="button">\u53D1\u9001</button>
+
+          <div id="rtts-cite-popover" class="rtts-cite-popover" hidden role="dialog" aria-label="\u5F15\u7528\u7B14\u8BB0\u622A\u56FE">
+            <div class="rtts-cite-head">
+              <span>\u5F15\u7528\u7B14\u8BB0\u622A\u56FE</span>
+              <button id="rtts-cite-close" type="button" aria-label="\u5173\u95ED">\u2715</button>
+            </div>
+            <div id="rtts-cite-list" class="rtts-cite-list"></div>
+            <div id="rtts-cite-empty" class="rtts-cite-empty">\u8FD8\u6CA1\u6709\u622A\u56FE\u3002\u5148\u7528\u5DE5\u5177\u680F\u7684\u300C\u9875\u9762\u622A\u56FE\u300D\u6216\u300C\u8BB0\u5165\u7B14\u8BB0\u300D\u5B58\u4E00\u5F20\u3002</div>
           </div>
+
           <input id="rtts-chat-file" type="file" accept="image/*" multiple hidden>
         </div>
       </div>
 
       <div id="rtts-pane-notes" class="rtts-pane" role="tabpanel" aria-label="\u7B14\u8BB0">
         <div id="rtts-notes-list"></div>
-        <div id="rtts-notes-input-row">
-          <input id="rtts-notes-input" type="text" placeholder="\u8F93\u5165\u5FEB\u901F\u7B14\u8BB0\u2026" aria-label="\u65B0\u7B14\u8BB0">
-          <button id="rtts-notes-add" type="button" aria-label="\u6DFB\u52A0\u7B14\u8BB0"><svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+
+        <div class="rtts-md-shell" id="rtts-notes-shell">
+          <div class="rtts-md-toolbar" id="rtts-notes-toolbar" role="toolbar" aria-label="\u7B14\u8BB0 Markdown \u5FEB\u6377\u64CD\u4F5C">
+            <button type="button" data-md="bold" title="\u52A0\u7C97\uFF08Ctrl/\u2318+B\uFF09" aria-label="\u52A0\u7C97"><b>B</b></button>
+            <button type="button" data-md="italic" title="\u659C\u4F53\uFF08Ctrl/\u2318+I\uFF09" aria-label="\u659C\u4F53"><i>I</i></button>
+            <button type="button" data-md="code" title="\u884C\u5185\u4EE3\u7801" aria-label="\u884C\u5185\u4EE3\u7801"><span>&lt;/&gt;</span></button>
+            <button type="button" data-md="link" title="\u94FE\u63A5" aria-label="\u63D2\u5165\u94FE\u63A5">\u{1F517}</button>
+            <button type="button" id="rtts-notes-preview-btn" class="rtts-md-tail" title="\u9884\u89C8 Markdown">\u9884\u89C8</button>
+          </div>
+          <div id="rtts-notes-row">
+            <div id="rtts-notes-editor" contenteditable="plaintext-only" role="textbox" aria-multiline="true" aria-label="\u65B0\u7B14\u8BB0" data-placeholder="\u8BB0\u4E00\u6761\u7B14\u8BB0\uFF0C\u652F\u6301 Markdown\u2026"></div>
+            <div id="rtts-notes-preview" class="rtts-md-preview" hidden></div>
+            <button id="rtts-notes-add" type="button" title="\u6DFB\u52A0\u7B14\u8BB0\uFF08Ctrl/\u2318+Enter\uFF09">\u6DFB\u52A0</button>
+          </div>
         </div>
       </div>
+
     </div>
 
     <div id="rtts-fs-warn" class="hidden"></div>
@@ -1429,6 +1528,14 @@
     const chatEditor = shadow.getElementById("rtts-chat-editor");
     const chatPreview = shadow.getElementById("rtts-chat-preview");
     const mdPreviewBtn = shadow.getElementById("rtts-md-preview-btn");
+    const citeBtn = shadow.getElementById("rtts-cite-btn");
+    const citePopover = shadow.getElementById("rtts-cite-popover");
+    const citeList = shadow.getElementById("rtts-cite-list");
+    const citeEmpty = shadow.getElementById("rtts-cite-empty");
+    const citeClose = shadow.getElementById("rtts-cite-close");
+    const notesEditor = shadow.getElementById("rtts-notes-editor");
+    const notesPreview = shadow.getElementById("rtts-notes-preview");
+    const notesPreviewBtn = shadow.getElementById("rtts-notes-preview-btn");
     const drawerTabChat = shadow.getElementById("rtts-tab-chat");
     const drawerTabNotes = shadow.getElementById("rtts-tab-notes");
     const paneChat = shadow.getElementById("rtts-pane-chat");
@@ -1448,7 +1555,6 @@
     const notesBadge = shadow.getElementById("rtts-notes-badge");
     const notesBtn = shadow.getElementById("rtts-notes-btn");
     const notesList = shadow.getElementById("rtts-notes-list");
-    const notesInput = shadow.getElementById("rtts-notes-input");
     const notesAdd = shadow.getElementById("rtts-notes-add");
     const obsidianBtn = shadow.getElementById("rtts-obsidian-btn");
     const settingsModal = shadow.getElementById("rtts-settings-modal");
@@ -2168,19 +2274,23 @@
       drawerTabNotes.setAttribute("aria-selected", String(tab === "notes"));
       paneChat.classList.toggle("active", tab === "chat");
       paneNotes.classList.toggle("active", tab === "notes");
-      if (tab === "notes") renderNotes();
+      if (tab === "notes") {
+        setCiteOpen(false);
+        renderNotes();
+      }
       syncDrawerButtons();
     }
     function openDrawer(tab) {
       isDrawerOpen = true;
       drawer.classList.add("open");
       setDrawerTab(tab);
-      if (tab === "notes") notesInput.focus();
+      if (tab === "notes") notesEditor.focus();
       else chatEditor.focus();
     }
     function closeDrawer() {
       isDrawerOpen = false;
       drawer.classList.remove("open");
+      setCiteOpen(false);
       syncDrawerButtons();
     }
     chatBtn.addEventListener("click", () => {
@@ -2218,59 +2328,71 @@
     }
     let pendingImages = [];
     let isPreviewing = false;
-    function getChatText() {
-      const raw = (chatEditor.innerText || chatEditor.textContent || "").replace(/\u00a0/g, " ");
+    function getEditorText(editor) {
+      const raw = (editor.innerText || editor.textContent || "").replace(/\u00a0/g, " ");
       return raw.replace(/\n{3,}/g, "\n\n").trim();
+    }
+    function getChatText() {
+      return getEditorText(chatEditor);
     }
     function clearChatEditor() {
       chatEditor.innerHTML = "";
     }
-    function refreshEditorPlaceholder() {
-      if (isPreviewing) return;
-      if (!(chatEditor.textContent || "").trim() && !chatEditor.querySelector("img")) {
-        chatEditor.innerHTML = "";
+    function refreshEditorPlaceholder(editor, previewing) {
+      if (previewing) return;
+      if (!(editor.textContent || "").trim() && !editor.querySelector("img")) {
+        editor.innerHTML = "";
       }
     }
-    let editorComposing = false;
-    chatEditor.addEventListener("compositionstart", () => {
-      editorComposing = true;
-    });
-    chatEditor.addEventListener("compositionend", () => {
-      editorComposing = false;
-      refreshEditorPlaceholder();
-    });
-    chatEditor.addEventListener("input", (e) => {
-      if (editorComposing || e.isComposing) return;
-      refreshEditorPlaceholder();
-    });
-    function insertMarkdown(prefix, suffix, placeholder) {
-      chatEditor.focus();
+    function bindEditorInput(editor, isPreviewingFn) {
+      let composing = false;
+      editor.addEventListener("compositionstart", () => {
+        composing = true;
+      });
+      editor.addEventListener("compositionend", () => {
+        composing = false;
+        refreshEditorPlaceholder(editor, isPreviewingFn());
+      });
+      editor.addEventListener("input", (e) => {
+        if (composing || e.isComposing) return;
+        refreshEditorPlaceholder(editor, isPreviewingFn());
+      });
+    }
+    bindEditorInput(chatEditor, () => isPreviewing);
+    function insertMarkdown(editor, prefix, suffix, placeholder, isPreviewingFn) {
+      editor.focus();
       const selection = window.getSelection();
       let selected = "";
       if (selection && selection.rangeCount > 0) {
         const range = selection.getRangeAt(0);
-        if (chatEditor.contains(range.commonAncestorContainer)) {
+        if (editor.contains(range.commonAncestorContainer)) {
           selected = range.toString();
         }
       }
       document.execCommand("insertText", false, prefix + (selected || placeholder) + suffix);
-      refreshEditorPlaceholder();
+      refreshEditorPlaceholder(editor, isPreviewingFn());
     }
-    shadow.querySelectorAll("#rtts-md-toolbar [data-md]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const kind = button.dataset.md;
-        if (kind === "bold") insertMarkdown("**", "**", "\u52A0\u7C97\u6587\u5B57");
-        else if (kind === "italic") insertMarkdown("*", "*", "\u659C\u4F53\u6587\u5B57");
-        else if (kind === "code") insertMarkdown("`", "`", "\u4EE3\u7801");
-        else if (kind === "link") insertMarkdown("[", "](https://)", "\u94FE\u63A5\u6587\u5B57");
+    function bindMarkdownToolbar(toolbarId, editor, isPreviewingFn, leavePreview) {
+      shadow.querySelectorAll(`#${toolbarId} [data-md]`).forEach((button) => {
+        button.addEventListener("click", () => {
+          if (isPreviewingFn()) leavePreview();
+          const kind = button.dataset.md;
+          if (kind === "bold") insertMarkdown(editor, "**", "**", "\u52A0\u7C97\u6587\u5B57", isPreviewingFn);
+          else if (kind === "italic") insertMarkdown(editor, "*", "*", "\u659C\u4F53\u6587\u5B57", isPreviewingFn);
+          else if (kind === "code") insertMarkdown(editor, "`", "`", "\u4EE3\u7801", isPreviewingFn);
+          else if (kind === "link") insertMarkdown(editor, "[", "](https://)", "\u94FE\u63A5\u6587\u5B57", isPreviewingFn);
+        });
       });
-    });
-    chatEditor.addEventListener("keydown", (e) => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "i")) {
-        e.preventDefault();
-        if (e.key === "b") insertMarkdown("**", "**", "\u52A0\u7C97\u6587\u5B57");
-        else insertMarkdown("*", "*", "\u659C\u4F53\u6587\u5B57");
-      }
+      editor.addEventListener("keydown", (e) => {
+        if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "i")) {
+          e.preventDefault();
+          if (e.key === "b") insertMarkdown(editor, "**", "**", "\u52A0\u7C97\u6587\u5B57", isPreviewingFn);
+          else insertMarkdown(editor, "*", "*", "\u659C\u4F53\u6587\u5B57", isPreviewingFn);
+        }
+      });
+    }
+    bindMarkdownToolbar("rtts-chat-toolbar", chatEditor, () => isPreviewing, () => {
+      if (isPreviewing) togglePreview();
     });
     function togglePreview() {
       isPreviewing = !isPreviewing;
@@ -2311,6 +2433,132 @@
         chatAttachments.appendChild(chip);
       }
     }
+    let isNotesPreviewing = false;
+    bindEditorInput(notesEditor, () => isNotesPreviewing);
+    bindMarkdownToolbar("rtts-notes-toolbar", notesEditor, () => isNotesPreviewing, () => {
+      if (isNotesPreviewing) toggleNotesPreview();
+    });
+    function toggleNotesPreview() {
+      isNotesPreviewing = !isNotesPreviewing;
+      notesPreviewBtn.classList.toggle("active", isNotesPreviewing);
+      if (isNotesPreviewing) {
+        const text = getEditorText(notesEditor);
+        notesPreview.innerHTML = text ? renderMarkdownLite(text) : '<span class="rtts-md-empty">\u6CA1\u6709\u53EF\u9884\u89C8\u7684\u5185\u5BB9</span>';
+        notesPreview.hidden = false;
+        notesEditor.hidden = true;
+        notesPreviewBtn.textContent = "\u7F16\u8F91";
+      } else {
+        notesPreview.hidden = true;
+        notesEditor.hidden = false;
+        notesPreviewBtn.textContent = "\u9884\u89C8";
+        notesEditor.focus();
+      }
+    }
+    notesPreviewBtn.addEventListener("click", toggleNotesPreview);
+    notesEditor.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        addQuickNote();
+      }
+    });
+    function citeCandidates() {
+      const seen = /* @__PURE__ */ new Set();
+      const out = [];
+      const notes = [...session.notes || []].sort((a, b) => b.updatedAt - a.updatedAt);
+      for (const note of notes) {
+        for (let i = note.entries.length - 1; i >= 0; i--) {
+          const entry = note.entries[i];
+          if (entry.type !== "screenshot" && entry.type !== "image") continue;
+          if (!entry.imageUrl || seen.has(entry.imageUrl)) continue;
+          seen.add(entry.imageUrl);
+          const time = new Date(entry.at).toLocaleTimeString("zh-CN", {
+            hour: "2-digit",
+            minute: "2-digit"
+          });
+          out.push({
+            url: entry.imageUrl,
+            label: `${entry.type === "screenshot" ? "\u622A\u56FE" : "\u56FE\u7247"} \xB7 ${time}`
+          });
+        }
+      }
+      return out.slice(0, 24);
+    }
+    function renderCiteList() {
+      const candidates = citeCandidates();
+      citeList.textContent = "";
+      citeEmpty.hidden = candidates.length > 0;
+      for (const candidate of candidates) {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "rtts-cite-item";
+        if (pendingImages.includes(candidate.url)) item.classList.add("used");
+        item.setAttribute("aria-label", `\u5F15\u7528${candidate.label}`);
+        const img = document.createElement("img");
+        img.src = candidate.url;
+        img.alt = candidate.label;
+        item.appendChild(img);
+        const caption = document.createElement("span");
+        caption.textContent = candidate.label;
+        item.appendChild(caption);
+        item.addEventListener("click", () => {
+          if (pendingImages.includes(candidate.url)) {
+            toast("\u8FD9\u5F20\u622A\u56FE\u5DF2\u7ECF\u5F15\u7528\u4E86", "ok");
+            return;
+          }
+          if (pendingImages.length >= 4) {
+            toast("\u6700\u591A\u5F15\u7528 4 \u5F20\u56FE\u7247", "err");
+            return;
+          }
+          pendingImages.push(candidate.url);
+          renderAttachments();
+          positionCitePopover();
+          item.classList.add("used");
+          toast("\u5DF2\u5F15\u7528\u622A\u56FE\uFF0C\u53EF\u4EE5\u7EE7\u7EED\u63D0\u95EE", "ok");
+        });
+        citeList.appendChild(item);
+      }
+    }
+    function positionCitePopover() {
+      const composer = citePopover.parentElement;
+      const shell = composer?.querySelector(".rtts-md-shell");
+      if (!composer || !shell) return;
+      const shellTop = shell.getBoundingClientRect().top;
+      const gap = 6;
+      const top = Math.max(8, shellTop - gap);
+      citePopover.style.bottom = `${Math.max(8, composer.getBoundingClientRect().bottom - top)}px`;
+      citePopover.style.maxHeight = `${Math.max(140, top - 12)}px`;
+    }
+    function setCiteOpen(open) {
+      if (open) renderCiteList();
+      if (!open && citePopover.contains(shadow.activeElement)) citeBtn.focus();
+      citePopover.hidden = !open;
+      citeBtn.setAttribute("aria-expanded", String(open));
+      citeBtn.classList.toggle("active", open);
+      if (open) {
+        positionCitePopover();
+        const first = citeList.querySelector(".rtts-cite-item");
+        first?.focus();
+      }
+    }
+    window.addEventListener("resize", () => {
+      if (!citePopover.hidden) positionCitePopover();
+    });
+    chatEditor.addEventListener("input", () => {
+      if (!citePopover.hidden) positionCitePopover();
+    });
+    citeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setCiteOpen(citePopover.hidden !== false);
+    });
+    citeClose.addEventListener("click", () => {
+      setCiteOpen(false);
+      chatEditor.focus();
+    });
+    document.addEventListener("click", (e) => {
+      if (citePopover.hidden) return;
+      if (e.composedPath().includes(citePopover) || e.composedPath().includes(citeBtn)) return;
+      setCiteOpen(false);
+    });
     async function compressImage(file) {
       return new Promise((resolve, reject) => {
         if (file.size > 10 * 1024 * 1024) {
@@ -2401,6 +2649,7 @@
     });
     async function sendQuestion() {
       if (isAskBusy) return;
+      setCiteOpen(false);
       if (isPreviewing) togglePreview();
       const q = getChatText();
       const imgs = pendingImages.slice();
@@ -2602,8 +2851,14 @@
           const row = document.createElement("div");
           row.style.cssText = "display:flex;align-items:flex-start;gap:4px;width:100%";
           const text = document.createElement("span");
-          text.className = "note-text truncated";
-          text.textContent = entry.text || entry.target || entry.source || "\u7B14\u8BB0";
+          const content = entry.text || entry.target || entry.source || "\u7B14\u8BB0";
+          if (entry.type === "text") {
+            text.className = "note-text note-md";
+            text.innerHTML = renderMarkdownLite(content);
+          } else {
+            text.className = "note-text truncated";
+            text.textContent = content;
+          }
           row.appendChild(text);
           const typeLabel = document.createElement("span");
           typeLabel.className = "note-type";
@@ -2624,6 +2879,7 @@
           item.appendChild(row);
           notesList.appendChild(item);
         });
+        notesList.scrollTop = notesList.scrollHeight;
       }
     }
     function loadImageElement(src) {
@@ -2926,10 +3182,15 @@
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
       setMenuOpen(false);
+      if (!citePopover.hidden) {
+        setCiteOpen(false);
+        return;
+      }
       if (isDrawerOpen) closeDrawer();
     });
     function addQuickNote() {
-      const text = notesInput.value.trim();
+      if (isNotesPreviewing) toggleNotesPreview();
+      const text = getEditorText(notesEditor);
       if (!text) return;
       addNoteEntry({
         id: `text_${Date.now()}`,
@@ -2937,15 +3198,10 @@
         at: Date.now(),
         text
       });
-      notesInput.value = "";
+      notesEditor.innerHTML = "";
+      notesEditor.focus();
     }
     notesAdd.addEventListener("click", addQuickNote);
-    notesInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        addQuickNote();
-      }
-    });
     obsidianBtn.addEventListener("click", async () => {
       const obsidianConfig = await loadObsidianConfig();
       if (!obsidianConfig.apiKey) {

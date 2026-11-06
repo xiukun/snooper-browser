@@ -4,9 +4,10 @@
   "version": "0.4.0",
   "type": "module",
   "description": "Open-source multimodal workspace for real-time translation, conversations and visual understanding.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "scripts": {
     "build:ext": "node build-ext.mjs",
+    "package:ext": "node scripts/package-extension.mjs",
     "dev:app": "cd app && pnpm dev",
     "build:app": "cd app && pnpm build",
     "type-check": "cd app && pnpm exec vue-tsc -b --force",

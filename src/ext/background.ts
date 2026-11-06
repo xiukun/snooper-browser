@@ -11,6 +11,8 @@
  */
 
 import type { AppConfig } from '../lib/providers'
+import { openToolbarForTab } from './action-flow'
+import { reconcileSessionWithCapture } from './session-state'
 
 /* ===== Constants ===== */
 
@@ -97,6 +99,10 @@ interface SessionState {
 
 /** @type {Map<number, SessionState>} */
 const sessions = new Map<number, SessionState>();
+// All session reads and writes wait for service-worker recovery. Without this
+// barrier, a tab can ask for GET_SESSION while recoverSessions() is still
+// hydrating and temporarily receive a fresh idle session.
+let recoveryReady: Promise<void> = Promise.resolve();
 
 // Seed with the clock so a restarted service worker never reuses a
 // generation that a still-alive offscreen session already holds.
@@ -204,16 +210,45 @@ async function hasOffscreenDocument(): Promise<boolean> {
 }
 
 /** True when a live offscreen capture session exists for this tab. */
-async function offscreenHasCapture(tabId: number): Promise<boolean> {
-  if (!(await hasOffscreenDocument())) return false;
+async function getLiveCaptureGeneration(tabId: number): Promise<number | undefined> {
+  if (!(await hasOffscreenDocument())) return undefined;
   try {
     const res: any = await chrome.runtime.sendMessage({
       target: 'offscreen',
       type: 'GET_CAPTURE_SESSIONS',
     });
-    return !!res?.ok && Array.isArray(res.tabIds) && res.tabIds.includes(tabId);
+    const generation = res?.sessions?.[String(tabId)];
+    return res?.ok && typeof generation === 'number' ? generation : undefined;
   } catch {
-    return false;
+    return undefined;
+  }
+}
+
+async function offscreenHasCapture(tabId: number): Promise<boolean> {
+  return typeof await getLiveCaptureGeneration(tabId) === 'number';
+}
+
+async function reconcileSessionState(tabId: number): Promise<SessionState> {
+  await recoveryReady
+  const session = getOrCreateSession(tabId);
+  const liveGeneration = await getLiveCaptureGeneration(tabId);
+  const reconciled = reconcileSessionWithCapture(session, liveGeneration)
+  if (reconciled !== session) {
+    Object.assign(session, reconciled)
+    persistSessionsThrottled()
+  }
+  return session
+}
+
+function safeSession(s: SessionState) {
+  return {
+    state: s.state,
+    sourceLang: s.sourceLang,
+    targetLang: s.targetLang,
+    subtitles: s.subtitles,
+    messages: s.messages,
+    streamingSubtitle: s.streamingSubtitle,
+    audioSilent: s.audioSilent,
   }
 }
 
@@ -308,15 +343,10 @@ async function saveConfig(config: AppConfig) {
 /* ===== Content Script Injection ===== */
 
 async function injectContentScript(tabId: number) {
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: [CONTENT_SCRIPT_FILE],
-    });
-  } catch (err: any) {
-    // May already be injected or tab not ready
-    console.warn('[RTTS] injectContentScript error:', err.message);
-  }
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: [CONTENT_SCRIPT_FILE],
+  });
 }
 
 /* ===== Side Panel Management ===== */
@@ -335,20 +365,9 @@ function pushSession(tabId: number) {
   const s = sessions.get(tabId);
   if (!s) return;
 
-  // Build a safe session object (no config/keys)
-  const safeSession = {
-    state: s.state,
-    sourceLang: s.sourceLang,
-    targetLang: s.targetLang,
-    subtitles: s.subtitles,
-    messages: s.messages,
-    streamingSubtitle: s.streamingSubtitle,
-    audioSilent: s.audioSilent,
-  };
-
   chrome.tabs.sendMessage(tabId, {
     type: 'SESSION_UPDATE',
-    session: safeSession,
+    session: safeSession(s),
   }).catch(() => {
     // Tab may have been closed or content script not loaded
   });
@@ -642,46 +661,49 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
 
     /* ---------- Session (content script) ---------- */
     case 'GET_SESSION': {
-      const s = getOrCreateSession(tabId);
-      sendResponse({
-        ok: true,
-        session: {
-          state: s.state,
-          sourceLang: s.sourceLang,
-          targetLang: s.targetLang,
-          subtitles: s.subtitles,
-          messages: s.messages,
-          streamingSubtitle: s.streamingSubtitle,
-        },
-      });
-      return false;
+      reconcileSessionState(tabId).then((s) => {
+        sendResponse({
+          ok: true,
+          session: safeSession(s),
+        });
+      }).catch(() => sendResponse({ ok: false, error: '无法同步当前转写状态' }));
+      return true;
     }
 
     case 'SET_LANG': {
-      const s = getOrCreateSession(tabId);
-      if (message.sourceLang) s.sourceLang = message.sourceLang;
-      if (message.targetLang) s.targetLang = message.targetLang;
-      pushSession(tabId);
+      (async () => {
+        const s = await reconcileSessionState(tabId);
+        if (message.sourceLang) s.sourceLang = message.sourceLang;
+        if (message.targetLang) s.targetLang = message.targetLang;
 
-      // Also forward to offscreen if running
-      if (s.state === 'running') {
-        sendToOffscreen({ type: 'SET_LANG', tabId, sourceLang: s.sourceLang, targetLang: s.targetLang }).catch(() => {});
-      }
-
-      sendResponse({ ok: true });
-      return false;
+        pushSession(tabId);
+        // Also forward to offscreen if running. Reconcile first so a stale
+        // recovered session cannot briefly publish an idle state here.
+        if (s.state === 'running') {
+          await sendToOffscreen({
+            type: 'SET_LANG',
+            tabId,
+            sourceLang: s.sourceLang,
+            targetLang: s.targetLang,
+          });
+        }
+        sendResponse({ ok: true, session: safeSession(s) });
+      })().catch((err: any) => sendResponse({ ok: false, error: err.message || '语言切换失败' }));
+      return true;
     }
 
     case 'START': {
       (async () => {
-        const s = getOrCreateSession(tabId);
+        const s = await reconcileSessionState(tabId);
 
         if (s.state === 'running' || s.state === 'starting') {
           // In-memory state can outlive the offscreen capture after a service
           // worker restart. Only block when a capture is really alive.
           const live = await offscreenHasCapture(tabId);
           if (live) {
-            sendResponse({ ok: false, error: '当前标签页已在转写中' });
+            // START is idempotent. A stale toolbar must never tear down a
+            // capture that is still translating in the background.
+            sendResponse({ ok: true, alreadyRunning: true, session: safeSession(s) });
             return;
           }
           s.state = 'idle';
@@ -834,10 +856,12 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         }
         pushSession(tabId);
         checkAndCloseOffscreen();
+        sendResponse({ ok: true, session: safeSession(s) });
       });
-
-      sendResponse({ ok: true });
-      return false;
+      // Keep the response open until the offscreen teardown finishes. This
+      // prevents an immediate GET_SESSION from observing the old live capture
+      // and putting the toolbar back into the running state after STOP.
+      return true;
     }
 
     case 'ASK': {
@@ -1362,16 +1386,17 @@ chrome.tabs.onRemoved.addListener((tabId: number) => {
   checkAndCloseOffscreen();
 });
 chrome.tabs.onActivated.addListener(async (activeInfo: any) => {
+  await recoveryReady;
   // Push current session state to the newly active tab
-  const session = sessions.get(activeInfo.tabId);
-  if (session && (session.state === 'running' || session.state === 'starting')) {
-    pushSession(activeInfo.tabId);
-  }
+  const session = await reconcileSessionState(activeInfo.tabId);
+  if (session.state === 'running' || session.state === 'starting') pushSession(activeInfo.tabId);
 });
 
 /* ===== Action Click ===== */
 
 chrome.action.onClicked.addListener((tab: any) => {
+  if (typeof tab.id !== 'number') return;
+
   // Inject MAIN-world fullscreen bridge (needs MAIN to intercept requestFullscreen)
   chrome.scripting.executeScript({
     target: { tabId: tab.id },
@@ -1381,10 +1406,13 @@ chrome.action.onClicked.addListener((tab: any) => {
     console.warn('[RTTS] FS bridge injection error:', err.message);
   });
 
-  // Toggle the in-page toolbar: it stays hidden on page load and only shows
-  // when the user clicks the extension icon on that tab.
-  chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_TOOLBAR' }).catch(() => {
-    // Content script may not be injected yet (e.g. chrome:// pages); ignore.
+  // A newly opened or restored tab may not have the content script yet.
+  void openToolbarForTab(tab.id, {
+    tabUrl: tab.url,
+    sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
+    injectContentScript,
+  }).catch((err: any) => {
+    console.warn('[RTTS] toolbar unavailable:', err.message);
   });
 
   // Open side panel for configuration
@@ -1510,7 +1538,7 @@ async function recoverSessions() {
         s.state = 'running';
         s.generation = liveGeneration;
         s.streamId = '';
-      } else if (s.state === 'running' || s.state === 'starting') {
+      } else if (s.state === 'running' || s.state === 'starting' || s.state === 'stopping') {
         s.state = 'idle';
         s.streamId = '';
         s.configSnapshot = null;
@@ -1556,8 +1584,9 @@ function persistSessions() {
   }
 }
 
-// Recover on startup
-recoverSessions();
+// Recover on startup. Message handlers wait for this promise before reading
+// sessions, so a service-worker restart cannot publish a transient idle state.
+recoveryReady = recoverSessions();
 
 // Persist every 30 seconds
 setInterval(persistSessions, 30000);

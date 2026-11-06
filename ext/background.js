@@ -1,3 +1,46 @@
+// src/ext/action-flow.ts
+var UnsupportedPageError = class extends Error {
+  code = "UNSUPPORTED_PAGE";
+  constructor() {
+    super("\u6B64\u9875\u9762\u53D7\u6D4F\u89C8\u5668\u9650\u5236\uFF0C\u65E0\u6CD5\u8FD0\u884C snooper\u3002\u8BF7\u5207\u6362\u5230\u666E\u901A\u7F51\u9875\u540E\u91CD\u8BD5\u3002");
+    this.name = "UnsupportedPageError";
+  }
+};
+function isUnsupportedTabUrl(url) {
+  return /^(chrome|chrome-extension|edge|about|devtools|view-source|file):/i.test(url || "") || /^https?:\/\/(?:chromewebstore\.google\.com|chrome\.google\.com\/webstore)(?:\/|$)/i.test(url || "");
+}
+async function sendToPageWithInjection(tabId, message, tabUrl, { sendMessage, injectContentScript: injectContentScript2 }) {
+  if (isUnsupportedTabUrl(tabUrl)) throw new UnsupportedPageError();
+  try {
+    await sendMessage(tabId, message);
+    return { ok: true, injected: false };
+  } catch (firstError) {
+    try {
+      await injectContentScript2(tabId);
+      await sendMessage(tabId, message);
+      return { ok: true, injected: true };
+    } catch (retryError) {
+      const error = retryError instanceof Error ? retryError : new Error(String(retryError));
+      if (firstError instanceof Error) error.cause ??= firstError;
+      throw error;
+    }
+  }
+}
+function openToolbarForTab(tabId, options) {
+  return sendToPageWithInjection(tabId, { type: "TOGGLE_TOOLBAR" }, options.tabUrl, options);
+}
+
+// src/ext/session-state.ts
+function reconcileSessionWithCapture(session, liveGeneration) {
+  if (typeof liveGeneration !== "number" || session.state === "stopping") return session;
+  if (session.state === "running" && session.generation === liveGeneration) return session;
+  return {
+    ...session,
+    state: "running",
+    generation: liveGeneration
+  };
+}
+
 // src/ext/background.ts
 var CONFIG_KEY = "snooper.extension.config.v1";
 var SESSION_RECOVERY_KEY = "snooper.extension.sessions.v1";
@@ -7,6 +50,7 @@ var OFFSCREEN_PATH = "offscreen.html";
 function normalizeObsidianKey(raw) {
   return String(raw || "").trim().replace(/^Bearer\s+/i, "").trim();
 }
+var CONTENT_SCRIPT_FILE = "content.js";
 var FS_BRIDGE_FILE = "fullscreen-bridge.js";
 var DEFAULT_CONFIG = {
   providers: [
@@ -31,6 +75,7 @@ var DEFAULT_CONFIG = {
   }
 };
 var sessions = /* @__PURE__ */ new Map();
+var recoveryReady = Promise.resolve();
 var generationCounter = Date.now();
 function nextGeneration() {
   return ++generationCounter;
@@ -113,17 +158,43 @@ async function hasOffscreenDocument() {
     return false;
   }
 }
-async function offscreenHasCapture(tabId) {
-  if (!await hasOffscreenDocument()) return false;
+async function getLiveCaptureGeneration(tabId) {
+  if (!await hasOffscreenDocument()) return void 0;
   try {
     const res = await chrome.runtime.sendMessage({
       target: "offscreen",
       type: "GET_CAPTURE_SESSIONS"
     });
-    return !!res?.ok && Array.isArray(res.tabIds) && res.tabIds.includes(tabId);
+    const generation = res?.sessions?.[String(tabId)];
+    return res?.ok && typeof generation === "number" ? generation : void 0;
   } catch {
-    return false;
+    return void 0;
   }
+}
+async function offscreenHasCapture(tabId) {
+  return typeof await getLiveCaptureGeneration(tabId) === "number";
+}
+async function reconcileSessionState(tabId) {
+  await recoveryReady;
+  const session = getOrCreateSession(tabId);
+  const liveGeneration = await getLiveCaptureGeneration(tabId);
+  const reconciled = reconcileSessionWithCapture(session, liveGeneration);
+  if (reconciled !== session) {
+    Object.assign(session, reconciled);
+    persistSessionsThrottled();
+  }
+  return session;
+}
+function safeSession(s) {
+  return {
+    state: s.state,
+    sourceLang: s.sourceLang,
+    targetLang: s.targetLang,
+    subtitles: s.subtitles,
+    messages: s.messages,
+    streamingSubtitle: s.streamingSubtitle,
+    audioSilent: s.audioSilent
+  };
 }
 async function stopOrphanCapture(tabId) {
   if (!await hasOffscreenDocument()) return;
@@ -192,21 +263,18 @@ async function saveConfig(config) {
   } catch {
   }
 }
+async function injectContentScript(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: [CONTENT_SCRIPT_FILE]
+  });
+}
 function pushSession(tabId) {
   const s = sessions.get(tabId);
   if (!s) return;
-  const safeSession = {
-    state: s.state,
-    sourceLang: s.sourceLang,
-    targetLang: s.targetLang,
-    subtitles: s.subtitles,
-    messages: s.messages,
-    streamingSubtitle: s.streamingSubtitle,
-    audioSilent: s.audioSilent
-  };
   chrome.tabs.sendMessage(tabId, {
     type: "SESSION_UPDATE",
-    session: safeSession
+    session: safeSession(s)
   }).catch(() => {
   });
   persistSessionsThrottled();
@@ -458,39 +526,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     /* ---------- Session (content script) ---------- */
     case "GET_SESSION": {
-      const s = getOrCreateSession(tabId);
-      sendResponse({
-        ok: true,
-        session: {
-          state: s.state,
-          sourceLang: s.sourceLang,
-          targetLang: s.targetLang,
-          subtitles: s.subtitles,
-          messages: s.messages,
-          streamingSubtitle: s.streamingSubtitle
-        }
-      });
-      return false;
+      reconcileSessionState(tabId).then((s) => {
+        sendResponse({
+          ok: true,
+          session: safeSession(s)
+        });
+      }).catch(() => sendResponse({ ok: false, error: "\u65E0\u6CD5\u540C\u6B65\u5F53\u524D\u8F6C\u5199\u72B6\u6001" }));
+      return true;
     }
     case "SET_LANG": {
-      const s = getOrCreateSession(tabId);
-      if (message.sourceLang) s.sourceLang = message.sourceLang;
-      if (message.targetLang) s.targetLang = message.targetLang;
-      pushSession(tabId);
-      if (s.state === "running") {
-        sendToOffscreen({ type: "SET_LANG", tabId, sourceLang: s.sourceLang, targetLang: s.targetLang }).catch(() => {
-        });
-      }
-      sendResponse({ ok: true });
-      return false;
+      (async () => {
+        const s = await reconcileSessionState(tabId);
+        if (message.sourceLang) s.sourceLang = message.sourceLang;
+        if (message.targetLang) s.targetLang = message.targetLang;
+        pushSession(tabId);
+        if (s.state === "running") {
+          await sendToOffscreen({
+            type: "SET_LANG",
+            tabId,
+            sourceLang: s.sourceLang,
+            targetLang: s.targetLang
+          });
+        }
+        sendResponse({ ok: true, session: safeSession(s) });
+      })().catch((err) => sendResponse({ ok: false, error: err.message || "\u8BED\u8A00\u5207\u6362\u5931\u8D25" }));
+      return true;
     }
     case "START": {
       (async () => {
-        const s = getOrCreateSession(tabId);
+        const s = await reconcileSessionState(tabId);
         if (s.state === "running" || s.state === "starting") {
           const live = await offscreenHasCapture(tabId);
           if (live) {
-            sendResponse({ ok: false, error: "\u5F53\u524D\u6807\u7B7E\u9875\u5DF2\u5728\u8F6C\u5199\u4E2D" });
+            sendResponse({ ok: true, alreadyRunning: true, session: safeSession(s) });
             return;
           }
           s.state = "idle";
@@ -612,9 +680,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         pushSession(tabId);
         checkAndCloseOffscreen();
+        sendResponse({ ok: true, session: safeSession(s) });
       });
-      sendResponse({ ok: true });
-      return false;
+      return true;
     }
     case "ASK": {
       const s = getOrCreateSession(tabId);
@@ -1033,12 +1101,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   checkAndCloseOffscreen();
 });
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  const session = sessions.get(activeInfo.tabId);
-  if (session && (session.state === "running" || session.state === "starting")) {
-    pushSession(activeInfo.tabId);
-  }
+  await recoveryReady;
+  const session = await reconcileSessionState(activeInfo.tabId);
+  if (session.state === "running" || session.state === "starting") pushSession(activeInfo.tabId);
 });
 chrome.action.onClicked.addListener((tab) => {
+  if (typeof tab.id !== "number") return;
   chrome.scripting.executeScript({
     target: { tabId: tab.id },
     files: [FS_BRIDGE_FILE],
@@ -1046,7 +1114,12 @@ chrome.action.onClicked.addListener((tab) => {
   }).catch((err) => {
     console.warn("[RTTS] FS bridge injection error:", err.message);
   });
-  chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_TOOLBAR" }).catch(() => {
+  void openToolbarForTab(tab.id, {
+    tabUrl: tab.url,
+    sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
+    injectContentScript
+  }).catch((err) => {
+    console.warn("[RTTS] toolbar unavailable:", err.message);
   });
   chrome.sidePanel.open({ tabId: tab.id }).catch((err) => {
     console.warn("[RTTS] sidePanel.open error:", err.message);
@@ -1138,7 +1211,7 @@ async function recoverSessions() {
         s.state = "running";
         s.generation = liveGeneration;
         s.streamId = "";
-      } else if (s.state === "running" || s.state === "starting") {
+      } else if (s.state === "running" || s.state === "starting" || s.state === "stopping") {
         s.state = "idle";
         s.streamId = "";
         s.configSnapshot = null;
@@ -1176,6 +1249,6 @@ function persistSessions() {
   } catch {
   }
 }
-recoverSessions();
+recoveryReady = recoverSessions();
 setInterval(persistSessions, 3e4);
 console.log("[RTTS] Background service worker (TS) initialized");

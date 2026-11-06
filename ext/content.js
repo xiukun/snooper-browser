@@ -468,6 +468,7 @@
       pointer-events: none;
       transition: opacity 0.25s, transform 0.25s, background 0.2s;
       display: flex; flex-direction: column;
+      min-width: 220px; min-height: 72px;
     }
     #rtts-sub-box.hidden { opacity: 0; pointer-events: none; transform: translateX(-50%) translateY(8px); }
     #rtts-sub-box:not(.hidden) { transform: translateX(-50%) translateY(0); }
@@ -495,6 +496,27 @@
     }
     #rtts-sub-scroll::-webkit-scrollbar { width: 4px; }
     #rtts-sub-scroll::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.15); }
+    #rtts-sub-resize {
+      position: absolute; right: 2px; bottom: 2px;
+      width: 18px; height: 18px; z-index: 2;
+      cursor: nwse-resize; pointer-events: auto; touch-action: none;
+      border-radius: 0 0 12px 0;
+    }
+    #rtts-sub-resize::after {
+      content: ''; position: absolute; right: 4px; bottom: 4px;
+      width: 8px; height: 8px;
+      border-right: 2px solid rgba(255,255,255,0.42);
+      border-bottom: 2px solid rgba(255,255,255,0.42);
+    }
+    #rtts-sub-resize:hover::after { border-color: rgba(255,255,255,0.85); }
+    #rtts-sub-box.compact { height: 56px !important; min-height: 56px; padding-top: 16px; padding-bottom: 6px; }
+    #rtts-sub-box.compact #rtts-sub-scroll { overflow: hidden; }
+    #rtts-sub-box.compact .sub-row.history:not(.current) { display: none; }
+    #rtts-sub-box.compact .sub-row.current,
+    #rtts-sub-box.compact #rtts-streaming-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #rtts-sub-box.compact .sub-source,
+    #rtts-sub-box.compact .stream-label { display: none !important; }
+    #rtts-sub-box.compact #rtts-sub-status { margin-top: 1px; font-size: 9px; }
 
     .sub-row {
       transition: opacity 0.25s, font-size 0.25s;
@@ -1102,6 +1124,7 @@
     @media (max-width: 640px) {
       #rtts-drawer { width: 100vw; right: -100vw; }
       #rtts-sub-box { width: 88vw; bottom: 18px; max-height: 28vh; padding: 8px 14px 6px; }
+      #rtts-sub-box.compact { height: 56px !important; padding-top: 16px; padding-bottom: 6px; }
       #rtts-lang-picker {
         left: 50%; right: auto; top: 50%;
         transform: translate(-50%, -50%);
@@ -1246,6 +1269,7 @@
       </div>
       <div id="rtts-sub-placeholder">\u70B9\u51FB\u300C\u5F55\u97F3\u300D\u5F00\u59CB\u5B9E\u65F6\u8F6C\u5199</div>
       <div id="rtts-sub-status" class="hidden" aria-live="polite">\u89C6\u9891\u5DF2\u6682\u505C\u6216\u9759\u97F3 \xB7 \u7B49\u5F85\u97F3\u9891</div>
+      <div id="rtts-sub-resize" role="separator" tabindex="0" aria-label="\u8C03\u6574\u5B57\u5E55\u9762\u677F\u5927\u5C0F\uFF0C\u65B9\u5411\u952E\u5FAE\u8C03" title="\u62D6\u52A8\u8C03\u6574\u5927\u5C0F"></div>
     </div>
 
     <!-- Unified side drawer: chat + notes tabs -->
@@ -1511,6 +1535,7 @@
     const targetLangsEl = shadow.getElementById("rtts-target-langs");
     const subBox = shadow.getElementById("rtts-sub-box");
     const subHandle = shadow.getElementById("rtts-sub-handle");
+    const subResize = shadow.getElementById("rtts-sub-resize");
     const subScroll = shadow.getElementById("rtts-sub-scroll");
     const subRows = shadow.getElementById("rtts-sub-rows");
     const subPlaceholder = shadow.getElementById("rtts-sub-placeholder");
@@ -1604,10 +1629,9 @@
         src.dataset.code = l.code;
         src.addEventListener("click", () => {
           session.sourceLang = l.code;
-          session._localSourceLang = l.code;
           refreshLangPicker();
           updateLangLabel();
-          bg("SET_LANG", { sourceLang: l.code }).catch(() => {
+          bg("SET_LANG", { sourceLang: l.code }).then(() => syncSessionFromBackground()).catch(() => {
           });
         });
         sourceLangsEl.appendChild(src);
@@ -1618,11 +1642,10 @@
         tgt.dataset.code = l.code;
         tgt.addEventListener("click", () => {
           session.targetLang = l.code;
-          session._localTargetLang = l.code;
           refreshLangPicker();
           updateLangLabel();
           closeLangPicker();
-          bg("SET_LANG", { targetLang: l.code }).catch(() => {
+          bg("SET_LANG", { targetLang: l.code }).then(() => syncSessionFromBackground()).catch(() => {
           });
         });
         targetLangsEl.appendChild(tgt);
@@ -1688,6 +1711,27 @@
       } catch (err) {
         return { ok: false, error: err.message || "\u540E\u53F0\u901A\u4FE1\u5F02\u5E38" };
       }
+    }
+    function adoptBackgroundSession(incoming) {
+      session = {
+        ...incoming,
+        sourceLang: incoming.sourceLang || "auto",
+        targetLang: incoming.targetLang || "zh",
+        // Notes are local to the content surface and are not part of the
+        // background session snapshot.
+        notes: session.notes,
+        activeNoteId: session.activeNoteId,
+        isDemoMode: session.isDemoMode
+      };
+      render();
+    }
+    let sessionSyncSerial = 0;
+    async function syncSessionFromBackground() {
+      const serial = ++sessionSyncSerial;
+      const res = await bg("GET_SESSION");
+      if (serial !== sessionSyncSerial || !res.ok || !res.session) return false;
+      adoptBackgroundSession(res.session);
+      return true;
     }
     async function fetchAsDataUrl(url) {
       try {
@@ -2074,7 +2118,47 @@
     function clearStreaming() {
       streamingRow.classList.add("hidden");
     }
+    const SUB_BOX_SIZE_KEY = "snooper.subtitle-box-size.v1";
+    const SUB_BOX_COMPACT_KEY = "snooper.subtitle-box-compact.v1";
     let subBoxAutoPosition = true;
+    let subBoxCompact = false;
+    function persistSubBoxSize(width, height) {
+      const size = { width: Math.round(width), height: Math.round(height) };
+      try {
+        localStorage.setItem(SUB_BOX_SIZE_KEY, JSON.stringify(size));
+      } catch {
+      }
+      try {
+        void chrome.storage?.local?.set({ [SUB_BOX_SIZE_KEY]: size });
+      } catch {
+      }
+    }
+    async function restoreSubBoxPreferences() {
+      try {
+        const localSize = JSON.parse(localStorage.getItem(SUB_BOX_SIZE_KEY) || "null");
+        let size = localSize;
+        if (!size) {
+          const stored = await chrome.storage?.local?.get(SUB_BOX_SIZE_KEY);
+          size = stored?.[SUB_BOX_SIZE_KEY];
+        }
+        if (typeof size?.width === "number" && typeof size?.height === "number") {
+          subBoxAutoPosition = false;
+          applySubBoxSize(size.width, size.height);
+        }
+        const storedCompact = await chrome.storage?.local?.get(SUB_BOX_COMPACT_KEY);
+        subBoxCompact = localStorage.getItem(SUB_BOX_COMPACT_KEY) === "true" || storedCompact?.[SUB_BOX_COMPACT_KEY] === true;
+        subBox.classList.toggle("compact", subBoxCompact);
+      } catch {
+      }
+    }
+    function applySubBoxSize(width, height) {
+      const rect = subBox.getBoundingClientRect();
+      const maxWidth = Math.max(220, Math.min(window.innerWidth - 24, window.innerWidth - rect.left - 12));
+      const maxHeight = Math.max(100, Math.min(window.innerHeight - 24, window.innerHeight - rect.top - 12));
+      subBox.style.width = `${Math.max(220, Math.min(maxWidth, width))}px`;
+      subBox.style.height = `${Math.max(72, Math.min(maxHeight, height))}px`;
+      subBox.style.maxHeight = "none";
+    }
     function positionSubBox() {
       if (!subBoxAutoPosition) return;
       const maxWidth = Math.max(220, window.innerWidth - 32);
@@ -2082,14 +2166,18 @@
       if (video && video.readyState > 0) {
         const vr = video.getBoundingClientRect();
         const top = vr.top + vr.height * 0.75;
-        const width = Math.min(vr.width * 0.88, 840, maxWidth);
+        const width = Math.min(vr.width * 0.72, 560, maxWidth);
         subBox.style.top = Math.max(top, 80) + "px";
-        subBox.style.width = `${Math.round(width)}px`;
+        subBox.style.width = `${Math.max(220, Math.round(width))}px`;
+        subBox.style.height = "auto";
+        subBox.style.maxHeight = "24vh";
         subBox.style.bottom = "auto";
       } else {
         subBox.style.top = "";
         subBox.style.bottom = "26px";
-        subBox.style.width = `${Math.min(Math.round(window.innerWidth * 0.82), 840, maxWidth)}px`;
+        subBox.style.width = `${Math.min(Math.round(window.innerWidth * 0.72), 560, maxWidth)}px`;
+        subBox.style.height = "auto";
+        subBox.style.maxHeight = "24vh";
       }
     }
     const ro = window.ResizeObserver ? new ResizeObserver(() => positionSubBox()) : { observe() {
@@ -2201,10 +2289,68 @@
       const rect = subBox.getBoundingClientRect();
       startDrag(e, subBox, e.clientX - rect.left, e.clientY - rect.top);
     });
-    subBox.addEventListener("dblclick", () => {
-      subBoxAutoPosition = true;
-      positionSubBox();
+    subBox.addEventListener("dblclick", (event) => {
+      if (event.target.closest("#rtts-sub-resize, #rtts-sub-handle")) return;
+      subBoxCompact = !subBoxCompact;
+      subBox.classList.toggle("compact", subBoxCompact);
+      try {
+        localStorage.setItem(SUB_BOX_COMPACT_KEY, String(subBoxCompact));
+      } catch {
+      }
+      try {
+        void chrome.storage?.local?.set({ [SUB_BOX_COMPACT_KEY]: subBoxCompact });
+      } catch {
+      }
     });
+    let subResizeState = null;
+    subResize.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      subBoxAutoPosition = false;
+      const rect = subBox.getBoundingClientRect();
+      subBox.style.transform = "none";
+      subBox.style.left = `${rect.left}px`;
+      subBox.style.top = `${rect.top}px`;
+      subBox.style.bottom = "auto";
+      subResizeState = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, width: rect.width, height: rect.height };
+      subResize.setPointerCapture(event.pointerId);
+    });
+    subResize.addEventListener("pointermove", (event) => {
+      if (!subResizeState || subResizeState.pointerId !== event.pointerId) return;
+      const width = subResizeState.width + event.clientX - subResizeState.startX;
+      const height = subResizeState.height + event.clientY - subResizeState.startY;
+      applySubBoxSize(width, height);
+    });
+    const endSubResize = (event) => {
+      if (!subResizeState || subResizeState.pointerId !== event.pointerId) return;
+      subResizeState = null;
+      const rect = subBox.getBoundingClientRect();
+      persistSubBoxSize(rect.width, rect.height);
+    };
+    subResize.addEventListener("pointerup", endSubResize);
+    subResize.addEventListener("pointercancel", endSubResize);
+    subResize.addEventListener("keydown", (event) => {
+      const step = event.shiftKey ? 48 : 16;
+      const delta = {
+        ArrowLeft: [-step, 0],
+        ArrowRight: [step, 0],
+        ArrowUp: [0, -step],
+        ArrowDown: [0, step]
+      };
+      const move = delta[event.key];
+      if (!move) return;
+      event.preventDefault();
+      const rect = subBox.getBoundingClientRect();
+      subBoxAutoPosition = false;
+      applySubBoxSize(rect.width + move[0], rect.height + move[1]);
+      persistSubBoxSize(subBox.getBoundingClientRect().width, subBox.getBoundingClientRect().height);
+    });
+    void restoreSubBoxPreferences();
+    window.addEventListener("resize", () => {
+      if (subBoxAutoPosition) return;
+      const rect = subBox.getBoundingClientRect();
+      applySubBoxSize(rect.width, rect.height);
+    }, { passive: true });
     document.addEventListener("mousemove", (e) => {
       if (!dragState) return;
       const { el, offsetX, offsetY } = dragState;
@@ -2236,8 +2382,7 @@
         session.state = "stopping";
         render();
         await bg("STOP");
-        session.state = "idle";
-        render();
+        await syncSessionFromBackground();
       } else {
         if (session.isDemoMode) {
           stopDemoSubtitles();
@@ -2254,11 +2399,10 @@
           const msg = res.error || "\u542F\u52A8\u5931\u8D25";
           toast(msg, "err");
           if (msg.includes("API Key") || msg.includes("\u672A\u9009\u62E9\u6A21\u578B")) openSettings();
-          session.state = "idle";
-          render();
+          await syncSessionFromBackground();
         } else {
-          session.state = "running";
-          render();
+          if (res.session) adoptBackgroundSession(res.session);
+          else await syncSessionFromBackground();
         }
       }
     });
@@ -3002,29 +3146,30 @@
         return `${t}${s}`;
       }).join("\n");
     }
-    function collectNoteAssets(note) {
-      if (!note) return [];
+    function collectNoteAssets(notes, messages) {
       const assets = [];
       const stamp = Date.now();
-      note.entries.forEach((entry, index) => {
-        if ((entry.type === "image" || entry.type === "screenshot") && entry.imageUrl) {
+      notes.forEach((note) => note.entries.forEach((entry) => {
+        const entryId = `note:${note.id}:${entry.id}`;
+        if ((entry.type === "image" || entry.type === "screenshot") && entry.imageUrl?.startsWith("data:")) {
           const mime = /^data:([^;,]+)/.exec(entry.imageUrl)?.[1] || "image/png";
-          const ext = mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : mime.includes("svg") ? "svg" : mime.includes("gif") ? "gif" : "png";
-          assets.push({
-            entryId: entry.id,
-            fileName: `snooper-${stamp}-${index + 1}.${ext}`,
-            dataUrl: entry.imageUrl,
-            mimeType: mime
-          });
+          const ext = mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : "png";
+          assets.push({ entryId, fileName: `snooper-${stamp}-${assets.length + 1}.${ext}`, dataUrl: entry.imageUrl, mimeType: mime });
         } else if (entry.type === "svg" && entry.svg) {
-          assets.push({
-            entryId: entry.id,
-            fileName: `snooper-${stamp}-${index + 1}.svg`,
-            rawText: entry.svg,
-            mimeType: "image/svg+xml"
-          });
+          assets.push({ entryId, fileName: `snooper-${stamp}-${assets.length + 1}.svg`, rawText: entry.svg, mimeType: "image/svg+xml" });
         }
-      });
+      }));
+      messages.forEach((message, messageIndex) => (message.images || []).forEach((image, imageIndex) => {
+        if (!image.startsWith("data:")) return;
+        const mime = /^data:([^;,]+)/.exec(image)?.[1] || "image/png";
+        const ext = mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : "png";
+        assets.push({
+          entryId: `chat:${messageIndex}:${imageIndex}`,
+          fileName: `snooper-${stamp}-${assets.length + 1}.${ext}`,
+          dataUrl: image,
+          mimeType: mime
+        });
+      }));
       return assets;
     }
     function getSubtitleMarkdown(assetNames) {
@@ -3046,30 +3191,37 @@
         const s = (sub.source || "").replace(/\|/g, "\\|");
         lines.push(`| ${time} | ${t} | ${s} |`);
       }
-      const active = session.activeNoteId ? session.notes.find((n) => n.id === session.activeNoteId) : null;
-      if (active && active.entries.length > 0) {
-        lines.push(``, `---`, ``, `## \u7B14\u8BB0`, ``);
-        active.entries.forEach((entry) => {
+      if (session.messages.length > 0) {
+        lines.push("", "---", "", "## \u4F34\u5B66\u5BF9\u8BDD", "");
+        session.messages.forEach((message, messageIndex) => {
+          lines.push(`### ${message.role === "user" ? "\u63D0\u95EE" : "\u56DE\u7B54"}`, "", message.content || "\uFF08\u56FE\u7247\uFF09", "");
+          (message.images || []).forEach((image, imageIndex) => {
+            const uploaded = assetNames?.get(`chat:${messageIndex}:${imageIndex}`);
+            if (uploaded) lines.push(`![[${uploaded}]]`, "");
+            else if (/^https?:\/\//i.test(image)) lines.push(`![\u4F34\u5B66\u56FE\u7247](${image})`, "");
+            else lines.push("> [\u4F34\u5B66\u56FE\u7247\u672A\u80FD\u4E0A\u4F20]", "");
+          });
+        });
+      }
+      session.notes.forEach((note) => {
+        if (note.entries.length === 0) return;
+        lines.push("", "---", "", `## \u7B14\u8BB0\uFF1A${note.title || "\u672A\u547D\u540D\u7B14\u8BB0"}`, "");
+        note.entries.forEach((entry) => {
           const label = entry.text || entry.target || "\u7B14\u8BB0";
           const isVisual = entry.type === "image" || entry.type === "screenshot" || entry.type === "svg";
           if (isVisual) {
-            const uploaded = assetNames?.get(entry.id);
-            if (uploaded) {
-              lines.push(`![[${uploaded}]]`);
-              if (entry.text) lines.push(``, `*${entry.text}*`, ``);
-            } else if (entry.imageUrl && /^https?:\/\//i.test(entry.imageUrl)) {
-              lines.push(`![${label}](${entry.imageUrl})`);
-              if (entry.text) lines.push(``, `*${entry.text}*`, ``);
-            } else {
-              lines.push(`> [\u56FE\u7247\uFF1A${label} \u2014 \u56FE\u7247\u6570\u636E\u65E0\u6CD5\u76F4\u63A5\u5D4C\u5165 Markdown\uFF0C\u8BF7\u5728 snooper \u7B14\u8BB0\u4E2D\u67E5\u770B]`);
-            }
+            const uploaded = assetNames?.get(`note:${note.id}:${entry.id}`);
+            if (uploaded) lines.push(`![[${uploaded}]]`);
+            else if (entry.imageUrl && /^https?:\/\//i.test(entry.imageUrl)) lines.push(`![${label}](${entry.imageUrl})`);
+            else if (entry.svg) lines.push("```svg", entry.svg, "```");
+            else lines.push(`> [\u56FE\u7247\uFF1A${label} \u2014 \u56FE\u7247\u6570\u636E\u65E0\u6CD5\u76F4\u63A5\u5D4C\u5165 Markdown]`);
+            if (entry.text) lines.push("", `*${entry.text}*`);
+            lines.push("");
           } else if (entry.target) {
             lines.push(`- ${entry.target} ${entry.source ? `\uFF08${entry.source}\uFF09` : ""}`);
-          } else if (entry.text) {
-            lines.push(`- ${entry.text}`);
-          }
+          } else if (entry.text) lines.push(`- ${entry.text}`);
         });
-      }
+      });
       return lines.join("\n");
     }
     function downloadBlob(filename, content, mimeType = "text/plain;charset=utf-8") {
@@ -3210,8 +3362,7 @@
         cfgObKey.focus();
         return;
       }
-      const activeNote = session.activeNoteId ? session.notes.find((n) => n.id === session.activeNoteId) || null : null;
-      const assets = collectNoteAssets(activeNote);
+      const assets = collectNoteAssets(session.notes, session.messages);
       const uploadedNames = /* @__PURE__ */ new Map();
       let uploadedCount = 0;
       let failedCount = 0;
@@ -3243,7 +3394,7 @@
       try {
         const res = await bg("EXPORT_TO_OBSIDIAN", {
           content: md,
-          title: `snooper-\u7B14\u8BB0-${Date.now()}`,
+          title: `snooper-\u4F1A\u8BDD-${Date.now()}`,
           obsidianConfig
         });
         if (res.ok) {
@@ -3258,25 +3409,7 @@
     });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
-        bg("GET_SESSION").then((res) => {
-          if (res.ok && res.session) {
-            const incoming = res.session;
-            const localSourceLang = session._localSourceLang;
-            const localTargetLang = session._localTargetLang;
-            session = {
-              ...incoming,
-              sourceLang: localSourceLang || incoming.sourceLang || "auto",
-              targetLang: localTargetLang || incoming.targetLang || "zh",
-              _localSourceLang: localSourceLang || void 0,
-              _localTargetLang: localTargetLang || void 0,
-              // Preserve notes across session updates
-              notes: session.notes,
-              activeNoteId: session.activeNoteId,
-              isDemoMode: session.isDemoMode
-            };
-            render();
-          }
-        }).catch(() => {
+        syncSessionFromBackground().catch(() => {
         });
       }
     });
@@ -3312,23 +3445,22 @@
         return;
       }
       if (msg && msg.type === "SESSION_UPDATE" && msg.session) {
-        const incoming = msg.session;
-        const localSourceLang = session._localSourceLang;
-        const localTargetLang = session._localTargetLang;
-        session = {
-          ...incoming,
-          sourceLang: localSourceLang || incoming.sourceLang || "auto",
-          targetLang: localTargetLang || incoming.targetLang || "zh",
-          _localSourceLang: localSourceLang || void 0,
-          _localTargetLang: localTargetLang || void 0,
-          // Preserve notes across session updates
-          notes: session.notes,
-          activeNoteId: session.activeNoteId,
-          isDemoMode: session.isDemoMode
-        };
-        render();
+        adoptBackgroundSession(msg.session);
       }
     });
+    try {
+      chrome.storage?.onChanged?.addListener((changes, area) => {
+        if (area !== "local" || !changes?.[NOTES_STORAGE_KEY]) return;
+        const next = changes[NOTES_STORAGE_KEY].newValue;
+        if (!Array.isArray(next)) return;
+        session.notes = next;
+        if (session.activeNoteId && !next.some((note) => note.id === session.activeNoteId)) {
+          session.activeNoteId = next[0]?.id ?? null;
+        }
+        renderNotes();
+      });
+    } catch {
+    }
     buildLangPicker();
     initBarPosition();
     (async () => {
@@ -3337,15 +3469,8 @@
       if (savedNotes.length > 0) {
         session.activeNoteId = savedNotes[0].id;
       }
-      const res = await bg("GET_SESSION");
-      if (res.ok && res.session) {
-        session = {
-          ...res.session,
-          notes: session.notes,
-          activeNoteId: session.activeNoteId,
-          isDemoMode: false
-        };
-      }
+      session.isDemoMode = false;
+      await syncSessionFromBackground();
       render();
       renderNotes();
     })();

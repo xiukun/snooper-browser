@@ -1,4 +1,33 @@
 (() => {
+  // src/ext/action-flow.ts
+  var UnsupportedPageError = class extends Error {
+    code = "UNSUPPORTED_PAGE";
+    constructor() {
+      super("\u6B64\u9875\u9762\u53D7\u6D4F\u89C8\u5668\u9650\u5236\uFF0C\u65E0\u6CD5\u8FD0\u884C snooper\u3002\u8BF7\u5207\u6362\u5230\u666E\u901A\u7F51\u9875\u540E\u91CD\u8BD5\u3002");
+      this.name = "UnsupportedPageError";
+    }
+  };
+  function isUnsupportedTabUrl(url) {
+    return /^(chrome|chrome-extension|edge|about|devtools|view-source|file):/i.test(url || "") || /^https?:\/\/(?:chromewebstore\.google\.com|chrome\.google\.com\/webstore)(?:\/|$)/i.test(url || "");
+  }
+  async function sendToPageWithInjection(tabId, message, tabUrl, { sendMessage, injectContentScript }) {
+    if (isUnsupportedTabUrl(tabUrl)) throw new UnsupportedPageError();
+    try {
+      await sendMessage(tabId, message);
+      return { ok: true, injected: false };
+    } catch (firstError) {
+      try {
+        await injectContentScript(tabId);
+        await sendMessage(tabId, message);
+        return { ok: true, injected: true };
+      } catch (retryError) {
+        const error = retryError instanceof Error ? retryError : new Error(String(retryError));
+        if (firstError instanceof Error) error.cause ??= firstError;
+        throw error;
+      }
+    }
+  }
+
   // src/ext/sidepanel/panel.ts
   (() => {
     const DEFAULT_OBSIDIAN = {
@@ -36,9 +65,9 @@
         return [];
       })();
     }
-    function saveNotes(next) {
+    async function saveNotes(next) {
       try {
-        chrome.storage.local.set({ [NOTES_KEY]: next });
+        await chrome.storage.local.set({ [NOTES_KEY]: next });
       } catch {
       }
       try {
@@ -101,6 +130,8 @@
     const tabHistory = document.getElementById("tab-history");
     const notesList = document.getElementById("notes-list");
     const notesRefreshBtn = document.getElementById("notes-refresh-btn");
+    const notesSelectAll = document.getElementById("notes-select-all");
+    const notesDeleteSelected = document.getElementById("notes-delete-selected");
     const openPageConfigBtn = document.getElementById("open-page-config");
     const obsidianEnabled = document.getElementById("obsidian-enabled");
     const obsidianProtocol = document.getElementById("obsidian-protocol");
@@ -144,12 +175,32 @@
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab?.id) throw new Error("\u6CA1\u6709\u6D3B\u52A8\u6807\u7B7E\u9875");
-        await chrome.tabs.sendMessage(tab.id, { type: "OPEN_PAGE_SETTINGS" });
+        await sendToPageWithInjection(tab.id, { type: "OPEN_PAGE_SETTINGS" }, tab.url, {
+          sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
+          injectContentScript: async (tabId) => {
+            await chrome.scripting.executeScript({
+              target: { tabId },
+              files: ["content.js"]
+            });
+          }
+        });
         showNotice("\u5DF2\u6253\u5F00\u9875\u9762\u914D\u7F6E");
-      } catch {
-        showNotice("\u5F53\u524D\u9875\u9762\u6CA1\u6709 snooper \u60AC\u6D6E\u680F\uFF0C\u8BF7\u5237\u65B0\u9875\u9762\u540E\u70B9\u51FB\u9875\u9762\u4E0A\u7684 \u2699", true);
+      } catch (err) {
+        showNotice(err instanceof Error ? err.message : "\u6253\u5F00\u914D\u7F6E\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\u3002", true);
       }
     });
+    function getSelectedNoteIds() {
+      return Array.from(notesList.querySelectorAll("input.note-check:checked")).map((el) => el.dataset.id || "").filter(Boolean);
+    }
+    function updateNoteSelection() {
+      const all = Array.from(notesList.querySelectorAll("input.note-check"));
+      const selected = all.filter((el) => el.checked);
+      notesDeleteSelected.disabled = selected.length === 0;
+      notesDeleteSelected.textContent = selected.length > 0 ? `\u5220\u9664\u6240\u9009 (${selected.length})` : "\u5220\u9664\u6240\u9009";
+      notesSelectAll.checked = all.length > 0 && selected.length === all.length;
+      notesSelectAll.indeterminate = selected.length > 0 && selected.length < all.length;
+      notesSelectAll.disabled = all.length === 0;
+    }
     async function loadAndRenderNotes() {
       notes = await loadNotes();
       notesList.textContent = "";
@@ -158,6 +209,7 @@
         empty.className = "empty-hint";
         empty.textContent = "\u6682\u65E0\u7B14\u8BB0\u3002\u5728\u9875\u9762\u6D6E\u5C42\u70B9\u51FB\u300C\u8BB0\u7B14\u8BB0\u300D\u6216\u300C\u751F\u6210\u914D\u56FE\u300D\u5373\u53EF\u6DFB\u52A0\u3002";
         notesList.appendChild(empty);
+        updateNoteSelection();
         return;
       }
       const sorted = [...notes].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -166,13 +218,23 @@
         card.className = "note-card";
         const header = document.createElement("div");
         header.className = "note-card-header";
+        const select = document.createElement("input");
+        select.type = "checkbox";
+        select.className = "note-check";
+        select.dataset.id = note.id;
+        select.setAttribute("aria-label", `\u9009\u62E9 ${note.title || "\u7B14\u8BB0"}`);
+        select.addEventListener("change", updateNoteSelection);
         const title = document.createElement("span");
         title.className = "note-card-title";
         title.textContent = note.title || "\u672A\u547D\u540D\u7B14\u8BB0";
         const count = document.createElement("span");
         count.className = "note-card-count";
         count.textContent = `${note.entries.length} \u6761`;
-        header.appendChild(title);
+        const titleWrap = document.createElement("div");
+        titleWrap.className = "note-card-title-wrap";
+        titleWrap.appendChild(select);
+        titleWrap.appendChild(title);
+        header.appendChild(titleWrap);
         header.appendChild(count);
         card.appendChild(header);
         const meta = document.createElement("div");
@@ -207,19 +269,19 @@
         delBtn.type = "button";
         delBtn.className = "btn btn-danger-ghost btn-xs";
         delBtn.textContent = "\u5220\u9664";
-        delBtn.addEventListener("click", (e) => {
+        delBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
-          if (confirm("\u786E\u5B9A\u5220\u9664\u8FD9\u7BC7\u7B14\u8BB0\uFF1F")) {
-            notes = notes.filter((n) => n.id !== note.id);
-            saveNotes(notes);
-            void loadAndRenderNotes();
-            showNotice("\u7B14\u8BB0\u5DF2\u5220\u9664");
-          }
+          if (!confirm("\u786E\u5B9A\u5220\u9664\u8FD9\u7BC7\u7B14\u8BB0\uFF1F")) return;
+          notes = (await loadNotes()).filter((n) => n.id !== note.id);
+          await saveNotes(notes);
+          await loadAndRenderNotes();
+          showNotice("\u7B14\u8BB0\u5DF2\u5220\u9664");
         });
         actions.appendChild(delBtn);
         card.appendChild(actions);
         notesList.appendChild(card);
       });
+      updateNoteSelection();
     }
     function exportNote(note) {
       const lines = [
@@ -276,6 +338,21 @@
       showNotice("\u7B14\u8BB0\u5DF2\u5BFC\u51FA");
     }
     notesRefreshBtn.addEventListener("click", loadAndRenderNotes);
+    notesSelectAll.addEventListener("change", () => {
+      notesList.querySelectorAll("input.note-check").forEach((el) => {
+        el.checked = notesSelectAll.checked;
+      });
+      updateNoteSelection();
+    });
+    notesDeleteSelected.addEventListener("click", async () => {
+      const ids = getSelectedNoteIds();
+      if (ids.length === 0) return;
+      if (!confirm(`\u786E\u5B9A\u5220\u9664\u9009\u4E2D\u7684 ${ids.length} \u7BC7\u7B14\u8BB0\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002`)) return;
+      notes = (await loadNotes()).filter((note) => !ids.includes(note.id));
+      await saveNotes(notes);
+      await loadAndRenderNotes();
+      showNotice(`\u5DF2\u5220\u9664 ${ids.length} \u7BC7\u7B14\u8BB0`);
+    });
     function formatTime(ts) {
       return new Date(ts).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
     }

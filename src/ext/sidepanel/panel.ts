@@ -1,9 +1,11 @@
 /**
  * snooper-browser Side Panel — notes history + Obsidian integration.
  *
- * Provider / key configuration lives in the in-page settings modal (the ⚙
- * button in the page toolbar). This panel never touches credentials.
+ * Provider / key configuration lives in the in-page settings modal. This panel
+ * opens it on the active tab without requiring the toolbar to be visible first.
  */
+
+import { sendToPageWithInjection } from '../action-flow'
 
 (() => {
   /* ===== Types ===== */
@@ -75,8 +77,8 @@
     })()
   }
 
-  function saveNotes(next: NoteDocument[]) {
-    try { chrome.storage.local.set({ [NOTES_KEY]: next }) } catch { /* ignore */ }
+  async function saveNotes(next: NoteDocument[]) {
+    try { await chrome.storage.local.set({ [NOTES_KEY]: next }) } catch { /* ignore */ }
     try { localStorage.setItem(NOTES_KEY, JSON.stringify(next)) } catch { /* ignore */ }
   }
 
@@ -138,6 +140,8 @@
   const tabHistory = document.getElementById('tab-history')!
   const notesList = document.getElementById('notes-list')!
   const notesRefreshBtn = document.getElementById('notes-refresh-btn')!
+  const notesSelectAll = document.getElementById('notes-select-all') as HTMLInputElement
+  const notesDeleteSelected = document.getElementById('notes-delete-selected') as HTMLButtonElement
   const openPageConfigBtn = document.getElementById('open-page-config') as HTMLButtonElement | null
 
   const obsidianEnabled = document.getElementById('obsidian-enabled') as HTMLInputElement
@@ -188,14 +192,37 @@
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
       if (!tab?.id) throw new Error('没有活动标签页')
-      await chrome.tabs.sendMessage(tab.id, { type: 'OPEN_PAGE_SETTINGS' })
+      await sendToPageWithInjection(tab.id, { type: 'OPEN_PAGE_SETTINGS' }, tab.url, {
+        sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
+        injectContentScript: async (tabId) => {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['content.js'],
+          })
+        },
+      })
       showNotice('已打开页面配置')
-    } catch {
-      showNotice('当前页面没有 snooper 悬浮栏，请刷新页面后点击页面上的 ⚙', true)
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : '打开配置失败，请重试。', true)
     }
   })
 
   /* ===== Notes ===== */
+  function getSelectedNoteIds(): string[] {
+    return Array.from(notesList.querySelectorAll<HTMLInputElement>('input.note-check:checked'))
+      .map((el) => el.dataset.id || '').filter(Boolean)
+  }
+
+  function updateNoteSelection() {
+    const all = Array.from(notesList.querySelectorAll<HTMLInputElement>('input.note-check'))
+    const selected = all.filter((el) => el.checked)
+    notesDeleteSelected.disabled = selected.length === 0
+    notesDeleteSelected.textContent = selected.length > 0 ? `删除所选 (${selected.length})` : '删除所选'
+    notesSelectAll.checked = all.length > 0 && selected.length === all.length
+    notesSelectAll.indeterminate = selected.length > 0 && selected.length < all.length
+    notesSelectAll.disabled = all.length === 0
+  }
+
   async function loadAndRenderNotes() {
     notes = await loadNotes()
 
@@ -205,6 +232,7 @@
       empty.className = 'empty-hint'
       empty.textContent = '暂无笔记。在页面浮层点击「记笔记」或「生成配图」即可添加。'
       notesList.appendChild(empty)
+      updateNoteSelection()
       return
     }
 
@@ -216,6 +244,13 @@
       const header = document.createElement('div')
       header.className = 'note-card-header'
 
+      const select = document.createElement('input')
+      select.type = 'checkbox'
+      select.className = 'note-check'
+      select.dataset.id = note.id
+      select.setAttribute('aria-label', `选择 ${note.title || '笔记'}`)
+      select.addEventListener('change', updateNoteSelection)
+
       const title = document.createElement('span')
       title.className = 'note-card-title'
       title.textContent = note.title || '未命名笔记'
@@ -224,7 +259,11 @@
       count.className = 'note-card-count'
       count.textContent = `${note.entries.length} 条`
 
-      header.appendChild(title)
+      const titleWrap = document.createElement('div')
+      titleWrap.className = 'note-card-title-wrap'
+      titleWrap.appendChild(select)
+      titleWrap.appendChild(title)
+      header.appendChild(titleWrap)
       header.appendChild(count)
       card.appendChild(header)
 
@@ -261,20 +300,22 @@
       delBtn.type = 'button'
       delBtn.className = 'btn btn-danger-ghost btn-xs'
       delBtn.textContent = '删除'
-      delBtn.addEventListener('click', (e) => {
+      delBtn.addEventListener('click', async (e) => {
         e.stopPropagation()
-        if (confirm('确定删除这篇笔记？')) {
-          notes = notes.filter((n) => n.id !== note.id)
-          saveNotes(notes)
-          void loadAndRenderNotes()
-          showNotice('笔记已删除')
-        }
+        if (!confirm('确定删除这篇笔记？')) return
+        // Re-read first so notes added by the page since the last render are
+        // preserved instead of being overwritten by this panel's snapshot.
+        notes = (await loadNotes()).filter((n) => n.id !== note.id)
+        await saveNotes(notes)
+        await loadAndRenderNotes()
+        showNotice('笔记已删除')
       })
       actions.appendChild(delBtn)
 
       card.appendChild(actions)
       notesList.appendChild(card)
     })
+    updateNoteSelection()
   }
 
   function exportNote(note: NoteDocument) {
@@ -336,6 +377,21 @@
   }
 
   notesRefreshBtn.addEventListener('click', loadAndRenderNotes)
+
+  notesSelectAll.addEventListener('change', () => {
+    notesList.querySelectorAll<HTMLInputElement>('input.note-check').forEach((el) => { el.checked = notesSelectAll.checked })
+    updateNoteSelection()
+  })
+
+  notesDeleteSelected.addEventListener('click', async () => {
+    const ids = getSelectedNoteIds()
+    if (ids.length === 0) return
+    if (!confirm(`确定删除选中的 ${ids.length} 篇笔记？此操作不可恢复。`)) return
+    notes = (await loadNotes()).filter((note) => !ids.includes(note.id))
+    await saveNotes(notes)
+    await loadAndRenderNotes()
+    showNotice(`已删除 ${ids.length} 篇笔记`)
+  })
 
   /* ===== History ===== */
 

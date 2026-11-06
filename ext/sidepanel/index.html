@@ -46,14 +46,14 @@
           <div class="config-callout">
             <div class="callout-head">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
-              配置已移至页面
+              首次使用
             </div>
             <p class="section-desc">
-              API Key、模型与路由在任意网页的悬浮工具栏中配置：点击工具栏上的设置图标即可打开，密钥只保存在本机。
+              点击下方按钮即可打开配置，不必先找到悬浮栏。也可点击扩展图标显示工具栏；API Key 仅保存在本机。
             </p>
             <button id="open-page-config" type="button" class="btn btn-primary btn-sm">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-              打开页面配置
+              开始配置
             </button>
           </div>
         </section>
@@ -64,12 +64,18 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
               笔记历史
             </h2>
-            <button id="notes-refresh-btn" type="button" class="btn btn-secondary btn-sm">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-              刷新
-            </button>
+            <div class="section-actions">
+              <button id="notes-refresh-btn" type="button" class="btn btn-secondary btn-sm">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                刷新
+              </button>
+            </div>
           </div>
-          <p class="section-desc">保存在本地的笔记文档。可导出 Markdown 或删除。</p>
+          <p class="section-desc">保存在本地的笔记文档。可导出 Markdown 或批量删除。</p>
+          <div id="notes-toolbar" class="notes-toolbar">
+            <label class="notes-select-all"><input id="notes-select-all" type="checkbox"> 全选</label>
+            <button id="notes-delete-selected" type="button" class="btn btn-sm btn-danger" disabled>删除所选</button>
+          </div>
           <div id="notes-list" class="notes-list">
             <p class="empty-hint">暂无笔记</p>
           </div>

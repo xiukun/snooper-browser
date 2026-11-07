@@ -318,6 +318,35 @@
 
     .rtts-divider { width: 1px; height: 18px; background: rgba(255,255,255,0.1); flex-shrink: 0; margin: 0 2px; }
 
+    /* ===== Community (QQ group) ===== */
+    .rtts-community { position: relative; display: flex; }
+    .rtts-community-pop {
+      position: absolute; top: calc(100% + 10px); right: 0; z-index: 3;
+      width: 216px; padding: 10px;
+      background: rgba(14,14,22,0.98); border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px; box-shadow: 0 14px 38px rgba(0,0,0,0.55);
+      opacity: 0; pointer-events: none;
+      transform: translateY(-4px);
+      transition: opacity 0.15s ease, transform 0.15s ease;
+    }
+    #rtts-bar.tips-up .rtts-community-pop {
+      top: auto; bottom: calc(100% + 10px);
+      transform: translateY(4px);
+    }
+    .rtts-community:hover .rtts-community-pop,
+    .rtts-community:focus-within .rtts-community-pop {
+      opacity: 1; pointer-events: auto; transform: translateY(0);
+    }
+    .rtts-community-pop img {
+      width: 100%; border-radius: 8px; display: block;
+      background: #fff; outline: 1px solid rgba(0,0,0,0.1); outline-offset: -1px;
+    }
+    .rtts-community-pop figcaption {
+      margin-top: 7px; text-align: center;
+      font-size: 11px; line-height: 1.5; color: rgba(255,255,255,0.78);
+    }
+    .rtts-community-pop small { display: block; margin-top: 2px; font-size: 10px; color: rgba(255,255,255,0.45); }
+
     #rtts-show-btn {
       position: fixed; top: 16px; right: 16px;
       z-index: 2147483641;
@@ -1203,6 +1232,17 @@
         <span>\u7B14\u8BB0</span>
         <span id="rtts-notes-badge" class="rtts-badge" hidden>0</span>
       </button>
+
+      <!-- Community: hover shows the QQ group QR code for scanning -->
+      <div class="rtts-community">
+        <button id="rtts-community-btn" class="rtts-btn" data-tip="\u52A0\u5165\u4EA4\u6D41\u7FA4" aria-label="\u52A0\u5165 QQ \u4EA4\u6D41\u7FA4" aria-haspopup="true">
+          <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </button>
+        <figure class="rtts-community-pop" role="img" aria-label="QQ \u7FA4\u4E8C\u7EF4\u7801\uFF1Asnooper \u5B9E\u65F6\u7FFB\u8BD1\u4EA4\u6D41\u7FA4\uFF0C\u7FA4\u53F7 545073970">
+          <img id="rtts-community-qr" alt="" />
+          <figcaption>QQ \u7FA4\uFF1A545073970<small>\u9F20\u6807\u505C\u7559\u626B\u7801\uFF0C\u70B9\u51FB\u590D\u5236\u7FA4\u53F7</small></figcaption>
+        </figure>
+      </div>
 
       <button id="rtts-more-btn" class="rtts-btn" data-tip="\u66F4\u591A\u5DE5\u5177" aria-label="\u66F4\u591A\u5DE5\u5177" aria-haspopup="menu" aria-expanded="false">
         <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>
@@ -2462,6 +2502,21 @@
     drawerTabChat.addEventListener("click", () => setDrawerTab("chat"));
     drawerTabNotes.addEventListener("click", () => setDrawerTab("notes"));
     shadow.getElementById("rtts-drawer-close").addEventListener("click", closeDrawer);
+    const QQ_GROUP_NUMBER = "545073970";
+    const communityBtn = shadow.getElementById("rtts-community-btn");
+    const communityQr = shadow.getElementById("rtts-community-qr");
+    try {
+      communityQr.src = chrome.runtime.getURL("assets/qq-group-qrcode.jpg");
+    } catch {
+    }
+    communityBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(QQ_GROUP_NUMBER);
+        toast(`\u7FA4\u53F7\u5DF2\u590D\u5236\uFF1A${QQ_GROUP_NUMBER}`, "ok");
+      } catch {
+        toast(`\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u52A0\u7FA4\uFF1A${QQ_GROUP_NUMBER}`, "err");
+      }
+    });
     function renderMarkdownLite(text) {
       const escaped = String(text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
       const codeBlocks = [];

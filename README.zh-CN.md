@@ -207,6 +207,17 @@ app/
 - 音频以 6 秒片段发送给 `音频` 路由背后的服务商；图片以 base64 发送给 `LLM` 路由背后的服务商。
 - 服务商地址、密钥与模型选择只留在浏览器。威胁模型见 [SECURITY.md](./SECURITY.md)。
 
+## 社区
+
+加入 QQ 交流群讨论使用问题、翻译技巧和产品反馈：
+
+- **群号**：`545073970`（snooper 实时翻译交流群）
+- 扫描下方二维码加入；也可以在扩展工具栏点击**加入交流群**按钮——鼠标悬浮显示二维码，点击复制群号。
+
+<p align="center">
+  <img src="./docs/screenshots/qq-group-qrcode.jpg" alt="QQ 群二维码 — snooper 实时翻译交流群 545073970" width="320" />
+</p>
+
 ## 参与贡献
 
 提交 PR 前请先读 [CONTRIBUTING.md](./CONTRIBUTING.md)。安全问题请按 [SECURITY.md](./SECURITY.md) 私下报告，不要开公开 issue。

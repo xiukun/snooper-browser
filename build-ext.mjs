@@ -37,4 +37,7 @@ for (const size of [16, 32, 48, 128]) {
   console.log(`  ✅ icons/icon${size}.png → ext/icons/icon${size}.png`);
 }
 
+mkdirSync('ext/assets', { recursive: true });
+cpSync('src/ext/assets', 'ext/assets', { recursive: true });
+
 console.log('✅ Build complete');

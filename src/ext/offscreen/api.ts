@@ -1,0 +1,282 @@
+/**
+ * Offscreen provider calls: ASR, streaming translation, and subtitle Q&A.
+ *
+ * The offscreen document owns the user's config snapshot so the content script
+ * never sees API keys. All requests go straight to the configured provider.
+ */
+
+import type { AppConfig, CapabilityKey } from '../../lib/providers'
+import { LANGUAGES } from '../../lib/models'
+import { buildTranscriptionFormData } from '../../lib/transcription-request'
+import { streamSSE } from './audio'
+
+// Build LANG_NAMES from shared LANGUAGES (single source of truth)
+const LANG_NAMES: Record<string, string> = {}
+for (const lang of LANGUAGES) {
+  LANG_NAMES[lang.code] = lang.label
+}
+
+export function validateRoute(
+  config: AppConfig,
+  capability: CapabilityKey,
+): { provider: any; route: any } {
+  if (!config || !config.routes || !config.providers) {
+    throw new Error('配置缺失')
+  }
+  const route = config.routes[capability]
+  if (!route) throw new Error(`能力 "${capability}" 未配置路由`)
+  const provider = config.providers.find((p) => p.id === route.providerId)
+  if (!provider) throw new Error(`服务商 "${route.providerId}" 未找到`)
+  if (!provider.baseUrl) throw new Error(`服务商 "${provider.name}" 缺少 Base URL`)
+  if (!provider.apiKey) throw new Error(`服务商 "${provider.name}" 缺少 API Key`)
+  if (!route.model) throw new Error(`能力 "${capability}" 未选择模型`)
+  return { provider, route }
+}
+
+async function apiFetch(url: string, options: RequestInit): Promise<any> {
+  const res = await fetch(url, options)
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try {
+      const text = await res.text()
+      if (text) {
+        try {
+          const json = JSON.parse(text)
+          msg = json.error?.message || json.message || text.slice(0, 240)
+        } catch {
+          msg = text.slice(0, 240)
+        }
+      }
+    } catch {
+      // keep default message
+    }
+    throw new Error(msg)
+  }
+  return res.json()
+}
+
+/* ===== Speech-to-text ===== */
+
+/** Transcribe one speech segment through the non-streaming MOSS endpoint. */
+export async function transcribeAudio(
+  wavBlob: Blob,
+  config: AppConfig,
+  sourceLang: string,
+): Promise<string> {
+  const { provider, route } = validateRoute(config, 'audio')
+  const form = buildTranscriptionFormData({
+    model: route.model,
+    file: wavBlob,
+    sourceLang,
+  })
+
+  const baseUrl = provider.baseUrl.replace(/\/+$/, '')
+  const json = await apiFetch(`${baseUrl}/audio/transcriptions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${provider.apiKey}`,
+    },
+    body: form,
+  })
+
+  return (json.text || '').trim()
+}
+
+/* ===== Translation ===== */
+
+export interface TranslateOptions {
+  source: string
+  target: string
+  config: AppConfig
+  context?: string
+  onDelta?: (delta: string) => void
+}
+
+function buildTranslatePrompt(options: TranslateOptions, text: string): string {
+  const source = LANG_NAMES[options.source || 'auto'] || '自动检测'
+  const target = LANG_NAMES[options.target || 'zh'] || '简体中文'
+  const contextBlock = options.context
+    ? `【上下文（最近的字幕）】\n${options.context}\n\n`
+    : ''
+
+  return [
+    `你是一名专业的同声传译员。源语言：${source}；目标语言：${target}。`,
+    '将下面的内容翻译为目标语言。只输出译文本身，不要解释、不要加引号、不要重复原文。',
+    '保持口语化、简洁、适合作为实时字幕显示。',
+    contextBlock ? `注意保持与上下文的连贯性，专有名词前后一致。\n${contextBlock}` : '',
+    '',
+    text,
+  ].filter(Boolean).join('\n')
+}
+
+function cleanTranslation(value: string): string {
+  return value
+    .trim()
+    .replace(/^["“「『]([\s\S]*)["”」』]$/, '$1')
+    .trim()
+}
+
+/**
+ * Translate text via SSE streaming.
+ * Calls onDelta for each text chunk as it arrives.
+ */
+export async function translateTextStream(
+  text: string,
+  options: TranslateOptions,
+): Promise<string> {
+  if (!text) return ''
+
+  const { onDelta } = options
+  const { provider, route } = validateRoute(options.config, 'llm')
+  const promptText = buildTranslatePrompt(options, text)
+  const baseUrl = provider.baseUrl.replace(/\/+$/, '')
+  let fullTranslation = ''
+  let hasError = false
+
+  await streamSSE(
+    `${baseUrl}/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: route.model,
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'text', text: promptText }],
+          },
+        ],
+        temperature: 0.12,
+        max_tokens: 512,
+        stream: true,
+      }),
+    },
+    {
+      onDelta: (delta) => {
+        fullTranslation += delta
+        if (onDelta) onDelta(delta)
+      },
+      onDone: () => {},
+      onError: (err) => {
+        console.warn('[RTTS] Translation SSE failed, falling back:', err.message)
+        hasError = true
+      },
+      allowNonStreamingFallback: true,
+    },
+  )
+
+  if (hasError && !fullTranslation) {
+    fullTranslation = await translateTextSync(text, options)
+    if (onDelta && fullTranslation) {
+      onDelta(fullTranslation)
+    }
+  }
+
+  return cleanTranslation(fullTranslation)
+}
+
+/**
+ * Non-streaming translation fallback.
+ */
+async function translateTextSync(text: string, options: TranslateOptions): Promise<string> {
+  if (!text) return ''
+
+  const { provider, route } = validateRoute(options.config, 'llm')
+  const baseUrl = provider.baseUrl.replace(/\/+$/, '')
+  const json = await apiFetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${provider.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: route.model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: buildTranslatePrompt(options, text),
+            },
+          ],
+        },
+      ],
+      temperature: 0.12,
+      max_tokens: 512,
+      stream: false,
+    }),
+  })
+
+  return cleanTranslation(extractChatText(json))
+}
+
+/* ===== Subtitle Q&A ===== */
+
+export async function askQuestion({ question, context, config, sourceLang, targetLang, signal }: {
+  question: string
+  context: string
+  config: AppConfig
+  sourceLang: string
+  targetLang: string
+  signal?: AbortSignal
+}): Promise<string> {
+  const { provider, route } = validateRoute(config, 'llm')
+
+  const source = LANG_NAMES[sourceLang || 'auto'] || '自动检测'
+  const target = LANG_NAMES[targetLang || 'zh'] || '简体中文'
+
+  const baseUrl = provider.baseUrl.replace(/\/+$/, '')
+  const json = await apiFetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${provider.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: route.model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: [
+                `你是一个视频伴学助手。视频音频的语言：${source}；字幕目标语言：${target}。`,
+                '',
+                context ? `【最近的字幕上下文】\n${context}\n` : '',
+                '请基于以上字幕内容回答用户的问题。用简体中文回答，保持简洁准确。',
+                '',
+                `【用户提问】\n${question}`,
+              ].join('\n'),
+            },
+          ],
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 2048,
+      stream: false,
+    }),
+    signal,
+  })
+
+  return extractChatText(json).trim()
+}
+
+export function extractChatText(json: any): string {
+  const choice = json.choices?.[0]
+  if (choice?.message?.content) {
+    if (typeof choice.message.content === 'string') return choice.message.content
+    return choice.message.content.map((p: any) => p.text || '').join('')
+  }
+  if (choice?.text) return choice.text
+  if (json.output_text) return json.output_text
+  const output = json.output
+    ?.flatMap((item: any) => item.content || [])
+    .map((p: any) => p.text || '')
+    .join('')
+  return output || ''
+}

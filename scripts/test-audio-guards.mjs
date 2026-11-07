@@ -25,7 +25,7 @@ const bundle = (entry, name) => {
   return out;
 };
 
-const { isLikelyAsrHallucination, isLikelyAsrHallucinationSequence } = await import(
+const { isLikelyAsrHallucination, isLikelyAsrHallucinationSequence, isLikelyAsrRepeatLoop } = await import(
   pathToFileURL(bundle('src/lib/asr-guard.ts', 'asr-guard.mjs')).href
 );
 const {
@@ -88,12 +88,16 @@ for (const text of realLines) {
 }
 
 // Generic one-liners can be real dialogue. They become suspicious only when
-// they follow the characteristic counting hallucination burst from the ASR.
+// they follow the characteristic counting hallucination burst from the ASR,
+// or when the same short generic line repeats within a few segments — the
+// reported "Keep it up. / 加油。" loop has no counting line at all.
 // Chinese 谢谢。/加油。 behave the same way after the zh counting burst.
 {
   check('keep standalone generic dialogue', isLikelyAsrHallucination("What's up?"), false);
   check('keep standalone 谢谢', isLikelyAsrHallucination('谢谢。'), false);
   check('keep standalone 加油', isLikelyAsrHallucination('加油。'), false);
+  check('keep standalone 小心', isLikelyAsrHallucination('小心。'), false);
+  check('keep standalone Be careful', isLikelyAsrHallucination('Be careful.'), false);
   const burst = [
     'One, two, three, four, five, six, seven, eight, nine, ten.',
     "What's up?",
@@ -115,6 +119,68 @@ for (const text of realLines) {
     check(`drop zh hallucination sequence: ${text.slice(0, 12)}`, isLikelyAsrHallucinationSequence(zhHistory, text), true);
     zhHistory.push(text);
   }
+
+  // The user-reported pattern: a repeat loop with no counting burst. Driven
+  // through a faithful simulation of the capture.ts state machine: rejected
+  // lines feed the burst window (cleared on accept), all lines feed the
+  // repeat window.
+  const pipeline = () => {
+    let candidates = [];
+    let window = [];
+    return (text) => {
+      const dropped =
+        isLikelyAsrHallucinationSequence(candidates, text) ||
+        isLikelyAsrRepeatLoop(window, text);
+      if (dropped) {
+        candidates = [...candidates.slice(-5), text];
+      } else {
+        candidates = [];
+      }
+      window = [...window.slice(-2), text];
+      return dropped;
+    };
+  };
+
+  // Each occurrence is accepted until the repeat confirms the loop; after
+  // the confirmation the burst window is hot and new generic lines drop.
+  const enPipe = pipeline();
+  check('reported: first Keep it up accepted', enPipe('Keep it up.'), false);
+  check('reported: first Be careful accepted', enPipe('Be careful.'), false);
+  check('reported: repeated Keep it up dropped', enPipe('Keep it up.'), true);
+  check('reported: You go dropped (burst active)', enPipe('You go.'), true);
+  // A genuine coach line resets the burst window and evicts the loop from
+  // the repeat window, so speech returns to normal immediately.
+  check('recovery: real sentence accepted', enPipe('Nice depth on that squat, keep your back straight'), false);
+  check('recovery: generic line accepted again', enPipe('Be careful.'), false);
+
+  const zhPipe = pipeline();
+  check('zh reported: first 加油 accepted', zhPipe('加油。'), false);
+  check('zh reported: first 小心 accepted', zhPipe('小心。'), false);
+  check('zh reported: repeated 加油 dropped', zhPipe('加油。'), true);
+  check('zh reported: 你去 dropped (burst active)', zhPipe('你去。'), true);
+  check('zh recovery: real sentence accepted', zhPipe('这个动作要慢一点，腰背挺直'), false);
+  check('zh recovery: generic line accepted again', zhPipe('小心。'), false);
+}
+
+// whisper-guard L4: a 2–4 char unit looped 3+ times is a decoder loop.
+{
+  check('char loop zh: 加油x3', isLikelyAsrHallucination('加油加油加油'), true);
+  check('char loop en: xyzxyzxyz', isLikelyAsrHallucination('xyzxyzxyzxyz'), true);
+  check('char loop with punctuation', isLikelyAsrHallucination('小心。小心。小心。'), true);
+  check('two repeats is still speech', isLikelyAsrHallucination('加油加油'), false);
+  check('longer real phrase with repetition passes', isLikelyAsrHallucination('我们一起加油，一起努力'), false);
+}
+
+// Exact-repeat loop: the repeat rule is restricted to the generic stock
+// lines — arbitrary short repeats ("你好吗" twice) are real echo/chant
+// dialogue and must pass.
+{
+  const h1 = [];
+  check('echo dialogue: 你好吗 twice passes', isLikelyAsrHallucinationSequence(h1, '你好吗'), false);
+  check('echo dialogue: repeated 你好吗 not a loop', isLikelyAsrRepeatLoop(['你好吗'], '你好吗。'), false);
+  check('echo dialogue: long line passes alone', isLikelyAsrHallucinationSequence([], '今天我们要讲的内容是关于浏览器扩展开发的一些基本概念和最佳实践'), false);
+  check('exact repeat: thank you loop confirmed', isLikelyAsrRepeatLoop(['Thank you.'], 'Thank you!'), true);
+  check('exact repeat: zh 谢谢 loop confirmed', isLikelyAsrRepeatLoop(['谢谢。'], '谢谢！'), true);
 }
 
 /* ---------- 2. Energy gate + trimming ---------- */

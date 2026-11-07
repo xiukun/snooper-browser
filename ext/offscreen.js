@@ -470,15 +470,34 @@ ${question}`
   var ANNOTATION_ONLY = /^[\[(（【]?\s*(whistle|music|silence|blank_?audio|inaudible|noise|applause|laughter|sighs?|音乐|掌声|笑声|静音|無音)\s*[\])）】]?$/i;
   var NO_CONTENT = /^(?:[0-9\s.,，、:：;；!！?？'"“”‘’()（）\-—–_*/\\|]+|[.…·\s]+)$/;
   var DEGENERATE_RUN = /(.)\1{7,}/u;
+  function isCharacterLoop(text) {
+    const t = normalize(text).replace(/[。.!！?？…，,、;；:：\s]+/g, "");
+    if (t.length < 6) return false;
+    for (let len = 2; len <= 4; len++) {
+      const unit = t.slice(0, len);
+      if (!unit) continue;
+      let repeats = 1;
+      let pos = len;
+      while (pos + len <= t.length && t.slice(pos, pos + len) === unit) {
+        repeats++;
+        pos += len;
+      }
+      if (repeats >= 3) return true;
+    }
+    return false;
+  }
   function normalize(text) {
     return String(text || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  }
+  function bareText(text) {
+    return normalize(text).replace(/[。.!！?？…\s]+$/g, "");
   }
   function normalizeEnglish(text) {
     return normalize(text).toLowerCase().replace(/[^a-z]+/g, " ").trim();
   }
-  var GENERIC_BURST_LINES = /* @__PURE__ */ new Set(["what s up", "keep it up", "thank you"]);
+  var GENERIC_BURST_LINES = /* @__PURE__ */ new Set(["what s up", "keep it up", "thank you", "be careful", "you go"]);
   var COUNTING_BURST_LINE = "one two three four five six seven eight nine ten";
-  var GENERIC_BURST_LINES_ZH = /* @__PURE__ */ new Set(["\u8C22\u8C22", "\u52A0\u6CB9"]);
+  var GENERIC_BURST_LINES_ZH = /* @__PURE__ */ new Set(["\u8C22\u8C22", "\u52A0\u6CB9", "\u5C0F\u5FC3", "\u4F60\u53BB"]);
   var COUNTING_BURST_LINE_ZH = "\u4E00\u4E8C\u4E09\u56DB\u4E94\u516D\u4E03\u516B\u4E5D\u5341";
   function normalizeChineseCounting(text) {
     return normalize(text).replace(/[、,，\s。.!！?？…]/g, "");
@@ -492,17 +511,41 @@ ${question}`
     if (NO_CONTENT.test(t)) return true;
     if (STOCK_LINES.some((re) => re.test(bare))) return true;
     if (DEGENERATE_RUN.test(t)) return true;
+    if (isCharacterLoop(t)) return true;
     return false;
   }
-  function isLikelyAsrHallucinationSequence(history, text) {
+  function isLikelyAsrHallucinationSequence(rejectedHistory, text) {
     if (isLikelyAsrHallucination(text)) return true;
+    const recent = rejectedHistory.slice(-4);
     const current = normalizeEnglish(text);
     if (GENERIC_BURST_LINES.has(current)) {
-      return history.slice(-4).some((candidate) => normalizeEnglish(candidate) === COUNTING_BURST_LINE);
+      if (recent.some((candidate) => normalizeEnglish(candidate) === COUNTING_BURST_LINE)) {
+        return true;
+      }
+      if (recent.some((candidate) => GENERIC_BURST_LINES.has(normalizeEnglish(candidate)))) {
+        return true;
+      }
     }
-    const bareZh = normalize(text).replace(/[。.!！?？…\s]+$/g, "");
+    const bareZh = bareText(text);
     if (GENERIC_BURST_LINES_ZH.has(bareZh)) {
-      return history.slice(-4).some((candidate) => normalizeChineseCounting(candidate) === COUNTING_BURST_LINE_ZH);
+      if (recent.some((candidate) => normalizeChineseCounting(candidate) === COUNTING_BURST_LINE_ZH)) {
+        return true;
+      }
+      if (recent.some((candidate) => GENERIC_BURST_LINES_ZH.has(bareText(candidate)))) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function isLikelyAsrRepeatLoop(fullWindow, text) {
+    const currentEn = normalizeEnglish(text);
+    if (GENERIC_BURST_LINES.has(currentEn)) {
+      if (fullWindow.some((candidate) => normalizeEnglish(candidate) === currentEn)) return true;
+      return false;
+    }
+    const currentZh = bareText(text);
+    if (GENERIC_BURST_LINES_ZH.has(currentZh)) {
+      return fullWindow.some((candidate) => bareText(candidate) === currentZh);
     }
     return false;
   }
@@ -593,7 +636,8 @@ ${question}`
       frameRms: [],
       frameLens: [],
       audioSilent: false,
-      recentAsrCandidates: []
+      recentAsrCandidates: [],
+      recentAsrWindow: []
     };
     captureSessions.set(tabId, session);
     ensureKeepAlive();
@@ -836,20 +880,32 @@ ${question}`
         session.recentAsrCandidates,
         transcription
       );
-      if (isHallucination) {
+      const isRepeatLoop = isLikelyAsrRepeatLoop(session.recentAsrWindow, transcription);
+      if (isHallucination || isRepeatLoop) {
         console.warn("[RTTS] dropped likely ASR hallucination:", {
           text: transcription,
+          burst: isHallucination,
+          repeatLoop: isRepeatLoop,
           durationMs: Math.round(durationMs),
           speechMs,
-          recentCandidates: [...session.recentAsrCandidates]
+          recentCandidates: [...session.recentAsrCandidates],
+          recentWindow: [...session.recentAsrWindow]
         });
         session.recentAsrCandidates = [
           ...session.recentAsrCandidates.slice(-5),
           transcription
         ];
+        session.recentAsrWindow = [
+          ...session.recentAsrWindow.slice(-5),
+          transcription
+        ];
         return;
       }
       session.recentAsrCandidates = [];
+      session.recentAsrWindow = [
+        ...session.recentAsrWindow.slice(-2),
+        transcription
+      ];
       const asrLatency = Math.round(performance.now() - t0);
       if (shouldSkipTranslation(session.sourceLang, session.targetLang, transcription)) {
         const passthroughLatency = Math.round(performance.now() - t0 + (Date.now() - segmentStartTime));

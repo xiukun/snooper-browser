@@ -11,6 +11,7 @@ import { shouldSkipTranslation } from '../../lib/passthrough'
 import {
   isLikelyAsrHallucination,
   isLikelyAsrHallucinationSequence,
+  isLikelyAsrRepeatLoop,
 } from '../../lib/asr-guard'
 import {
   computeRMS,
@@ -58,8 +59,20 @@ export interface CaptureSession {
   /** True while the last few seconds produced nothing above the gate. */
   audioSilent: boolean
   recentContext?: { source: string; target: string }[]
-  /** Recent ASR candidates used to identify multi-segment noise bursts. */
+  /**
+   * Rejected ASR lines — burst evidence. Cleared whenever a line is accepted,
+   * so only the current noise episode counts.
+   */
   recentAsrCandidates: string[]
+  /**
+   * All recent ASR lines, accepted and rejected — repeat evidence. Only a
+   * loop that survives a real transcript is impossible, so the window resets
+   * on accepted lines too... except the loop signature itself (see
+   * finalizeSegment: an accepted generic stock line is still recorded here,
+   * because the very first repeat needs one accepted generic line before the
+   * second one can be confirmed as a loop).
+   */
+  recentAsrWindow: string[]
 }
 
 export const captureSessions = new Map<number, CaptureSession>()
@@ -120,6 +133,7 @@ export async function startTabCapture({ tabId, streamId, sourceLang, targetLang,
     frameLens: [],
     audioSilent: false,
     recentAsrCandidates: [],
+    recentAsrWindow: [],
   }
   captureSessions.set(tabId, session)
   ensureKeepAlive()
@@ -450,19 +464,27 @@ async function finalizeSegment(tabId: number) {
       session.recentAsrCandidates,
       transcription,
     )
-    if (isHallucination) {
+    const isRepeatLoop = isLikelyAsrRepeatLoop(session.recentAsrWindow, transcription)
+    if (isHallucination || isRepeatLoop) {
       // Loud music and encoder noise still reach the model even with energy
       // gating. Drop the stock phrases instead of translating them. The
       // duration and level make it possible to tune the energy gate when a
       // new hallucination pattern slips through.
       console.warn('[RTTS] dropped likely ASR hallucination:', {
         text: transcription,
+        burst: isHallucination,
+        repeatLoop: isRepeatLoop,
         durationMs: Math.round(durationMs),
         speechMs,
         recentCandidates: [...session.recentAsrCandidates],
+        recentWindow: [...session.recentAsrWindow],
       })
       session.recentAsrCandidates = [
         ...session.recentAsrCandidates.slice(-5),
+        transcription,
+      ]
+      session.recentAsrWindow = [
+        ...session.recentAsrWindow.slice(-5),
         transcription,
       ]
       return
@@ -470,6 +492,15 @@ async function finalizeSegment(tabId: number) {
     // A real subtitle breaks a suspected noise burst. Keeping only rejected
     // candidates avoids carrying a stale counting phrase into later dialogue.
     session.recentAsrCandidates = []
+      // The repeat window is the last three lines regardless of verdict:
+      // the first "Keep it up." is accepted, and only the second can
+      // confirm the loop (cycles of period ≤ 3 repeat within three lines).
+      // Three lines also means one long real line evicts the loop from the
+      // window, so genuine speech recovers immediately.
+      session.recentAsrWindow = [
+        ...session.recentAsrWindow.slice(-2),
+        transcription,
+      ]
 
     const asrLatency = Math.round(performance.now() - t0)
 

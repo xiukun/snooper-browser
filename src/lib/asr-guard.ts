@@ -15,6 +15,17 @@
  * into confident bilingual nonsense. Energy gating upstream prevents most of
  * it; this list catches what slips through (loud music, encoder noise).
  *
+ * The provider used here returns only `json.text` — no no_speech_prob /
+ * avg_logprob / compression_ratio — so server-side metric filtering
+ * (whisper-guard's L1/L2) is impossible. Everything below is the text-side
+ * analogue of what those packages do, informed by:
+ *
+ *   - whisper-guard (vulture-s) L3 repetition: unique-chunk ratio < 0.35
+ *   - whisper-guard L4 char loops: 2–4 chars repeated 3+ times
+ *   - Vexa hallucination blocklists (135+ en phrases, community zh/ja)
+ *   - whisper-cleanup: short everyday phrases need context, not a ban
+ *   - openai/whisper#1873 production post-filter (repeated-line cut)
+ *
  * Kept deliberately narrow: it must never eat real dialogue.
  */
 
@@ -45,6 +56,29 @@ const NO_CONTENT = /^(?:[0-9\s.,，、:：;；!！?？'"“”‘’()（）\-�
 /** A single character repeated 8+ times ("啊啊啊啊啊啊啊啊"). */
 const DEGENERATE_RUN = /(.)\1{7,}/u;
 
+/**
+ * whisper-guard L4: a short unit looped several times is a decoder loop, not
+ * speech. The unit is 2–4 characters ("加油加油加油", "xyzxyzxyzxyz"); a
+ * single repeated char is already covered by DEGENERATE_RUN. All punctuation
+ * is stripped first — "小心。小心。小心。" is the same loop as "小心小心小心".
+ */
+function isCharacterLoop(text: string): boolean {
+  const t = normalize(text).replace(/[。.!！?？…，,、;；:：\s]+/g, '');
+  if (t.length < 6) return false;
+  for (let len = 2; len <= 4; len++) {
+    const unit = t.slice(0, len);
+    if (!unit) continue;
+    let repeats = 1;
+    let pos = len;
+    while (pos + len <= t.length && t.slice(pos, pos + len) === unit) {
+      repeats++;
+      pos += len;
+    }
+    if (repeats >= 3) return true;
+  }
+  return false;
+}
+
 function normalize(text: string): string {
   return String(text || '')
     .replace(/\u00a0/g, ' ')
@@ -52,13 +86,18 @@ function normalize(text: string): string {
     .trim();
 }
 
+/** normalize + trailing-punctuation strip: the comparable form of a line. */
+function bareText(text: string): string {
+  return normalize(text).replace(/[。.!！?？…\s]+$/g, '');
+}
+
 function normalizeEnglish(text: string): string {
   return normalize(text).toLowerCase().replace(/[^a-z]+/g, ' ').trim();
 }
 
-const GENERIC_BURST_LINES = new Set(['what s up', 'keep it up', 'thank you']);
+const GENERIC_BURST_LINES = new Set(['what s up', 'keep it up', 'thank you', 'be careful', 'you go']);
 const COUNTING_BURST_LINE = 'one two three four five six seven eight nine ten';
-const GENERIC_BURST_LINES_ZH = new Set(['谢谢', '加油']);
+const GENERIC_BURST_LINES_ZH = new Set(['谢谢', '加油', '小心', '你去']);
 const COUNTING_BURST_LINE_ZH = '一二三四五六七八九十';
 
 /** Normalize a zh counting line to its bare digits so separators don't matter. */
@@ -82,33 +121,76 @@ export function isLikelyAsrHallucination(text: string): boolean {
   if (NO_CONTENT.test(t)) return true;
   if (STOCK_LINES.some((re) => re.test(bare))) return true;
   if (DEGENERATE_RUN.test(t)) return true;
+  if (isCharacterLoop(t)) return true;
 
   return false;
 }
 
 /**
- * Detect the characteristic multi-segment noise burst shown by Whisper-like
- * models. The generic lines are intentionally not rejected on their own:
- * they are common, valid dialogue in a real programme.
+ * Burst evidence window (rejected lines only, maintained by capture.ts).
+ *
+ * Generic one-liners are common, valid dialogue — standalone they must pass.
+ * They become hallucination evidence only in company:
+ *
+ *   1. right after the characteristic counting burst (original guard), or
+ *   2. while a generic line is already under suspicion — the tail of a noise
+ *      burst continues emitting stock lines ("Keep it up. / You go.") even
+ *      though no two of them repeat.
  */
-export function isLikelyAsrHallucinationSequence(history: string[], text: string): boolean {
+export function isLikelyAsrHallucinationSequence(rejectedHistory: string[], text: string): boolean {
   if (isLikelyAsrHallucination(text)) return true;
 
+  const recent = rejectedHistory.slice(-4);
   const current = normalizeEnglish(text);
+
   if (GENERIC_BURST_LINES.has(current)) {
-    return history
-      .slice(-4)
-      .some((candidate) => normalizeEnglish(candidate) === COUNTING_BURST_LINE);
+    if (recent.some((candidate) => normalizeEnglish(candidate) === COUNTING_BURST_LINE)) {
+      return true;
+    }
+    if (recent.some((candidate) => GENERIC_BURST_LINES.has(normalizeEnglish(candidate)))) {
+      return true;
+    }
   }
 
-  // zh burst: bare 谢谢/加油 are common real dialogue, but right after the
-  // zh counting line they are the same noise signature as the English burst.
-  const bareZh = normalize(text).replace(/[。.!！?？…\s]+$/g, '');
+  // zh burst: bare 谢谢/加油 are common real dialogue, but a counting-burst
+  // neighbour or a second generic line inside an active zh burst are the
+  // noise signature.
+  const bareZh = bareText(text);
   if (GENERIC_BURST_LINES_ZH.has(bareZh)) {
-    return history
-      .slice(-4)
-      .some((candidate) => normalizeChineseCounting(candidate) === COUNTING_BURST_LINE_ZH);
+    if (recent.some((candidate) => normalizeChineseCounting(candidate) === COUNTING_BURST_LINE_ZH)) {
+      return true;
+    }
+    if (recent.some((candidate) => GENERIC_BURST_LINES_ZH.has(bareText(candidate)))) {
+      return true;
+    }
   }
 
+  return false;
+}
+
+/**
+ * Repeat confirmation window (ALL recent lines — accepted and rejected alike,
+ * maintained by capture.ts).
+ *
+ * The reported failure mode is a loop: "Keep it up. / 加油。" cycling over
+ * noise forever. Each member passes standalone, and the burst evidence window
+ * is cleared on every accept, so the loop never accumulates evidence there.
+ * Only the full window can confirm it: a real speaker does not emit the same
+ * 2–3 word stock line as separate back-to-back segments, a noise decoder does
+ * (openai/whisper#1873 drops exact repeats for the same reason).
+ *
+ * Deliberately restricted to the generic stock lines. Arbitrary short
+ * repeats ("你好吗" twice) stay — echo/chant dialogue is real.
+ */
+export function isLikelyAsrRepeatLoop(fullWindow: string[], text: string): boolean {
+  const currentEn = normalizeEnglish(text);
+  if (GENERIC_BURST_LINES.has(currentEn)) {
+    if (fullWindow.some((candidate) => normalizeEnglish(candidate) === currentEn)) return true;
+    return false;
+  }
+  const currentZh = bareText(text);
+  if (GENERIC_BURST_LINES_ZH.has(currentZh)) {
+    return fullWindow.some((candidate) => bareText(candidate) === currentZh);
+  }
   return false;
 }

@@ -12,7 +12,7 @@
 
 import type { AppConfig } from '../lib/providers'
 import { openToolbarForTab } from './action-flow'
-import { forceReleaseOffscreenDocument, waitForCaptureRelease } from './capture-recovery'
+import { describeCaptureSuspects, forceReleaseOffscreenDocument, waitForCaptureRelease } from './capture-recovery'
 import { reconcileSessionWithCapture } from './session-state'
 
 /* ===== Constants ===== */
@@ -857,6 +857,17 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
             friendly = '旧录音流未能释放。请刷新页面后重试；若仍失败，请在扩展管理页重新加载 snooper 后再试';
           } else if (/录音组件释放超时|其他标签页仍在录音|无法确认其他录音状态/i.test(msg)) {
             friendly = '浏览器仍占用本页的录音流。请先停止其他标签页的录音，再刷新本页重试';
+          } else if (/重置后仍被浏览器占用|录音流在重置后仍被/i.test(msg)) {
+            const suspects = await describeCaptureSuspects(
+              await chrome.management.getAll().then((all) =>
+                all
+                  .filter((e) => (e.permissions || []).includes('tabCapture'))
+                  .map((e) => ({ name: e.name, id: e.id })),
+              ).catch(() => []),
+            );
+            friendly = suspects
+              ? `浏览器仍占用本页的录音流，疑似来自：${suspects}。请停用对应扩展后重试`
+              : '浏览器仍占用本页的录音流。请关闭其他录音扩展或标签页，完全退出并重新打开 Chrome 后再试';
           } else if (/not been invoked|activeTab/i.test(msg)) {
             friendly = '需要先完成一次授权：点击浏览器工具栏的 snooper 图标（弹出的面板可立即关闭），之后本页可直接使用';
           } else if (/permission|Permission|not allowed|not permitted/i.test(msg)) {

@@ -52,6 +52,9 @@ declare namespace chrome {
   namespace tabCapture {
     function getMediaStreamId(options: { targetTabId: number }, callback: (streamId: string) => void): void
   }
+  namespace management {
+    function getAll(): Promise<any[]>
+  }
   namespace permissions {
     function request(permissions: { origins?: string[]; permissions?: string[] }): Promise<boolean>
   }

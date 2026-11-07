@@ -148,6 +148,7 @@ The ZIP is intentionally readable and contains no encrypted or remotely loaded c
 | `storage` | Stores provider settings, notes, history, Obsidian settings, and session recovery in extension storage. |
 | `tabCapture`, `offscreen` | Captures and processes tab audio after the user starts transcription. |
 | `sidePanel` | Provides the optional notes, history, and Obsidian panel. |
+| `management` | Read-only: when another extension holds the capture stream, the error hint lists which extensions hold the `tabCapture` permission. |
 | `<all_urls>` | Allows the user-invoked toolbar to work on arbitrary websites. |
 
 Audio goes to the configured Audio provider only during transcription. Chat text and images go to the configured LLM or Image provider only when submitted. Notes, history, and API keys stay in the browser unless the user explicitly exports a file or enables Obsidian sync. See [SECURITY.md](./SECURITY.md) for the threat model.

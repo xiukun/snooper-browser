@@ -496,6 +496,11 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     .rtts-community:focus-within .rtts-community-pop {
       opacity: 1; pointer-events: auto; transform: translateY(0);
     }
+    /* While the QR popover is up, the button's own tooltip would overlap it. */
+    #rtts-bar .rtts-community:hover .rtts-btn::after,
+    #rtts-bar .rtts-community:focus-within .rtts-btn::after {
+      opacity: 0;
+    }
     .rtts-community-pop img {
       width: 100%; border-radius: 8px; display: block;
       background: #fff; outline: 1px solid rgba(0,0,0,0.1); outline-offset: -1px;

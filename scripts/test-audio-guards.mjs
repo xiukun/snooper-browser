@@ -64,6 +64,10 @@ const hallucinations = [
   'ご視聴ありがとうございました',
   '啊啊啊啊啊啊啊啊',
   'One, two, three, four, five, six, seven, eight, nine, ten.',
+  '一、二、三、四、五、六、七、八、九、十。',
+  '一、二、三、四、五、六、七、八、九、十',
+  '一 二 三 四 五 六 七 八 九 十',
+  '一二三四五六七八九十',
 ];
 
 const realLines = [
@@ -85,8 +89,11 @@ for (const text of realLines) {
 
 // Generic one-liners can be real dialogue. They become suspicious only when
 // they follow the characteristic counting hallucination burst from the ASR.
+// Chinese 谢谢。/加油。 behave the same way after the zh counting burst.
 {
   check('keep standalone generic dialogue', isLikelyAsrHallucination("What's up?"), false);
+  check('keep standalone 谢谢', isLikelyAsrHallucination('谢谢。'), false);
+  check('keep standalone 加油', isLikelyAsrHallucination('加油。'), false);
   const burst = [
     'One, two, three, four, five, six, seven, eight, nine, ten.',
     "What's up?",
@@ -97,6 +104,16 @@ for (const text of realLines) {
   for (const text of burst) {
     check(`drop hallucination sequence: ${text.slice(0, 20)}`, isLikelyAsrHallucinationSequence(history, text), true);
     history.push(text);
+  }
+  const zhBurst = [
+    '一、二、三、四、五、六、七、八、九、十。',
+    '谢谢。',
+    '加油。',
+  ];
+  const zhHistory = [];
+  for (const text of zhBurst) {
+    check(`drop zh hallucination sequence: ${text.slice(0, 12)}`, isLikelyAsrHallucinationSequence(zhHistory, text), true);
+    zhHistory.push(text);
   }
 }
 

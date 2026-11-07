@@ -69,7 +69,7 @@
   var STOCK_LINES = [
     // English
     /^(who are you|i need to go eat|i'?ll reach out to you|thank you for watching|thanks for watching|thanks? for (liking|subscribing)|please subscribe|like and subscribe|see you (next|in the next) (time|video))(?:[\s.!?…]*)$/i,
-    /^one[,.\s]+two[,.\s]+three[,.\s]+four[,.\s]+five[,.\s]+six[,.\s]+seven[,.\s]+eight[,.\s]+nine[,.\s]+ten[.!?…]*$/i,
+    /^(one[,.\s]+two[,.\s]+three[,.\s]+four[,.\s]+five[,.\s]+six[,.\s]+seven[,.\s]+eight[,.\s]+nine[,.\s]+ten|一[、,，\s]+二[、,，\s]+三[、,，\s]+四[、,，\s]+五[、,，\s]+六[、,，\s]+七[、,，\s]+八[、,，\s]+九[、,，\s]+十|一二三四五六七八九十)[.!?…。]*$/i,
     /^(subtitles? (by|provided by)|captions? by|transcri(bed|ption) by)\b.*$/i,
     /^(amara\.org|www\.amara\.org).*$/i,
     // Chinese: `\b` never matches between CJK characters, so these use explicit
@@ -93,6 +93,11 @@
   }
   var GENERIC_BURST_LINES = /* @__PURE__ */ new Set(["what s up", "keep it up", "thank you"]);
   var COUNTING_BURST_LINE = "one two three four five six seven eight nine ten";
+  var GENERIC_BURST_LINES_ZH = /* @__PURE__ */ new Set(["\u8C22\u8C22", "\u52A0\u6CB9"]);
+  var COUNTING_BURST_LINE_ZH = "\u4E00\u4E8C\u4E09\u56DB\u4E94\u516D\u4E03\u516B\u4E5D\u5341";
+  function normalizeChineseCounting(text) {
+    return normalize(text).replace(/[、,，\s。.!！?？…]/g, "");
+  }
   function isLikelyAsrHallucination(text) {
     const t = normalize(text);
     if (!t) return true;
@@ -107,8 +112,14 @@
   function isLikelyAsrHallucinationSequence(history, text) {
     if (isLikelyAsrHallucination(text)) return true;
     const current = normalizeEnglish(text);
-    if (!GENERIC_BURST_LINES.has(current)) return false;
-    return history.slice(-4).some((candidate) => normalizeEnglish(candidate) === COUNTING_BURST_LINE);
+    if (GENERIC_BURST_LINES.has(current)) {
+      return history.slice(-4).some((candidate) => normalizeEnglish(candidate) === COUNTING_BURST_LINE);
+    }
+    const bareZh = normalize(text).replace(/[。.!！?？…\s]+$/g, "");
+    if (GENERIC_BURST_LINES_ZH.has(bareZh)) {
+      return history.slice(-4).some((candidate) => normalizeChineseCounting(candidate) === COUNTING_BURST_LINE_ZH);
+    }
+    return false;
   }
 
   // src/lib/audio-segments.ts
@@ -740,12 +751,23 @@ ${contextBlock}` : "",
       const transcription = await transcribeAudio(wavBlob, session.config, session.sourceLang);
       if (session.aborted) return;
       if (!transcription) return;
+      console.log("[RTTS] ASR segment:", {
+        text: transcription,
+        durationMs: Math.round(durationMs),
+        speechMs,
+        sourceLang: session.sourceLang
+      });
       const isHallucination = isLikelyAsrHallucinationSequence(
         session.recentAsrCandidates,
         transcription
       );
       if (isHallucination) {
-        console.warn("[RTTS] dropped likely ASR hallucination:", transcription);
+        console.warn("[RTTS] dropped likely ASR hallucination:", {
+          text: transcription,
+          durationMs: Math.round(durationMs),
+          speechMs,
+          recentCandidates: [...session.recentAsrCandidates]
+        });
         session.recentAsrCandidates = [
           ...session.recentAsrCandidates.slice(-5),
           transcription
@@ -757,6 +779,11 @@ ${contextBlock}` : "",
       if (shouldSkipTranslation(session.sourceLang, session.targetLang, transcription)) {
         const passthroughLatency = Math.round(performance.now() - t0 + (Date.now() - segmentStartTime));
         if (session.aborted) return;
+        console.log("[RTTS] subtitle emitted:", {
+          source: transcription,
+          target: transcription,
+          passthrough: true
+        });
         chrome.runtime.sendMessage({
           type: "CAPTURE_SUBTITLE",
           tabId,
@@ -811,6 +838,11 @@ ${contextBlock}` : "",
         pushContext(session, transcription, translation);
       }
       if (session.aborted) return;
+      console.log("[RTTS] subtitle emitted:", {
+        source: transcription,
+        target: translation,
+        passthrough: false
+      });
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE",
         tabId,

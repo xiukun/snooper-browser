@@ -40,7 +40,13 @@ function manifestReferences(m) {
 }
 
 const references = manifestReferences(manifest);
-const missing = references.filter((ref) => !existsSync(join(extensionDir, ref)));
+const missing = references.filter((ref) => {
+  if (ref.endsWith('/*')) {
+    const directory = join(extensionDir, ref.slice(0, -2));
+    return !existsSync(directory) || readdirSync(directory).length === 0;
+  }
+  return !existsSync(join(extensionDir, ref));
+});
 if (missing.length > 0) {
   throw new Error(`Manifest references missing files:\n${missing.map((ref) => `  - ext/${ref}`).join('\n')}`);
 }

@@ -4,6 +4,8 @@ export interface CaptureReleaseOptions {
   sleep?: (delayMs: number) => Promise<void>
 }
 
+export type OffscreenReleaseResult = 'busy' | 'released' | 'timeout'
+
 /** Wait until the browser no longer reports a live tab-capture session. */
 export async function waitForCaptureRelease(
   isCaptureAlive: () => Promise<boolean>,
@@ -19,4 +21,21 @@ export async function waitForCaptureRelease(
   }
 
   return false
+}
+
+/**
+ * Close an offscreen document that has lost its in-memory session state while
+ * Chrome still owns the underlying tab-capture stream.
+ */
+export async function forceReleaseOffscreenDocument(
+  getActiveTabIds: () => Promise<number[]>,
+  closeDocument: () => Promise<void>,
+  hasDocument: () => Promise<boolean>,
+  options: CaptureReleaseOptions = {},
+): Promise<OffscreenReleaseResult> {
+  if ((await getActiveTabIds()).length > 0) return 'busy'
+
+  await closeDocument()
+  const released = await waitForCaptureRelease(hasDocument, options)
+  return released ? 'released' : 'timeout'
 }

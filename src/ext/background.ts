@@ -12,6 +12,7 @@
 
 import type { AppConfig } from '../lib/providers'
 import { openToolbarForTab } from './action-flow'
+import { waitForCaptureRelease } from './capture-recovery'
 import { reconcileSessionWithCapture } from './session-state'
 
 /* ===== Constants ===== */
@@ -257,17 +258,31 @@ function safeSession(s: SessionState) {
  * before START: a restarted service worker may have left an old capture
  * alive, and tabCapture rejects a second stream for the same tab.
  */
-async function stopOrphanCapture(tabId: number) {
-  if (!(await hasOffscreenDocument())) return;
-  try {
-    await chrome.runtime.sendMessage({
+async function stopOrphanCapture(tabId: number): Promise<boolean> {
+  if (!(await hasOffscreenDocument())) return true;
+
+  const response: any = await chrome.runtime.sendMessage({
       target: 'offscreen',
       type: 'STOP_CAPTURE',
       tabId,
     });
-  } catch {
-    // Offscreen may be shutting down; best-effort.
+  if (!response?.ok) {
+    throw new Error(response?.error || '无法停止旧录音流');
   }
+
+  const released = await waitForCaptureRelease(
+    async () => {
+      const live = await chrome.runtime.sendMessage({
+        target: 'offscreen',
+        type: 'GET_CAPTURE_SESSIONS',
+      }) as any;
+      if (!live?.ok) throw new Error(live?.error || '无法确认旧录音流状态');
+      return typeof live.sessions?.[String(tabId)] === 'number';
+    },
+    { maxAttempts: 10, delayMs: 100 },
+  );
+  if (!released) throw new Error('旧录音流释放超时');
+  return true;
 }
 
 async function checkAndCloseOffscreen() {
@@ -764,9 +779,9 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
             streamId = await requestStreamId();
           } catch (err: any) {
             if (!/active stream/i.test(err?.message || '')) throw err;
-            // Offscreen teardown is asynchronous – clean once more and retry.
+            // Offscreen teardown is asynchronous. Confirm the old capture is
+            // gone before asking Chrome for a replacement stream id.
             await stopOrphanCapture(tabId);
-            await new Promise((resolve) => setTimeout(resolve, 500));
             streamId = await requestStreamId();
           }
 
@@ -801,6 +816,8 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
           // if it does (e.g. Chrome internal pages), guide the user clearly.
           if (/active stream/i.test(msg)) {
             friendly = '该标签页仍有残留录音流（扩展后台重启所致）。已自动清理，请再点一次「录音」；若仍失败，请刷新页面后重试';
+          } else if (/旧录音流释放超时|无法停止旧录音流|无法确认旧录音流状态/i.test(msg)) {
+            friendly = '旧录音流未能释放。请刷新页面后重试；若仍失败，请在扩展管理页重新加载 snooper 后再试';
           } else if (/not been invoked|activeTab/i.test(msg)) {
             friendly = '需要先完成一次授权：点击浏览器工具栏的 snooper 图标（弹出的面板可立即关闭），之后本页可直接使用';
           } else if (/permission|Permission|not allowed|not permitted/i.test(msg)) {

@@ -1041,13 +1041,6 @@ async function stopTabCapture(tabId: number) {
     session.workletNode = null;
   }
 
-  if (session.audioCtx && session.audioCtx.state !== 'closed') {
-    await session.audioCtx.close();
-  }
-  if (session.monitorAudioCtx && session.monitorAudioCtx.state !== 'closed') {
-    await session.monitorAudioCtx.close();
-  }
-
   if (session.videoEl) {
     session.videoEl.pause();
     session.videoEl.srcObject = null;
@@ -1058,6 +1051,18 @@ async function stopTabCapture(tabId: number) {
   if (session.mediaStream) {
     session.mediaStream.getTracks().forEach((track) => track.stop());
   }
+
+  // Stop the native tab-capture tracks before waiting on Web Audio teardown.
+  // Chrome will otherwise keep the tab stream active while an AudioContext is
+  // closing, causing the next tabCapture.getMediaStreamId() to be rejected.
+  await Promise.allSettled([
+    session.audioCtx && session.audioCtx.state !== 'closed'
+      ? session.audioCtx.close()
+      : Promise.resolve(),
+    session.monitorAudioCtx && session.monitorAudioCtx.state !== 'closed'
+      ? session.monitorAudioCtx.close()
+      : Promise.resolve(),
+  ]);
 
   captureSessions.delete(tabId);
   stopKeepAliveIfIdle();

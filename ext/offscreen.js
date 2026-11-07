@@ -910,12 +910,6 @@ ${question}`
       session.workletNode.disconnect();
       session.workletNode = null;
     }
-    if (session.audioCtx && session.audioCtx.state !== "closed") {
-      await session.audioCtx.close();
-    }
-    if (session.monitorAudioCtx && session.monitorAudioCtx.state !== "closed") {
-      await session.monitorAudioCtx.close();
-    }
     if (session.videoEl) {
       session.videoEl.pause();
       session.videoEl.srcObject = null;
@@ -925,6 +919,10 @@ ${question}`
     if (session.mediaStream) {
       session.mediaStream.getTracks().forEach((track) => track.stop());
     }
+    await Promise.allSettled([
+      session.audioCtx && session.audioCtx.state !== "closed" ? session.audioCtx.close() : Promise.resolve(),
+      session.monitorAudioCtx && session.monitorAudioCtx.state !== "closed" ? session.monitorAudioCtx.close() : Promise.resolve()
+    ]);
     captureSessions.delete(tabId);
     stopKeepAliveIfIdle();
   }

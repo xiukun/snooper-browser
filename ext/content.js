@@ -2475,6 +2475,7 @@
         session.isDemoMode = false;
         session.subtitles = [];
       }
+      deps.ensureToolbarVisible();
       session.state = "starting";
       deps.render();
       const res = await deps.bg("START", {
@@ -2486,10 +2487,12 @@
         deps.toast(message, "err");
         if (message.includes("API Key") || message.includes("\u672A\u9009\u62E9\u6A21\u578B")) deps.openSettings();
         await deps.syncSession();
+        deps.ensureToolbarVisible();
         return;
       }
       if (res.session) deps.adoptSession(res.session);
       else await deps.syncSession();
+      deps.ensureToolbarVisible();
     });
   }
 
@@ -3769,6 +3772,14 @@ ${context}`;
       } catch {
       }
     }
+    function ensureToolbarVisible() {
+      hasBeenShownOnce = true;
+      if (!uiHidden) return;
+      uiHidden = false;
+      persistUiHidden();
+      applyUiHidden();
+      render();
+    }
     function applyUiHidden() {
       bar.classList.toggle("hidden", uiHidden);
       showBtn.style.display = uiHidden && hasBeenShownOnce ? "flex" : "none";
@@ -4075,7 +4086,8 @@ ${context}`;
       openSettings,
       stopDemo: stopDemoSubtitles,
       syncSession: syncSessionFromBackground,
-      adoptSession: adoptBackgroundSession
+      adoptSession: adoptBackgroundSession,
+      ensureToolbarVisible
     });
     const drawerCtrl = createDrawer({
       refs: {
@@ -4390,7 +4402,7 @@ ${context}`;
         });
       }
     });
-    chrome.runtime.onMessage.addListener((msg) => {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === "TOGGLE_TOOLBAR") {
         hasBeenShownOnce = true;
         if (uiHidden) {
@@ -4407,6 +4419,7 @@ ${context}`;
           persistUiHidden();
           applyUiHidden();
         }
+        sendResponse?.({ ok: true });
         return;
       }
       if (msg && msg.type === "OPEN_PAGE_SETTINGS") {

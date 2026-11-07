@@ -73,6 +73,16 @@ import { createScreenshotCapturer } from './screenshot'
     try { localStorage.setItem(UI_HIDDEN_KEY, uiHidden ? '1' : '0'); } catch { /* ignore */ }
   }
 
+  /** Reveal the toolbar and sync every dependent surface (idempotent). */
+  function ensureToolbarVisible() {
+    hasBeenShownOnce = true;
+    if (!uiHidden) return;
+    uiHidden = false;
+    persistUiHidden();
+    applyUiHidden();
+    render();
+  }
+
   function applyUiHidden() {
     bar.classList.toggle('hidden', uiHidden);
     // Only show pill after toolbar has been opened once (so user knows
@@ -328,6 +338,7 @@ import { createScreenshotCapturer } from './screenshot'
     stopDemo: stopDemoSubtitles,
     syncSession: syncSessionFromBackground,
     adoptSession: adoptBackgroundSession,
+    ensureToolbarVisible,
   });
 
   /* ===== Unified drawer: chat + notes tabs ===== */
@@ -700,7 +711,7 @@ import { createScreenshotCapturer } from './screenshot'
   });
 
   /* ===== Background push ===== */
-  chrome.runtime.onMessage.addListener((msg: any) => {
+  chrome.runtime.onMessage.addListener((msg: any, _sender: any, sendResponse: any) => {
     if (msg && msg.type === 'TOGGLE_TOOLBAR') {
       hasBeenShownOnce = true;
       if (uiHidden) {
@@ -717,6 +728,10 @@ import { createScreenshotCapturer } from './screenshot'
         persistUiHidden();
         applyUiHidden();
       }
+      // Acknowledge the toggle. sendToPageWithInjection treats a rejected
+      // sendMessage as "content script missing" and re-injects + re-sends,
+      // which would immediately hide the bar it just revealed.
+      sendResponse?.({ ok: true });
       return;
     }
 

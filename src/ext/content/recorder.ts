@@ -18,6 +18,12 @@ export interface RecorderDeps {
   stopDemo: () => void
   syncSession: () => Promise<boolean>
   adoptSession: (session: any) => void
+  /**
+   * Make the toolbar visible again. A capture can only be observed through the
+   * in-page toolbar, so every start path guarantees it is on screen — a hidden
+   * toolbar used to make capture look like "nothing happened".
+   */
+  ensureToolbarVisible: () => void
 }
 
 export function bindRecorder(deps: RecorderDeps) {
@@ -46,6 +52,10 @@ export function bindRecorder(deps: RecorderDeps) {
       session.subtitles = []
     }
 
+    // Starting a capture always reveals the toolbar: a start click is only
+    // reachable from the visible toolbar anyway, so this only repairs a state
+    // where something else hid it mid-flight.
+    deps.ensureToolbarVisible()
     session.state = 'starting'
     deps.render()
     const res = await deps.bg('START', {
@@ -57,9 +67,13 @@ export function bindRecorder(deps: RecorderDeps) {
       deps.toast(message, 'err')
       if (message.includes('API Key') || message.includes('未选择模型')) deps.openSettings()
       await deps.syncSession()
+      // A failed start must leave the UI where the user can see the reason
+      // instead of a toolbar that looks like it closed itself.
+      deps.ensureToolbarVisible()
       return
     }
     if (res.session) deps.adoptSession(res.session)
     else await deps.syncSession()
+    deps.ensureToolbarVisible()
   })
 }

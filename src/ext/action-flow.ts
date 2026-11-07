@@ -46,6 +46,14 @@ export async function sendToPageWithInjection(
   }
 }
 
+/**
+ * Show the toolbar for a tab, injecting the content script first when needed.
+ *
+ * `TOGGLE_TOOLBAR` flips visibility, so a stale double-send would hide the bar
+ * it just revealed. Injection + toggle is therefore the *only* resend path,
+ * and the content script acknowledges every toggle so a slow first response
+ * can never be mistaken for "content script missing".
+ */
 export function openToolbarForTab(
   tabId: number,
   options: PageMessageOptions,

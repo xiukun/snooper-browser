@@ -825,14 +825,31 @@ async function finalizeSegment(tabId: number) {
     const transcription = await transcribeAudio(wavBlob, session.config, session.sourceLang);
     if (session.aborted) return;
     if (!transcription) return;
+    // Segment-level ASR trace: the primary tool for diagnosing "subtitles
+    // nobody said". Every accepted line records what audio produced it, so a
+    // hallucination that slips through every guard can be traced back to its
+    // segment shape (duration, speech ratio) and the raw model output.
+    console.log('[RTTS] ASR segment:', {
+      text: transcription,
+      durationMs: Math.round(durationMs),
+      speechMs,
+      sourceLang: session.sourceLang,
+    });
     const isHallucination = isLikelyAsrHallucinationSequence(
       session.recentAsrCandidates,
       transcription,
     );
     if (isHallucination) {
       // Loud music and encoder noise still reach the model even with energy
-      // gating. Drop the stock phrases instead of translating them.
-      console.warn('[RTTS] dropped likely ASR hallucination:', transcription);
+      // gating. Drop the stock phrases instead of translating them. The
+      // duration and level make it possible to tune the energy gate when a
+      // new hallucination pattern slips through.
+      console.warn('[RTTS] dropped likely ASR hallucination:', {
+        text: transcription,
+        durationMs: Math.round(durationMs),
+        speechMs,
+        recentCandidates: [...session.recentAsrCandidates],
+      });
       session.recentAsrCandidates = [
         ...session.recentAsrCandidates.slice(-5),
         transcription,
@@ -851,6 +868,11 @@ async function finalizeSegment(tabId: number) {
     if (shouldSkipTranslation(session.sourceLang, session.targetLang, transcription)) {
       const passthroughLatency = Math.round(performance.now() - t0 + (Date.now() - segmentStartTime));
       if (session.aborted) return;
+      console.log('[RTTS] subtitle emitted:', {
+        source: transcription,
+        target: transcription,
+        passthrough: true,
+      });
       chrome.runtime.sendMessage({
         type: 'CAPTURE_SUBTITLE',
         tabId,
@@ -919,6 +941,11 @@ async function finalizeSegment(tabId: number) {
 
     // 6. Send final subtitle (triggers content script to finalize the entry)
     if (session.aborted) return;
+    console.log('[RTTS] subtitle emitted:', {
+      source: transcription,
+      target: translation,
+      passthrough: false,
+    });
     chrome.runtime.sendMessage({
       type: 'CAPTURE_SUBTITLE',
       tabId,

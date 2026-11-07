@@ -12,7 +12,7 @@
 
 import type { AppConfig } from '../lib/providers'
 import { openToolbarForTab } from './action-flow'
-import { waitForCaptureRelease } from './capture-recovery'
+import { describeCaptureSuspects, forceReleaseOffscreenDocument, waitForCaptureRelease } from './capture-recovery'
 import { reconcileSessionWithCapture } from './session-state'
 
 /* ===== Constants ===== */
@@ -282,6 +282,30 @@ async function stopOrphanCapture(tabId: number): Promise<boolean> {
     { maxAttempts: 10, delayMs: 100 },
   );
   if (!released) throw new Error('旧录音流释放超时');
+  return true;
+}
+
+async function forceResetOffscreenCapture(): Promise<boolean> {
+  if (!(await hasOffscreenDocument())) return true;
+
+  const result = await forceReleaseOffscreenDocument(
+    async () => {
+      const live: any = await chrome.runtime.sendMessage({
+        target: 'offscreen',
+        type: 'GET_CAPTURE_SESSIONS',
+      });
+      if (!live?.ok) throw new Error(live?.error || '无法确认其他录音状态');
+      return Array.isArray(live.tabIds) ? live.tabIds : [];
+    },
+    async () => {
+      await chrome.offscreen.closeDocument();
+    },
+    hasOffscreenDocument,
+    { maxAttempts: 10, delayMs: 100 },
+  );
+
+  if (result === 'busy') throw new Error('其他标签页仍在录音，无法重置录音组件');
+  if (result === 'timeout') throw new Error('录音组件释放超时');
   return true;
 }
 
@@ -782,7 +806,18 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
             // Offscreen teardown is asynchronous. Confirm the old capture is
             // gone before asking Chrome for a replacement stream id.
             await stopOrphanCapture(tabId);
-            streamId = await requestStreamId();
+            // A restarted offscreen document can lose its session map while
+            // Chrome keeps the native tab-capture owner alive. Recreating the
+            // document is the only reliable way to release that orphan.
+            await forceResetOffscreenCapture();
+            try {
+              streamId = await requestStreamId();
+            } catch (retryErr: any) {
+              if (/active stream/i.test(retryErr?.message || '')) {
+                throw new Error('录音流在重置后仍被浏览器占用');
+              }
+              throw retryErr;
+            }
           }
 
           s.streamId = streamId;
@@ -814,10 +849,25 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
           // tabCapture requires the extension to have host permission for the
           // tab. With <all_urls> host permissions this should never fire, but
           // if it does (e.g. Chrome internal pages), guide the user clearly.
-          if (/active stream/i.test(msg)) {
+          if (/重置后仍被浏览器占用/i.test(msg)) {
+            friendly = '浏览器仍占用本页的录音流。请关闭其他录音扩展或标签页，完全退出并重新打开 Chrome 后再试';
+          } else if (/active stream/i.test(msg)) {
             friendly = '该标签页仍有残留录音流（扩展后台重启所致）。已自动清理，请再点一次「录音」；若仍失败，请刷新页面后重试';
           } else if (/旧录音流释放超时|无法停止旧录音流|无法确认旧录音流状态/i.test(msg)) {
             friendly = '旧录音流未能释放。请刷新页面后重试；若仍失败，请在扩展管理页重新加载 snooper 后再试';
+          } else if (/录音组件释放超时|其他标签页仍在录音|无法确认其他录音状态/i.test(msg)) {
+            friendly = '浏览器仍占用本页的录音流。请先停止其他标签页的录音，再刷新本页重试';
+          } else if (/重置后仍被浏览器占用|录音流在重置后仍被/i.test(msg)) {
+            const suspects = await describeCaptureSuspects(
+              await chrome.management.getAll().then((all) =>
+                all
+                  .filter((e) => (e.permissions || []).includes('tabCapture'))
+                  .map((e) => ({ name: e.name, id: e.id })),
+              ).catch(() => []),
+            );
+            friendly = suspects
+              ? `浏览器仍占用本页的录音流，疑似来自：${suspects}。请停用对应扩展后重试`
+              : '浏览器仍占用本页的录音流。请关闭其他录音扩展或标签页，完全退出并重新打开 Chrome 后再试';
           } else if (/not been invoked|activeTab/i.test(msg)) {
             friendly = '需要先完成一次授权：点击浏览器工具栏的 snooper 图标（弹出的面板可立即关闭），之后本页可直接使用';
           } else if (/permission|Permission|not allowed|not permitted/i.test(msg)) {

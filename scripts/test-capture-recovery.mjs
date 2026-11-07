@@ -17,7 +17,7 @@ execSync(
   { stdio: 'inherit' },
 );
 
-const { waitForCaptureRelease } = await import(pathToFileURL(out).href);
+const { forceReleaseOffscreenDocument, waitForCaptureRelease } = await import(pathToFileURL(out).href);
 
 let passed = 0;
 const failures = [];
@@ -50,6 +50,34 @@ const check = (name, actual, expected) => {
   );
   check('reports a teardown timeout', released, false);
   check('honors the maximum poll count', polls, 3);
+}
+
+{
+  let closed = false;
+  const result = await forceReleaseOffscreenDocument(
+    async () => [42],
+    async () => { closed = true; },
+    async () => false,
+    { delayMs: 0, sleep: async () => {} },
+  );
+  check('does not close offscreen while another tab is recording', result, 'busy');
+  check('keeps other captures alive', closed, false);
+}
+
+{
+  let closed = false;
+  let checks = 0;
+  const result = await forceReleaseOffscreenDocument(
+    async () => [],
+    async () => { closed = true; },
+    async () => {
+      checks++;
+      return checks === 1;
+    },
+    { maxAttempts: 3, delayMs: 0, sleep: async () => {} },
+  );
+  check('closes an orphaned offscreen document', result, 'released');
+  check('calls closeDocument before checking release', closed, true);
 }
 
 rmSync(outDir, { recursive: true, force: true });

@@ -41,6 +41,25 @@ async function waitForCaptureRelease(isCaptureAlive, options = {}) {
   }
   return false;
 }
+async function forceReleaseOffscreenDocument(getActiveTabIds, closeDocument, hasDocument, options = {}) {
+  if ((await getActiveTabIds()).length > 0) return "busy";
+  await closeDocument();
+  const released = await waitForCaptureRelease(hasDocument, options);
+  return released ? "released" : "timeout";
+}
+function describeCaptureSuspects(extensions) {
+  const names = [];
+  let snooperCount = 0;
+  for (const ext of extensions) {
+    if (/^snooper-browser$/i.test(ext.name)) {
+      snooperCount++;
+      if (snooperCount > 1) names.push(`\u53E6\u4E00\u4EFD ${ext.name}`);
+    } else {
+      names.push(ext.name);
+    }
+  }
+  return names.join("\u3001");
+}
 
 // src/ext/session-state.ts
 function reconcileSessionWithCapture(session, liveGeneration) {
@@ -230,6 +249,27 @@ async function stopOrphanCapture(tabId) {
     { maxAttempts: 10, delayMs: 100 }
   );
   if (!released) throw new Error("\u65E7\u5F55\u97F3\u6D41\u91CA\u653E\u8D85\u65F6");
+  return true;
+}
+async function forceResetOffscreenCapture() {
+  if (!await hasOffscreenDocument()) return true;
+  const result = await forceReleaseOffscreenDocument(
+    async () => {
+      const live = await chrome.runtime.sendMessage({
+        target: "offscreen",
+        type: "GET_CAPTURE_SESSIONS"
+      });
+      if (!live?.ok) throw new Error(live?.error || "\u65E0\u6CD5\u786E\u8BA4\u5176\u4ED6\u5F55\u97F3\u72B6\u6001");
+      return Array.isArray(live.tabIds) ? live.tabIds : [];
+    },
+    async () => {
+      await chrome.offscreen.closeDocument();
+    },
+    hasOffscreenDocument,
+    { maxAttempts: 10, delayMs: 100 }
+  );
+  if (result === "busy") throw new Error("\u5176\u4ED6\u6807\u7B7E\u9875\u4ECD\u5728\u5F55\u97F3\uFF0C\u65E0\u6CD5\u91CD\u7F6E\u5F55\u97F3\u7EC4\u4EF6");
+  if (result === "timeout") throw new Error("\u5F55\u97F3\u7EC4\u4EF6\u91CA\u653E\u8D85\u65F6");
   return true;
 }
 async function checkAndCloseOffscreen() {
@@ -633,7 +673,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           } catch (err) {
             if (!/active stream/i.test(err?.message || "")) throw err;
             await stopOrphanCapture(tabId);
-            streamId = await requestStreamId();
+            await forceResetOffscreenCapture();
+            try {
+              streamId = await requestStreamId();
+            } catch (retryErr) {
+              if (/active stream/i.test(retryErr?.message || "")) {
+                throw new Error("\u5F55\u97F3\u6D41\u5728\u91CD\u7F6E\u540E\u4ECD\u88AB\u6D4F\u89C8\u5668\u5360\u7528");
+              }
+              throw retryErr;
+            }
           }
           s.streamId = streamId;
           console.log("[RTTS] streamId obtained for tab", tabId);
@@ -658,10 +706,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           pushSession(tabId);
           const msg = err && err.message || String(err);
           let friendly = msg;
-          if (/active stream/i.test(msg)) {
+          if (/重置后仍被浏览器占用/i.test(msg)) {
+            friendly = "\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\u3002\u8BF7\u5173\u95ED\u5176\u4ED6\u5F55\u97F3\u6269\u5C55\u6216\u6807\u7B7E\u9875\uFF0C\u5B8C\u5168\u9000\u51FA\u5E76\u91CD\u65B0\u6253\u5F00 Chrome \u540E\u518D\u8BD5";
+          } else if (/active stream/i.test(msg)) {
             friendly = "\u8BE5\u6807\u7B7E\u9875\u4ECD\u6709\u6B8B\u7559\u5F55\u97F3\u6D41\uFF08\u6269\u5C55\u540E\u53F0\u91CD\u542F\u6240\u81F4\uFF09\u3002\u5DF2\u81EA\u52A8\u6E05\u7406\uFF0C\u8BF7\u518D\u70B9\u4E00\u6B21\u300C\u5F55\u97F3\u300D\uFF1B\u82E5\u4ECD\u5931\u8D25\uFF0C\u8BF7\u5237\u65B0\u9875\u9762\u540E\u91CD\u8BD5";
           } else if (/旧录音流释放超时|无法停止旧录音流|无法确认旧录音流状态/i.test(msg)) {
             friendly = "\u65E7\u5F55\u97F3\u6D41\u672A\u80FD\u91CA\u653E\u3002\u8BF7\u5237\u65B0\u9875\u9762\u540E\u91CD\u8BD5\uFF1B\u82E5\u4ECD\u5931\u8D25\uFF0C\u8BF7\u5728\u6269\u5C55\u7BA1\u7406\u9875\u91CD\u65B0\u52A0\u8F7D snooper \u540E\u518D\u8BD5";
+          } else if (/录音组件释放超时|其他标签页仍在录音|无法确认其他录音状态/i.test(msg)) {
+            friendly = "\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\u3002\u8BF7\u5148\u505C\u6B62\u5176\u4ED6\u6807\u7B7E\u9875\u7684\u5F55\u97F3\uFF0C\u518D\u5237\u65B0\u672C\u9875\u91CD\u8BD5";
+          } else if (/重置后仍被浏览器占用|录音流在重置后仍被/i.test(msg)) {
+            const suspects = await describeCaptureSuspects(
+              await chrome.management.getAll().then(
+                (all) => all.filter((e) => (e.permissions || []).includes("tabCapture")).map((e) => ({ name: e.name, id: e.id }))
+              ).catch(() => [])
+            );
+            friendly = suspects ? `\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\uFF0C\u7591\u4F3C\u6765\u81EA\uFF1A${suspects}\u3002\u8BF7\u505C\u7528\u5BF9\u5E94\u6269\u5C55\u540E\u91CD\u8BD5` : "\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\u3002\u8BF7\u5173\u95ED\u5176\u4ED6\u5F55\u97F3\u6269\u5C55\u6216\u6807\u7B7E\u9875\uFF0C\u5B8C\u5168\u9000\u51FA\u5E76\u91CD\u65B0\u6253\u5F00 Chrome \u540E\u518D\u8BD5";
           } else if (/not been invoked|activeTab/i.test(msg)) {
             friendly = "\u9700\u8981\u5148\u5B8C\u6210\u4E00\u6B21\u6388\u6743\uFF1A\u70B9\u51FB\u6D4F\u89C8\u5668\u5DE5\u5177\u680F\u7684 snooper \u56FE\u6807\uFF08\u5F39\u51FA\u7684\u9762\u677F\u53EF\u7ACB\u5373\u5173\u95ED\uFF09\uFF0C\u4E4B\u540E\u672C\u9875\u53EF\u76F4\u63A5\u4F7F\u7528";
           } else if (/permission|Permission|not allowed|not permitted/i.test(msg)) {

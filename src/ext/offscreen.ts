@@ -1176,29 +1176,57 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
     case 'CAPTURE_FRAME': {
       const tabId = message.tabId;
       const sess = captureSessions.get(tabId);
-      if (!sess || sess.aborted || !sess.videoEl || !sess.videoEl.videoWidth) {
+      if (!sess || sess.aborted || !sess.videoEl) {
         sendResponse({ ok: false, error: '没有可用的视频帧' });
         return true;
       }
-      try {
-        const video = sess.videoEl;
-        if (video.readyState < 2 || !video.videoWidth) {
-          sendResponse({ ok: false, error: '视频尚未就绪' });
-          return true;
+      (async () => {
+        try {
+          const video = sess.videoEl!;
+          // A freshly created capture element can report dimensions one or two
+          // frames late. Wait briefly instead of failing the screenshot.
+          for (let attempt = 0; attempt < 12; attempt++) {
+            if (video.readyState >= 2 && video.videoWidth > 0) break;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          // The content script hides the injected toolbar before asking for a
+          // frame. Wait for the *next* presented frame so that hide is visible
+          // in the capture; the timeout keeps paused tabs from hanging.
+          if (video.readyState >= 2) {
+            await new Promise<void>((resolve) => {
+              let settled = false;
+              const finish = () => {
+                if (settled) return;
+                settled = true;
+                resolve();
+              };
+              const requestFrame = (video as any).requestVideoFrameCallback;
+              if (typeof requestFrame === 'function') {
+                try {
+                  requestFrame.call(video, () => finish());
+                } catch { /* fall through to the timeout */ }
+              }
+              setTimeout(finish, 400);
+            });
+          }
+          if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+            sendResponse({ ok: false, error: '录制中的视频帧尚未就绪，请稍后再试' });
+            return;
+          }
+          const canvas = document.createElement('canvas');
+          let w = video.videoWidth;
+          let h = video.videoHeight;
+          const maxW = 1600;
+          if (w > maxW) { h = Math.round((h * maxW) / w); w = maxW; }
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext('2d')!;
+          ctx.drawImage(video, 0, 0, w, h);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+          sendResponse({ ok: true, dataUrl, width: w, height: h });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err.message || '帧捕获失败' });
         }
-        const canvas = document.createElement('canvas');
-        let w = video.videoWidth;
-        let h = video.videoHeight;
-        const maxW = 1600;
-        if (w > maxW) { h = Math.round((h * maxW) / w); w = maxW; }
-        canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext('2d')!;
-        ctx.drawImage(video, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-        sendResponse({ ok: true, dataUrl });
-      } catch (err: any) {
-        sendResponse({ ok: false, error: err.message || '帧捕获失败' });
-      }
+      })();
       return true;
     }
 

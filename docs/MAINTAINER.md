@@ -35,6 +35,8 @@ An AI-generated or human PR is accepted only after all of these pass:
 1. **Fetch and run locally** — `gh pr checkout <n>`, then:
    - `npm run build:ext`
    - `npm run test:guards`
+   - `npm run test:chat-state`
+   - `npm run test:image-material`
    - `npm run type-check`
    - `npm run build:app`
    - `git diff --check`

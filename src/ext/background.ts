@@ -11,6 +11,7 @@
  */
 
 import type { AppConfig } from '../lib/providers'
+import { materializeImage } from '../lib/image-material'
 import { openToolbarForTab } from './action-flow'
 import { describeCaptureSuspects, forceReleaseOffscreenDocument, waitForCaptureRelease } from './capture-recovery'
 import { reconcileSessionWithCapture } from './session-state'
@@ -690,7 +691,46 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
           }
 
           const images = await tryGenerate(body);
-          sendResponse({ ok: true, images, model: route?.model || 'moss-image-sft-1.0' });
+
+          // The page's <img> runs under the page CSP/CORS rules. A URL that
+          // the background can fetch may still fail to render inside the tab
+          // (signed URLs, auth headers, expiring CDN links). Materialise every
+          // remote image here so the UI only receives data URLs.
+          const outcomes = await Promise.all(images.map(async (image) => {
+            if (image.startsWith('data:')) {
+              return { rendered: image, remote: '', warning: '' }
+            }
+            try {
+              return {
+                rendered: await materializeImage(image, baseUrl, provider.apiKey),
+                remote: image,
+                warning: '',
+              }
+            } catch (err: any) {
+              return {
+                rendered: image,
+                remote: image,
+                warning: err?.message || '图片下载失败',
+              }
+            }
+          }))
+          const renderedImages = outcomes.map((item) => item.rendered)
+          const remoteImages = outcomes.map((item) => item.remote).filter(Boolean)
+          const warnings = outcomes.map((item) => item.warning).filter(Boolean)
+
+          console.log('[RTTS] image generation', {
+            fields: images.length,
+            remote: remoteImages.length,
+            dataUrls: renderedImages.filter((item) => item.startsWith('data:')).length,
+            warnings,
+          });
+          sendResponse({
+            ok: true,
+            images: renderedImages,
+            remoteImages,
+            warnings,
+            model: route?.model || 'moss-image-sft-1.0',
+          });
         } catch (err: any) {
           sendResponse({ ok: false, error: err.message || '生图失败' });
         }
@@ -969,7 +1009,7 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         s.pendingAskRequestId = null;
         s.messages.push({ role: 'assistant', content: answer });
         pushSession(tabId);
-        sendResponse({ ok: true, answer });
+        sendResponse({ ok: true, answer, session: safeSession(s) });
       })().catch((err: any) => {
         if (s.pendingAskRequestId !== requestId) return;
         s.pendingAskRequestId = null;
@@ -1012,8 +1052,13 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
       // Try visible tab capture first. When a tab has an active audio capture
       // (tabCapture), this method throws "Cannot capture a tab with an active
       // stream." In that case we ask offscreen to grab a video frame.
-      chrome.tabs.captureVisibleTab({ format: 'png' }).then((dataUrl) => {
-        sendResponse({ ok: true, dataUrl });
+      const windowId = sender.tab?.windowId;
+      const captureVisible = () => windowId != null
+        ? chrome.tabs.captureVisibleTab(windowId, { format: 'png' })
+        : chrome.tabs.captureVisibleTab({ format: 'png' });
+      captureVisible().then((dataUrl) => {
+        console.log('[RTTS] screenshot source=visible-tab');
+        sendResponse({ ok: true, dataUrl, path: 'visible-tab' });
       }).catch(async (err) => {
         if (err.message && /active stream/i.test(err.message)) {
           // Only a running offscreen capture can supply a frame. Do not create
@@ -1025,9 +1070,13 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
           // Fallback: ask offscreen for a frame from its capture video element
           sendToOffscreen({ type: 'CAPTURE_FRAME', tabId }).then((frame: any) => {
             if (frame && frame.dataUrl) {
-              sendResponse({ ok: true, dataUrl: frame.dataUrl });
+              console.log('[RTTS] screenshot source=offscreen-frame');
+              sendResponse({ ok: true, dataUrl: frame.dataUrl, path: 'offscreen-frame' });
             } else {
-              sendResponse({ ok: false, error: frame?.error || '截图失败：无法获取视频帧' });
+              sendResponse({
+                ok: false,
+                error: frame?.error || '截图失败：录制中的视频帧尚未就绪，请稍后再试',
+              });
             }
           }).catch((e) => {
             sendResponse({ ok: false, error: '截图失败：' + (e.message || '') });
@@ -1039,7 +1088,7 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
       return true;
     }
 
-    case 'FETCH_URL': {
+    case 'FETCH_IMAGE': {
       const url = String(message.url || '').trim();
       if (!url) {
         sendResponse({ ok: false, error: 'URL 为空' });
@@ -1047,14 +1096,18 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
       }
       (async () => {
         try {
-          const res = await fetch(url);
-          const blob = await res.blob();
-          const reader = new FileReader();
-          reader.onload = () => sendResponse({ ok: true, dataUrl: reader.result });
-          reader.onerror = () => sendResponse({ ok: false, error: '无法读取图片' });
-          reader.readAsDataURL(blob);
+          const config = await loadConfig();
+          const route = config.routes.image;
+          const provider =
+            config.providers.find((p) => p.id === route?.providerId) || config.providers[0];
+          const dataUrl = await materializeImage(
+            url,
+            provider?.baseUrl || '',
+            provider?.apiKey || '',
+          );
+          sendResponse({ ok: true, dataUrl });
         } catch (err: any) {
-          sendResponse({ ok: false, error: '无法下载图片：' + (err.message || '') });
+          sendResponse({ ok: false, error: err?.message || '无法下载图片' });
         }
       })();
       return true;

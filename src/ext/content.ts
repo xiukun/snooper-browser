@@ -17,6 +17,9 @@
 
 import type { SubtitleLine, NoteEntry, NoteDocument } from '../lib/types'
 import { SOURCE_LANGUAGES, TARGET_LANGUAGES } from '../lib/models'
+import { createScreenshotCapturer } from './screenshot'
+import { createImagePanel, type ImageFunKind } from './image-panel'
+import { chatRenderSignature, hasAssistantTail, isLatestAssistantReply } from './chat-state'
 
 /* ===== Note persistence =====
  * Notes live in chrome.storage.local so the in-page drawer and the side
@@ -715,14 +718,23 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
       border-bottom: 2px solid rgba(255,255,255,0.42);
     }
     #rtts-sub-resize:hover::after { border-color: rgba(255,255,255,0.85); }
-    #rtts-sub-box.compact { height: 56px !important; min-height: 56px; padding-top: 16px; padding-bottom: 6px; }
-    #rtts-sub-box.compact #rtts-sub-scroll { overflow: hidden; }
-    #rtts-sub-box.compact .sub-row.history:not(.current) { display: none; }
+    #rtts-sub-box.compact,
+    #rtts-sub-box.auto-idle { height: 56px !important; min-height: 56px; padding-top: 16px; padding-bottom: 6px; }
+    #rtts-sub-box.auto-idle { opacity: 0.55; }
+    #rtts-sub-box.compact #rtts-sub-scroll,
+    #rtts-sub-box.auto-idle #rtts-sub-scroll { overflow: hidden; }
+    #rtts-sub-box.compact .sub-row.history:not(.current),
+    #rtts-sub-box.auto-idle .sub-row.history:not(.current) { display: none; }
     #rtts-sub-box.compact .sub-row.current,
-    #rtts-sub-box.compact #rtts-streaming-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #rtts-sub-box.compact #rtts-streaming-row,
+    #rtts-sub-box.auto-idle .sub-row.current,
+    #rtts-sub-box.auto-idle #rtts-streaming-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #rtts-sub-box.compact .sub-source,
-    #rtts-sub-box.compact .stream-label { display: none !important; }
-    #rtts-sub-box.compact #rtts-sub-status { margin-top: 1px; font-size: 9px; }
+    #rtts-sub-box.compact .stream-label,
+    #rtts-sub-box.auto-idle .sub-source,
+    #rtts-sub-box.auto-idle .stream-label { display: none !important; }
+    #rtts-sub-box.compact #rtts-sub-status,
+    #rtts-sub-box.auto-idle #rtts-sub-status { margin-top: 1px; font-size: 9px; }
 
     .sub-row {
       transition: opacity 0.25s, font-size 0.25s;
@@ -1247,6 +1259,20 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     }
     .rtts-image-result.show { display: block; }
     .rtts-image-result img { display: block; width: 100%; height: auto; }
+    .rtts-image-open {
+      display: block; padding: 8px 10px; font-size: 11px; text-align: center;
+      color: #b9a6ff; text-decoration: none; border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .rtts-image-open:hover { color: #d8ccff; background: rgba(124,92,255,0.08); }
+    .rtts-image-open[hidden] { display: none; }
+    .rtts-image-fun { display: none; gap: 8px; flex-wrap: wrap; }
+    .rtts-image-fun.show { display: flex; }
+    .rtts-image-fun button {
+      height: 28px; padding: 0 11px; border-radius: 14px; cursor: pointer;
+      border: 1px solid rgba(124,92,255,0.28); background: rgba(124,92,255,0.1);
+      color: #c9baff; font-size: 11px; font-family: inherit;
+    }
+    .rtts-image-fun button:hover { background: rgba(124,92,255,0.2); color: #fff; }
     .rtts-image-actions { display: none; gap: 8px; margin-left: auto; }
     .rtts-image-actions.show { display: flex; }
 
@@ -1694,6 +1720,12 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
           <div id="rtts-img-status" class="rtts-status" role="status" aria-live="polite"></div>
           <div id="rtts-img-result" class="rtts-image-result">
             <img id="rtts-img-result-img" alt="生成的配图">
+            <a id="rtts-img-open" class="rtts-image-open" target="_blank" rel="noopener noreferrer" hidden>当前页面无法加载，打开原图</a>
+          </div>
+          <div id="rtts-img-fun" class="rtts-image-fun" role="group" aria-label="图片娱乐互动">
+            <button type="button" data-fun="roast">吐槽这张图</button>
+            <button type="button" data-fun="continue">续写剧情</button>
+            <button type="button" data-fun="line">配一句台词</button>
           </div>
         </div>
         <div class="rtts-modal-footer">
@@ -1702,6 +1734,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
             <span>生成图片</span>
           </button>
           <div id="rtts-img-actions" class="rtts-image-actions">
+            <button id="rtts-img-insert" class="rtts-btn-ghost" type="button">插入伴学</button>
             <button id="rtts-img-save" class="rtts-btn-ghost" type="button">存入笔记</button>
             <button id="rtts-img-download" class="rtts-btn-ghost" type="button">下载</button>
           </div>
@@ -1717,8 +1750,8 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
           </div>
           <div>
-            <h3>视频截图</h3>
-            <p class="sub">只截取视频画面，不含字幕与工具栏</p>
+            <h3>截图预览</h3>
+            <p class="sub">优先裁到视频区域；找不到视频时保留整页，可存入笔记或插入伴学</p>
           </div>
           <button id="rtts-shot-close-x" class="rtts-modal-close" type="button" aria-label="关闭"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         </div>
@@ -1728,6 +1761,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
         <div class="rtts-modal-footer">
           <button id="rtts-shot-download" class="rtts-btn-ghost" type="button">下载图片</button>
           <div style="margin-left:auto;display:flex;gap:8px">
+            <button id="rtts-shot-insert" class="rtts-btn-ghost" type="button">插入伴学</button>
             <button id="rtts-shot-close" class="rtts-btn-ghost" type="button">关闭</button>
             <button id="rtts-shot-save" class="rtts-btn-primary" type="button">存入笔记</button>
           </div>
@@ -1831,6 +1865,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   const shotCloseX = shadow.getElementById('rtts-shot-close-x') as HTMLButtonElement;
   const shotDownload = shadow.getElementById('rtts-shot-download') as HTMLButtonElement;
   const shotSave = shadow.getElementById('rtts-shot-save') as HTMLButtonElement;
+  const shotInsert = shadow.getElementById('rtts-shot-insert') as HTMLButtonElement;
   const imageModal = shadow.getElementById('rtts-image-modal')!;
   const imgClose = shadow.getElementById('rtts-img-close') as HTMLButtonElement;
   const imgPrompt = shadow.getElementById('rtts-img-prompt') as HTMLTextAreaElement;
@@ -1840,8 +1875,11 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   const imgStatus = shadow.getElementById('rtts-img-status')!;
   const imgResult = shadow.getElementById('rtts-img-result')!;
   const imgResultImg = shadow.getElementById('rtts-img-result-img') as HTMLImageElement;
+  const imgOpen = shadow.getElementById('rtts-img-open') as HTMLAnchorElement;
   const imgActions = shadow.getElementById('rtts-img-actions')!;
+  const imgFun = shadow.getElementById('rtts-img-fun')!;
   const imgSave = shadow.getElementById('rtts-img-save') as HTMLButtonElement;
+  const imgInsert = shadow.getElementById('rtts-img-insert') as HTMLButtonElement;
   const imgDownload = shadow.getElementById('rtts-img-download') as HTMLButtonElement;
   const toasts = shadow.getElementById('rtts-toasts')!;
 
@@ -1964,6 +2002,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
       activeNoteId: session.activeNoteId,
       isDemoMode: session.isDemoMode,
     };
+    if (!Array.isArray(session.messages)) session.messages = [];
     render();
   }
 
@@ -1974,14 +2013,6 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     if (serial !== sessionSyncSerial || !res.ok || !res.session) return false;
     adoptBackgroundSession(res.session);
     return true;
-  }
-
-  async function fetchAsDataUrl(url: string): Promise<string> {
-    try {
-      const res = await bg('FETCH_URL', { url });
-      if (res.ok && res.dataUrl) return res.dataUrl;
-    } catch { /* fallback */ }
-    return url;
   }
 
   /* ===== Toast ===== */
@@ -2208,90 +2239,83 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   });
 
   /* ===== In-page image generation ===== */
-  let lastImageUrl = '';
+  function subtitleDigest(limit = 6): string {
+    const text = session.subtitles
+      .slice(-limit)
+      .map((line) => (line.target && line.target !== line.source ? `${line.source} / ${line.target}` : line.source))
+      .filter(Boolean)
+      .join('；');
+    return text || '（当前还没有字幕，可以按画面自由发挥）';
+  }
+
+  function funQuestion(kind: ImageFunKind): string {
+    const context = subtitleDigest();
+    if (kind === 'roast') {
+      return `请用一句犀利但不冒犯的吐槽点评这张图，结合当前剧情：\n${context}`;
+    }
+    if (kind === 'continue') {
+      return `根据这张图和当前字幕，续写接下来 3 句剧情，保持人物和语气一致：\n${context}`;
+    }
+    return `为这张图配一句有冲击力的台词，贴合当前剧情：\n${context}`;
+  }
+
+  const imagePanel = createImagePanel({
+    refs: {
+      modal: imageModal,
+      close: imgClose,
+      prompt: imgPrompt,
+      size: imgSize,
+      negative: imgNeg,
+      status: imgStatus,
+      result: imgResult,
+      resultImg: imgResultImg,
+      actions: imgActions,
+      generate: imgGenerate,
+      save: imgSave,
+      insert: imgInsert,
+      download: imgDownload,
+      fun: imgFun,
+      openOriginal: imgOpen,
+    },
+    generate: (input) => bg('GENERATE_IMAGE', input),
+    materialize: async (url) => {
+      const res = await bg('FETCH_IMAGE', { url });
+      if (!res.ok || !res.dataUrl) throw new Error(res.error || '无法缓存图片');
+      return res.dataUrl;
+    },
+    addNote: (imageUrl, text) => {
+      addNoteEntry({
+        id: `image_${Date.now()}`,
+        type: 'image',
+        at: Date.now(),
+        imageUrl,
+        text,
+      });
+    },
+    insertChat: (imageUrl) => {
+      if (pendingImages.length >= 4) {
+        // Let the panel's error path report this; a silent return would show
+        // a success toast for an image that was never attached.
+        throw new Error('最多 4 张图片');
+      }
+      pendingImages.push(imageUrl);
+      renderAttachments();
+      openDrawer('chat');
+    },
+    play: (kind, imageUrl) => {
+      openDrawer('chat');
+      void submitQuestion(funQuestion(kind), [imageUrl]);
+    },
+    toast,
+  });
 
   function openImagePanel(prompt?: string) {
-    imgPrompt.value = prompt || '';
-    imgStatus.className = 'rtts-status';
-    imgStatus.textContent = '';
-    imgResult.classList.remove('show');
-    imgResultImg.removeAttribute('src');
-    imgActions.classList.remove('show');
-    lastImageUrl = '';
-    imageModal.classList.add('open');
-    setTimeout(() => imgPrompt.focus(), 30);
+    imagePanel.open(prompt);
   }
 
   function closeImagePanel() {
-    imageModal.classList.remove('open');
+    imagePanel.close();
   }
-
-  async function generateImageInPage() {
-    const prompt = imgPrompt.value.trim();
-    if (!prompt) {
-      toast('请先输入提示词', 'err');
-      return;
-    }
-    const label = imgGenerate.querySelector('span');
-    imgGenerate.disabled = true;
-    imgGenerate.classList.add('loading');
-    if (label) label.textContent = '生成中…';
-    imgStatus.className = 'rtts-status show info';
-    imgStatus.textContent = '正在请求生图接口，通常需要 20–30 秒';
-    const res: any = await bg('GENERATE_IMAGE', {
-      prompt,
-      size: imgSize.value,
-      negativePrompt: imgNeg.value.trim(),
-    });
-    imgGenerate.disabled = false;
-    imgGenerate.classList.remove('loading');
-    if (label) label.textContent = '生成图片';
-    if (res.ok && Array.isArray(res.images) && res.images.length) {
-      lastImageUrl = res.images[0];
-      imgResultImg.src = lastImageUrl;
-      imgResult.classList.add('show');
-      imgActions.classList.add('show');
-      imgStatus.className = 'rtts-status show ok';
-      imgStatus.textContent = '生成完成 · ' + (res.model || 'MOSS-Image');
-    } else {
-      imgStatus.className = 'rtts-status show err';
-      imgStatus.textContent = res.error || '生成失败';
-    }
-  }
-
-  async function saveImageToNotes() {
-    if (!lastImageUrl) return;
-    const dataUrl = lastImageUrl.startsWith('data:')
-      ? lastImageUrl
-      : await fetchAsDataUrl(lastImageUrl);
-    addNoteEntry({
-      id: `image_${Date.now()}`,
-      type: 'image',
-      at: Date.now(),
-      imageUrl: dataUrl,
-      text: imgPrompt.value.trim().slice(0, 80) || '生成配图',
-    });
-    toast('已存入笔记', 'ok');
-    closeImagePanel();
-  }
-
-  function downloadImage() {
-    if (!lastImageUrl) return;
-    const a = document.createElement('a');
-    a.href = lastImageUrl;
-    a.download = `snooper-${Date.now()}.png`;
-    a.target = '_blank';
-    a.rel = 'noopener';
-    a.click();
-  }
-
-  imgClose.addEventListener('click', closeImagePanel);
-  imageModal.addEventListener('click', (e) => {
-    if (e.target === imageModal) closeImagePanel();
-  });
-  imgGenerate.addEventListener('click', generateImageInPage);
-  imgSave.addEventListener('click', saveImageToNotes);
-  imgDownload.addEventListener('click', downloadImage);
 
   /* ===== Rendering ===== */
   function render() {
@@ -2312,6 +2336,12 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     // === Scrollable Subtitle Display (full history) ===
     const subs = session.subtitles || [];
     const streaming = session.streamingSubtitle;
+    const last = subs[subs.length - 1];
+    const subtitleSignal = `${subs.length}:${last?.id || ''}:${streaming?.at || ''}`;
+    if (subtitleSignal !== lastSubtitleSignal) {
+      lastSubtitleSignal = subtitleSignal;
+      if (last || streaming) markSubtitleActivity();
+    }
 
     if (!uiHidden && (s === 'running' || subs.length > 0 || streaming)) {
       subBox.classList.remove('hidden');
@@ -2367,6 +2397,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
       subRows.textContent = '';
       clearStreaming();
       subBox.classList.add('hidden');
+      subBox.classList.remove('auto-idle');
     }
     applyUiHidden();
 
@@ -2380,8 +2411,13 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     renderNotes();
   }
 
+  let lastChatSignature: string | null = null;
+
   function updateChat() {
     const msgs = session.messages || [];
+    const signature = chatRenderSignature(msgs);
+    if (signature === lastChatSignature) return;
+    lastChatSignature = signature;
     chatEl.textContent = '';
     if (msgs.length === 0) {
       const w = document.createElement('div');
@@ -2423,6 +2459,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     }
 
     streamingRow.classList.remove('hidden');
+    markSubtitleActivity();
 
     // Streaming translation text (with cursor)
     const displayText = sub.partialTarget || '⋯';
@@ -2450,8 +2487,32 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
 
   const SUB_BOX_SIZE_KEY = 'snooper.subtitle-box-size.v1';
   const SUB_BOX_COMPACT_KEY = 'snooper.subtitle-box-compact.v1';
+  const SUB_BOX_IDLE_MS = 6500;
   let subBoxAutoPosition = true;
   let subBoxCompact = false;
+  let subIdleTimer: number | null = null;
+  let lastSubtitleSignal = '';
+
+  /**
+   * Collapse and fade the subtitle box when the video has produced no new
+   * lines for a while, so it stops covering the picture. Any new subtitle,
+   * pointer hover, focus or manual toggling brings it back.
+   */
+  function markSubtitleActivity() {
+    subBox.classList.remove('auto-idle');
+    if (subIdleTimer) window.clearTimeout(subIdleTimer);
+    subIdleTimer = window.setTimeout(() => {
+      const hasContent = session.subtitles.length > 0 || !!session.streamingSubtitle;
+      if (!subBoxCompact && hasContent && !subBox.matches(':hover') && !subBox.classList.contains('hidden')) {
+        subBox.classList.add('auto-idle');
+      }
+    }, SUB_BOX_IDLE_MS);
+  }
+
+  function wakeSubtitleBox() {
+    subBox.classList.remove('auto-idle');
+    markSubtitleActivity();
+  }
 
   function persistSubBoxSize(width: number, height: number) {
     const size = { width: Math.round(width), height: Math.round(height) };
@@ -2634,10 +2695,15 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   subBox.addEventListener('dblclick', (event) => {
     if ((event.target as HTMLElement).closest('#rtts-sub-resize, #rtts-sub-handle')) return;
     subBoxCompact = !subBoxCompact;
+    subBox.classList.remove('auto-idle');
     subBox.classList.toggle('compact', subBoxCompact);
     try { localStorage.setItem(SUB_BOX_COMPACT_KEY, String(subBoxCompact)); } catch { /* ignore */ }
     try { void (chrome as any).storage?.local?.set({ [SUB_BOX_COMPACT_KEY]: subBoxCompact }); } catch { /* ignore */ }
   });
+
+  subBox.addEventListener('pointerenter', wakeSubtitleBox);
+  subBox.addEventListener('pointerleave', markSubtitleActivity);
+  subBox.addEventListener('focusin', wakeSubtitleBox);
 
   let subResizeState: { pointerId: number; startX: number; startY: number; width: number; height: number } | null = null;
   subResize.addEventListener('pointerdown', (event) => {
@@ -3231,18 +3297,12 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     if (e.dataTransfer?.files) addFiles(e.dataTransfer.files);
   });
 
-  async function sendQuestion() {
-    if (isAskBusy) return;
-    setCiteOpen(false);
-    // Leave preview first: a hidden editor reports '' from innerText.
-    if (isPreviewing) togglePreview();
-    const q = getChatText();
-    const imgs = pendingImages.slice();
-    if (!q && imgs.length === 0) return;
+  async function submitQuestion(q: string, imgs: string[]) {
+    if (isAskBusy) {
+      toast('正在回答上一题，请稍候', 'info');
+      return;
+    }
     isAskBusy = true;
-    clearChatEditor();
-    pendingImages = [];
-    renderAttachments();
     chatEditor.setAttribute('contenteditable', 'false');
     sendBtn.disabled = true;
     sendBtn.textContent = '...';
@@ -3253,16 +3313,54 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
 
     const rid = 'q_' + Date.now();
     const res = await bg('ASK', { question: q, images: imgs, requestId: rid });
-    session.messages.push({
-      role: 'assistant',
-      content: res.ok && res.answer ? res.answer : '请求失败：' + (res.error || '未知错误'),
-    });
+
+    // The background pushes the assistant answer through SESSION_UPDATE, and
+    // that update can arrive before or after this response. Appending the
+    // answer unconditionally produced two identical bubbles for a moment.
+    if (res.ok && res.answer) {
+      if (!isLatestAssistantReply(session.messages || [], res.answer)) {
+        if (res.session) {
+          // The background session is canonical and already contains this
+          // answer. Trust its assistant tail instead of comparing the text a
+          // second time: a provider may normalize whitespace, which would
+          // otherwise append a near-duplicate bubble.
+          adoptBackgroundSession(res.session);
+          if (!hasAssistantTail(session.messages || [])) {
+            if (!Array.isArray(session.messages)) session.messages = [];
+            session.messages.push({ role: 'assistant', content: res.answer });
+          }
+        } else {
+          if (!Array.isArray(session.messages)) session.messages = [];
+          session.messages.push({ role: 'assistant', content: res.answer });
+        }
+      }
+    } else {
+      if (!Array.isArray(session.messages)) session.messages = [];
+      session.messages.push({
+        role: 'assistant',
+        content: '请求失败：' + (res.error || '未知错误'),
+      });
+    }
     isAskBusy = false;
     chatEditor.setAttribute('contenteditable', 'plaintext-only');
     sendBtn.disabled = false;
     sendBtn.textContent = '发送';
     updateChat();
     chatEditor.focus();
+  }
+
+  async function sendQuestion() {
+    if (isAskBusy) return;
+    setCiteOpen(false);
+    // Leave preview first: a hidden editor reports '' from innerText.
+    if (isPreviewing) togglePreview();
+    const q = getChatText();
+    const imgs = pendingImages.slice();
+    if (!q && imgs.length === 0) return;
+    clearChatEditor();
+    pendingImages = [];
+    renderAttachments();
+    await submitQuestion(q, imgs);
   }
 
   sendBtn.addEventListener('click', sendQuestion);
@@ -3452,7 +3550,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
           img.className = 'note-img-preview'
           img.alt = '笔记图片'
           img.style.cssText = 'max-width:100%;max-height:80px;border-radius:4px;object-fit:cover;cursor:pointer'
-          img.addEventListener('click', () => openShotPreview(entry.imageUrl!, true))
+          img.addEventListener('click', () => openShotPreview(entry.imageUrl!, true, true))
           item.appendChild(img)
         }
         if (entry.type === 'svg' && entry.svg) {
@@ -3515,107 +3613,20 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
 
   /* ===== Video screenshot ===== */
 
-  function loadImageElement(src: string): Promise<HTMLImageElement> {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error('截图解码失败'));
-      img.src = src;
-    });
-  }
-
-  /**
-   * Visible content rect of the <video>, accounting for object-fit letterboxing
-   * and clipping to the viewport.
-   */
-  function getVideoContentRect(video: HTMLVideoElement): { x: number; y: number; w: number; h: number } | null {
-    const r = video.getBoundingClientRect();
-    let x = r.left;
-    let y = r.top;
-    let w = r.width;
-    let h = r.height;
-    if (!w || !h || !video.videoWidth || !video.videoHeight) return null;
-
-    const fit = getComputedStyle(video).objectFit || 'contain';
-    if (fit === 'contain' || fit === 'scale-down') {
-      const videoAspect = video.videoWidth / video.videoHeight;
-      const boxAspect = w / h;
-      if (videoAspect > boxAspect) {
-        const nh = w / videoAspect;
-        y += (h - nh) / 2;
-        h = nh;
-      } else {
-        const nw = h * videoAspect;
-        x += (w - nw) / 2;
-        w = nw;
-      }
-    }
-
-    const left = Math.max(0, x);
-    const top = Math.max(0, y);
-    const right = Math.min(window.innerWidth, x + w);
-    const bottom = Math.min(window.innerHeight, y + h);
-    if (right - left < 8 || bottom - top < 8) return null;
-    return { x: left, y: top, w: right - left, h: bottom - top };
-  }
-
-  async function captureVideoFrame(): Promise<string> {
-    const video = document.querySelector('video') as HTMLVideoElement | null;
-    if (!video) throw new Error('当前页面没有视频');
-    if (!video.videoWidth || !video.videoHeight) throw new Error('视频还没有画面，请稍后再试');
-
-    const rect = getVideoContentRect(video);
-    if (!rect) throw new Error('视频不在可视区域内');
-
-    // Hide the whole injected UI before the browser grabs the viewport so the
-    // toolbar and subtitles never end up in the note image.
-    host.style.display = 'none';
-    try {
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      });
-      await new Promise((resolve) => setTimeout(resolve, 120));
-
-      const res: any = await bg('CAPTURE_SCREENSHOT');
-      if (!res.ok || !res.dataUrl) throw new Error(res.error || '浏览器截图失败');
-
-      const img = await loadImageElement(res.dataUrl);
-      const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
-      const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
-
-      const sx = Math.round(rect.x * scaleX);
-      const sy = Math.round(rect.y * scaleY);
-      const sw = Math.max(1, Math.round(rect.w * scaleX));
-      const sh = Math.max(1, Math.round(rect.h * scaleY));
-
-      let outW = sw;
-      let outH = sh;
-      const maxW = 1600;
-      if (outW > maxW) {
-        outH = Math.round((outH * maxW) / outW);
-        outW = maxW;
-      }
-
-      const canvas = document.createElement('canvas');
-      canvas.width = outW;
-      canvas.height = outH;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('无法创建画布');
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
-      return canvas.toDataURL('image/jpeg', 0.9);
-    } finally {
-      host.style.display = '';
-    }
-  }
+  const { captureVideoFrame } = createScreenshotCapturer({
+    host,
+    capture: () => bg('CAPTURE_SCREENSHOT'),
+  });
 
   /* ===== Screenshot preview ===== */
   let shotPreviewUrl = '';
 
-  function openShotPreview(dataUrl: string, saved: boolean) {
+  function openShotPreview(dataUrl: string, saved: boolean, insertable = false) {
     shotPreviewUrl = dataUrl;
     shotImg.src = dataUrl;
     shotSave.disabled = saved;
     shotSave.textContent = saved ? '已存入笔记' : '存入笔记';
+    shotInsert.style.display = insertable ? '' : 'none';
     shotModal.classList.add('open');
   }
 
@@ -3650,6 +3661,18 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
     shotSave.disabled = true;
     shotSave.textContent = '已存入笔记';
     toast('截图已存入笔记', 'ok');
+  });
+  shotInsert.addEventListener('click', () => {
+    if (!shotPreviewUrl) return;
+    if (pendingImages.length >= 4) {
+      toast('最多 4 张图片', 'err');
+      return;
+    }
+    pendingImages.push(shotPreviewUrl);
+    renderAttachments();
+    closeShotPreview();
+    openDrawer('chat');
+    toast('已插入伴学对话', 'ok');
   });
 
   /* ===== Export ===== */
@@ -3848,17 +3871,22 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   screenshotBtn.addEventListener('click', async () => {
     screenshotBtn.classList.add('busy');
     try {
-      const dataUrl = await captureVideoFrame();
+      const shot = await captureVideoFrame();
       addNoteEntry({
         id: `screenshot_${Date.now()}`,
         type: 'screenshot',
         at: Date.now(),
-        imageUrl: dataUrl,
-        text: '视频截图',
+        imageUrl: shot.dataUrl,
+        text: shot.cropped ? '视频截图' : '页面截图',
       });
-      openShotPreview(dataUrl, true);
+      openShotPreview(shot.dataUrl, true, true);
       flashChip(screenshotBtn);
-      toast('已截取视频画面并存入笔记', 'ok');
+      toast(
+        shot.cropped
+          ? '已截取视频画面并存入笔记'
+          : '已截取当前画面（未识别到视频区域）并存入笔记',
+        'ok',
+      );
     } catch (err: any) {
       toast('截图失败：' + (err.message || '未知错误'), 'err');
     } finally {
@@ -3972,6 +4000,7 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
         persistUiHidden();
         applyUiHidden();
         render();
+        wakeSubtitleBox();
         if (session.state === 'idle' && session.subtitles.length === 0) {
           subPlaceholder.textContent = '点击「录音」开始实时转写';
         }

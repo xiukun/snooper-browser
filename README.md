@@ -45,6 +45,12 @@ video is paused or silent.
 - In the extension, the companion drawer can cite screenshots saved in notes,
   and both the companion and note editors offer a comfortable multi-line input
   that grows while typing and scrolls past a bounded maximum.
+- Generate images in the page and send them straight to notes or the companion
+  chat; three playful prompts cover roasting the image, continuing the plot,
+  and writing a line of dialogue.
+- Generated images are materialised into data URLs in the background, so a
+  third-party CDN, CSP rule, or expired signature cannot leave a blank frame
+  after a "successful" request.
 
 ### Image understanding
 
@@ -63,6 +69,11 @@ video is paused or silent.
 ### Notes and export
 
 - Save subtitle lines and page screenshots as notes from the in-page toolbar.
+- Video screenshots come from the composited tab surface; a `<video>` is only a
+  crop hint, so hidden players or cross-origin iframes fall back to a full-page
+  capture instead of an error.
+- After 6.5 seconds without a new subtitle, the subtitle box collapses and
+  fades; a new line or a nearby pointer restores it.
 - Review, edit, and delete notes in the extension side panel; export the full
   transcript with notes as Markdown for Obsidian or any plain-text workflow.
 - Optional Obsidian sync through the Local REST API plugin, verified with a

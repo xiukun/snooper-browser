@@ -1020,33 +1020,57 @@ ${question}`
       case "CAPTURE_FRAME": {
         const tabId = message.tabId;
         const sess = captureSessions.get(tabId);
-        if (!sess || sess.aborted || !sess.videoEl || !sess.videoEl.videoWidth) {
+        if (!sess || sess.aborted || !sess.videoEl) {
           sendResponse({ ok: false, error: "\u6CA1\u6709\u53EF\u7528\u7684\u89C6\u9891\u5E27" });
           return true;
         }
-        try {
-          const video = sess.videoEl;
-          if (video.readyState < 2 || !video.videoWidth) {
-            sendResponse({ ok: false, error: "\u89C6\u9891\u5C1A\u672A\u5C31\u7EEA" });
-            return true;
+        (async () => {
+          try {
+            const video = sess.videoEl;
+            for (let attempt = 0; attempt < 12; attempt++) {
+              if (video.readyState >= 2 && video.videoWidth > 0) break;
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+            if (video.readyState >= 2) {
+              await new Promise((resolve) => {
+                let settled = false;
+                const finish = () => {
+                  if (settled) return;
+                  settled = true;
+                  resolve();
+                };
+                const requestFrame = video.requestVideoFrameCallback;
+                if (typeof requestFrame === "function") {
+                  try {
+                    requestFrame.call(video, () => finish());
+                  } catch {
+                  }
+                }
+                setTimeout(finish, 400);
+              });
+            }
+            if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+              sendResponse({ ok: false, error: "\u5F55\u5236\u4E2D\u7684\u89C6\u9891\u5E27\u5C1A\u672A\u5C31\u7EEA\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5" });
+              return;
+            }
+            const canvas = document.createElement("canvas");
+            let w = video.videoWidth;
+            let h = video.videoHeight;
+            const maxW = 1600;
+            if (w > maxW) {
+              h = Math.round(h * maxW / w);
+              w = maxW;
+            }
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(video, 0, 0, w, h);
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+            sendResponse({ ok: true, dataUrl, width: w, height: h });
+          } catch (err) {
+            sendResponse({ ok: false, error: err.message || "\u5E27\u6355\u83B7\u5931\u8D25" });
           }
-          const canvas = document.createElement("canvas");
-          let w = video.videoWidth;
-          let h = video.videoHeight;
-          const maxW = 1600;
-          if (w > maxW) {
-            h = Math.round(h * maxW / w);
-            w = maxW;
-          }
-          canvas.width = w;
-          canvas.height = h;
-          const ctx = canvas.getContext("2d");
-          ctx.drawImage(video, 0, 0, w, h);
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
-          sendResponse({ ok: true, dataUrl });
-        } catch (err) {
-          sendResponse({ ok: false, error: err.message || "\u5E27\u6355\u83B7\u5931\u8D25" });
-        }
+        })();
         return true;
       }
       case "ASK_QUESTION": {

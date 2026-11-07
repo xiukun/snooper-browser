@@ -21,6 +21,370 @@
     (target) => !SOURCE_LANGUAGES.some((source) => source.code === target.code)
   )];
 
+  // src/ext/screenshot.ts
+  function loadImageElement(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("\u622A\u56FE\u89E3\u7801\u5931\u8D25"));
+      img.src = src;
+    });
+  }
+  function collectVideos(root, out, depth) {
+    if (depth > 3) return;
+    root.querySelectorAll("video").forEach((video) => out.push(video));
+    root.querySelectorAll("iframe").forEach((frame) => {
+      try {
+        const doc = frame.contentDocument;
+        if (doc) collectVideos(doc, out, depth + 1);
+      } catch {
+      }
+    });
+    root.querySelectorAll("*").forEach((el) => {
+      const shadowRoot = el.shadowRoot;
+      if (shadowRoot) collectVideos(shadowRoot, out, depth + 1);
+    });
+  }
+  function getFrameGeometry(win) {
+    const frames = [];
+    let current = win;
+    for (let depth = 0; current && current !== window && depth < 5; depth++) {
+      let frame = null;
+      try {
+        frame = current.frameElement;
+      } catch {
+        break;
+      }
+      if (!frame) break;
+      frames.unshift(frame);
+      current = frame.ownerDocument.defaultView;
+    }
+    let x = 0;
+    let y = 0;
+    let clip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    for (const frame of frames) {
+      const rect = frame.getBoundingClientRect();
+      const left = x + rect.left;
+      const top = y + rect.top;
+      clip = {
+        left: Math.max(clip.left, left),
+        top: Math.max(clip.top, top),
+        right: Math.min(clip.right, left + rect.width),
+        bottom: Math.min(clip.bottom, top + rect.height)
+      };
+      x = left;
+      y = top;
+    }
+    return { x, y, clip };
+  }
+  function getVideoContentRect(video) {
+    if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
+    const win = video.ownerDocument.defaultView;
+    if (!win) return null;
+    const style = win.getComputedStyle(video);
+    if (style.display === "none" || style.visibility === "hidden") return null;
+    if (Number(style.opacity) < 0.05) return null;
+    const r = video.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const frame = getFrameGeometry(win);
+    let x = r.left + frame.x;
+    let y = r.top + frame.y;
+    let w = r.width;
+    let h = r.height;
+    const fit = style.objectFit || "contain";
+    if (fit === "contain" || fit === "scale-down") {
+      const videoAspect = video.videoWidth / video.videoHeight;
+      const boxAspect = w / h;
+      if (videoAspect > boxAspect) {
+        const nh = w / videoAspect;
+        y += (h - nh) / 2;
+        h = nh;
+      } else {
+        const nw = h * videoAspect;
+        x += (w - nw) / 2;
+        w = nw;
+      }
+    }
+    const left = Math.max(frame.clip.left, x);
+    const top = Math.max(frame.clip.top, y);
+    const right = Math.min(frame.clip.right, x + w);
+    const bottom = Math.min(frame.clip.bottom, y + h);
+    if (right - left < 64 || bottom - top < 64) return null;
+    return { x: left, y: top, w: right - left, h: bottom - top };
+  }
+  function findBestVideoCandidate() {
+    const videos = [];
+    collectVideos(document, videos, 0);
+    let best = null;
+    for (const video of videos) {
+      const rect = getVideoContentRect(video);
+      if (!rect) continue;
+      const score = rect.w * rect.h * (video.paused ? 0.6 : 1);
+      if (!best || score > best.score) best = { video, rect, score };
+    }
+    return best ? { video: best.video, rect: best.rect, count: videos.length } : null;
+  }
+  function createScreenshotCapturer(deps) {
+    const maxWidth = deps.maxWidth ?? 1600;
+    const quality = deps.jpegQuality ?? 0.9;
+    const hideDelayMs = deps.hideDelayMs ?? 120;
+    async function render(dataUrl, rect) {
+      const img = await loadImageElement(dataUrl);
+      const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
+      const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
+      let sx = 0;
+      let sy = 0;
+      let sw = img.naturalWidth;
+      let sh = img.naturalHeight;
+      if (rect) {
+        sx = Math.min(img.naturalWidth - 1, Math.max(0, Math.round(rect.x * scaleX)));
+        sy = Math.min(img.naturalHeight - 1, Math.max(0, Math.round(rect.y * scaleY)));
+        sw = Math.min(img.naturalWidth - sx, Math.max(1, Math.round(rect.w * scaleX)));
+        sh = Math.min(img.naturalHeight - sy, Math.max(1, Math.round(rect.h * scaleY)));
+        if (sw < 32 || sh < 32) throw new Error("\u89C6\u9891\u88C1\u526A\u533A\u57DF\u8FC7\u5C0F");
+      }
+      let outW = sw;
+      let outH = sh;
+      if (outW > maxWidth) {
+        outH = Math.round(outH * maxWidth / outW);
+        outW = maxWidth;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("\u65E0\u6CD5\u521B\u5EFA\u753B\u5E03");
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+      return canvas.toDataURL("image/jpeg", quality);
+    }
+    async function captureVideoFrame() {
+      const candidate = findBestVideoCandidate();
+      console.log("[RTTS] screenshot candidates", {
+        count: candidate?.count ?? 0,
+        chosen: candidate ? { width: candidate.video.videoWidth, height: candidate.video.videoHeight, area: Math.round(candidate.rect.w * candidate.rect.h) } : null
+      });
+      deps.host.style.display = "none";
+      try {
+        await new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        await new Promise((resolve) => setTimeout(resolve, hideDelayMs));
+        const res = await deps.capture();
+        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u6D4F\u89C8\u5668\u622A\u56FE\u5931\u8D25");
+        let dataUrl = res.dataUrl;
+        let cropped = false;
+        if (candidate) {
+          try {
+            dataUrl = await render(res.dataUrl, candidate.rect);
+            cropped = true;
+          } catch (err) {
+            console.warn("[RTTS] screenshot crop failed, using the full frame:", err);
+          }
+        }
+        if (!cropped) dataUrl = await render(res.dataUrl, null);
+        console.log("[RTTS] screenshot", {
+          path: res.path || "unknown",
+          cropped,
+          bytes: dataUrl.length
+        });
+        return { dataUrl, cropped };
+      } finally {
+        deps.host.style.display = "";
+      }
+    }
+    return { captureVideoFrame, findBestVideoCandidate };
+  }
+
+  // src/ext/image-panel.ts
+  function createImagePanel(deps) {
+    const { refs } = deps;
+    let lastImageUrl = "";
+    let lastRemoteUrl = "";
+    let lastPrompt = "";
+    function resetResult() {
+      lastImageUrl = "";
+      lastRemoteUrl = "";
+      refs.result.classList.remove("show");
+      refs.actions.classList.remove("show");
+      refs.fun.classList.remove("show");
+      refs.resultImg.onload = null;
+      refs.resultImg.onerror = null;
+      refs.resultImg.removeAttribute("src");
+      refs.openOriginal.hidden = true;
+      refs.openOriginal.removeAttribute("href");
+    }
+    function setStatus(message, tone = "info") {
+      refs.status.className = "rtts-status show" + (tone === "info" ? " info" : ` ${tone}`);
+      refs.status.textContent = message;
+    }
+    function safeExternalUrl(url) {
+      try {
+        const parsed = new URL(url);
+        return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.toString() : "";
+      } catch {
+        return "";
+      }
+    }
+    function clearStatus() {
+      refs.status.className = "rtts-status";
+      refs.status.textContent = "";
+    }
+    function showImage(url, remote) {
+      lastImageUrl = url;
+      lastRemoteUrl = remote;
+      refs.result.classList.add("show");
+      refs.actions.classList.add("show");
+      refs.fun.classList.add("show");
+      refs.resultImg.onload = () => {
+        setStatus("\u751F\u6210\u5B8C\u6210 \xB7 " + (refs.resultImg.naturalWidth || "?") + " \xD7 " + (refs.resultImg.naturalHeight || "?"), "ok");
+        refs.openOriginal.hidden = true;
+      };
+      refs.resultImg.onerror = () => {
+        setStatus("\u56FE\u7247\u5DF2\u751F\u6210\uFF0C\u4F46\u5F53\u524D\u9875\u9762\u65E0\u6CD5\u52A0\u8F7D\u3002\u53EF\u6253\u5F00\u539F\u56FE\u6216\u91CD\u65B0\u751F\u6210\u3002", "err");
+        const safeRemote = remote ? safeExternalUrl(remote) : "";
+        if (safeRemote) {
+          refs.openOriginal.href = safeRemote;
+          refs.openOriginal.hidden = false;
+        }
+      };
+      refs.resultImg.src = url;
+    }
+    async function ensureDataUrl() {
+      if (lastImageUrl.startsWith("data:")) return lastImageUrl;
+      if (lastRemoteUrl) {
+        const dataUrl = await deps.materialize(lastRemoteUrl);
+        if (dataUrl.startsWith("data:")) {
+          lastImageUrl = dataUrl;
+          return dataUrl;
+        }
+      }
+      throw new Error("\u56FE\u7247\u8FD8\u6CA1\u6709\u7F13\u5B58\u5230\u672C\u5730\uFF0C\u8BF7\u5148\u4E0B\u8F7D\u6216\u91CD\u65B0\u751F\u6210");
+    }
+    function open(prompt = "") {
+      resetResult();
+      clearStatus();
+      lastPrompt = prompt;
+      refs.prompt.value = prompt;
+      refs.modal.classList.add("open");
+      setTimeout(() => refs.prompt.focus(), 30);
+    }
+    function close() {
+      refs.modal.classList.remove("open");
+    }
+    async function generate() {
+      const prompt = refs.prompt.value.trim();
+      if (!prompt) {
+        deps.toast("\u8BF7\u5148\u8F93\u5165\u63D0\u793A\u8BCD", "err");
+        return;
+      }
+      lastPrompt = prompt;
+      refs.generate.disabled = true;
+      refs.generate.classList.add("loading");
+      const label = refs.generate.querySelector("span");
+      if (label) label.textContent = "\u751F\u6210\u4E2D\u2026";
+      resetResult();
+      setStatus("\u6B63\u5728\u8BF7\u6C42\u751F\u56FE\u63A5\u53E3\uFF0C\u901A\u5E38\u9700\u8981 20\u201330 \u79D2", "info");
+      try {
+        const res = await deps.generate({
+          prompt,
+          size: refs.size.value,
+          negativePrompt: refs.negative.value.trim()
+        });
+        if (!res.ok || !Array.isArray(res.images) || res.images.length === 0) {
+          setStatus(res.error || "\u751F\u6210\u5931\u8D25", "err");
+          return;
+        }
+        const remote = res.remoteImages?.[0] || "";
+        showImage(res.images[0], remote);
+        if (res.warnings?.length) {
+          console.warn("[RTTS] image generation warnings", res.warnings);
+        }
+      } catch (err) {
+        setStatus(err?.message || "\u751F\u6210\u5931\u8D25", "err");
+      } finally {
+        refs.generate.disabled = false;
+        refs.generate.classList.remove("loading");
+        if (label) label.textContent = "\u751F\u6210\u56FE\u7247";
+      }
+    }
+    async function saveToNotes() {
+      try {
+        const dataUrl = await ensureDataUrl();
+        deps.addNote(dataUrl, lastPrompt.slice(0, 80) || "\u751F\u6210\u914D\u56FE");
+        deps.toast("\u5DF2\u5B58\u5165\u7B14\u8BB0", "ok");
+        close();
+      } catch (err) {
+        deps.toast(err?.message || "\u5B58\u5165\u7B14\u8BB0\u5931\u8D25", "err");
+      }
+    }
+    async function insertToChat() {
+      try {
+        const dataUrl = await ensureDataUrl();
+        deps.insertChat(dataUrl, lastPrompt);
+        deps.toast("\u5DF2\u63D2\u5165\u4F34\u5B66\u5BF9\u8BDD", "ok");
+        close();
+      } catch (err) {
+        deps.toast(err?.message || "\u63D2\u5165\u5931\u8D25", "err");
+      }
+    }
+    function download() {
+      if (!lastImageUrl) return;
+      const extension = lastImageUrl.startsWith("data:image/jpeg") ? "jpg" : lastImageUrl.startsWith("data:image/webp") ? "webp" : lastImageUrl.startsWith("data:image/gif") ? "gif" : "png";
+      const a = document.createElement("a");
+      a.href = lastImageUrl;
+      a.download = `snooper-${Date.now()}.${extension}`;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.click();
+    }
+    async function play(kind) {
+      try {
+        const dataUrl = await ensureDataUrl();
+        deps.play(kind, dataUrl, lastPrompt);
+        close();
+      } catch (err) {
+        deps.toast(err?.message || "\u64CD\u4F5C\u5931\u8D25", "err");
+      }
+    }
+    refs.close.addEventListener("click", close);
+    refs.modal.addEventListener("click", (event) => {
+      if (event.target === refs.modal) close();
+    });
+    refs.generate.addEventListener("click", () => {
+      void generate();
+    });
+    refs.save.addEventListener("click", () => {
+      void saveToNotes();
+    });
+    refs.insert.addEventListener("click", () => {
+      void insertToChat();
+    });
+    refs.download.addEventListener("click", download);
+    refs.fun.querySelectorAll("[data-fun]").forEach((button) => {
+      button.addEventListener("click", () => {
+        void play(button.dataset.fun);
+      });
+    });
+    return { open, close, generate, saveToNotes, insertToChat, download, play };
+  }
+
+  // src/ext/chat-state.ts
+  function isLatestAssistantReply(messages, answer) {
+    const last = messages[messages.length - 1];
+    return !!last && last.role === "assistant" && last.content === answer;
+  }
+  function hasAssistantTail(messages) {
+    const last = messages[messages.length - 1];
+    return !!last && last.role === "assistant";
+  }
+  function chatRenderSignature(messages) {
+    return JSON.stringify(messages.map((message) => [
+      message.role,
+      message.content,
+      message.images?.length || 0
+    ]));
+  }
+
   // src/ext/content.ts
   var NOTES_STORAGE_KEY = "snooper.notes.v1";
   async function loadNotes() {
@@ -556,14 +920,23 @@
       border-bottom: 2px solid rgba(255,255,255,0.42);
     }
     #rtts-sub-resize:hover::after { border-color: rgba(255,255,255,0.85); }
-    #rtts-sub-box.compact { height: 56px !important; min-height: 56px; padding-top: 16px; padding-bottom: 6px; }
-    #rtts-sub-box.compact #rtts-sub-scroll { overflow: hidden; }
-    #rtts-sub-box.compact .sub-row.history:not(.current) { display: none; }
+    #rtts-sub-box.compact,
+    #rtts-sub-box.auto-idle { height: 56px !important; min-height: 56px; padding-top: 16px; padding-bottom: 6px; }
+    #rtts-sub-box.auto-idle { opacity: 0.55; }
+    #rtts-sub-box.compact #rtts-sub-scroll,
+    #rtts-sub-box.auto-idle #rtts-sub-scroll { overflow: hidden; }
+    #rtts-sub-box.compact .sub-row.history:not(.current),
+    #rtts-sub-box.auto-idle .sub-row.history:not(.current) { display: none; }
     #rtts-sub-box.compact .sub-row.current,
-    #rtts-sub-box.compact #rtts-streaming-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #rtts-sub-box.compact #rtts-streaming-row,
+    #rtts-sub-box.auto-idle .sub-row.current,
+    #rtts-sub-box.auto-idle #rtts-streaming-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #rtts-sub-box.compact .sub-source,
-    #rtts-sub-box.compact .stream-label { display: none !important; }
-    #rtts-sub-box.compact #rtts-sub-status { margin-top: 1px; font-size: 9px; }
+    #rtts-sub-box.compact .stream-label,
+    #rtts-sub-box.auto-idle .sub-source,
+    #rtts-sub-box.auto-idle .stream-label { display: none !important; }
+    #rtts-sub-box.compact #rtts-sub-status,
+    #rtts-sub-box.auto-idle #rtts-sub-status { margin-top: 1px; font-size: 9px; }
 
     .sub-row {
       transition: opacity 0.25s, font-size 0.25s;
@@ -1088,6 +1461,20 @@
     }
     .rtts-image-result.show { display: block; }
     .rtts-image-result img { display: block; width: 100%; height: auto; }
+    .rtts-image-open {
+      display: block; padding: 8px 10px; font-size: 11px; text-align: center;
+      color: #b9a6ff; text-decoration: none; border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .rtts-image-open:hover { color: #d8ccff; background: rgba(124,92,255,0.08); }
+    .rtts-image-open[hidden] { display: none; }
+    .rtts-image-fun { display: none; gap: 8px; flex-wrap: wrap; }
+    .rtts-image-fun.show { display: flex; }
+    .rtts-image-fun button {
+      height: 28px; padding: 0 11px; border-radius: 14px; cursor: pointer;
+      border: 1px solid rgba(124,92,255,0.28); background: rgba(124,92,255,0.1);
+      color: #c9baff; font-size: 11px; font-family: inherit;
+    }
+    .rtts-image-fun button:hover { background: rgba(124,92,255,0.2); color: #fff; }
     .rtts-image-actions { display: none; gap: 8px; margin-left: auto; }
     .rtts-image-actions.show { display: flex; }
 
@@ -1533,6 +1920,12 @@
           <div id="rtts-img-status" class="rtts-status" role="status" aria-live="polite"></div>
           <div id="rtts-img-result" class="rtts-image-result">
             <img id="rtts-img-result-img" alt="\u751F\u6210\u7684\u914D\u56FE">
+            <a id="rtts-img-open" class="rtts-image-open" target="_blank" rel="noopener noreferrer" hidden>\u5F53\u524D\u9875\u9762\u65E0\u6CD5\u52A0\u8F7D\uFF0C\u6253\u5F00\u539F\u56FE</a>
+          </div>
+          <div id="rtts-img-fun" class="rtts-image-fun" role="group" aria-label="\u56FE\u7247\u5A31\u4E50\u4E92\u52A8">
+            <button type="button" data-fun="roast">\u5410\u69FD\u8FD9\u5F20\u56FE</button>
+            <button type="button" data-fun="continue">\u7EED\u5199\u5267\u60C5</button>
+            <button type="button" data-fun="line">\u914D\u4E00\u53E5\u53F0\u8BCD</button>
           </div>
         </div>
         <div class="rtts-modal-footer">
@@ -1541,6 +1934,7 @@
             <span>\u751F\u6210\u56FE\u7247</span>
           </button>
           <div id="rtts-img-actions" class="rtts-image-actions">
+            <button id="rtts-img-insert" class="rtts-btn-ghost" type="button">\u63D2\u5165\u4F34\u5B66</button>
             <button id="rtts-img-save" class="rtts-btn-ghost" type="button">\u5B58\u5165\u7B14\u8BB0</button>
             <button id="rtts-img-download" class="rtts-btn-ghost" type="button">\u4E0B\u8F7D</button>
           </div>
@@ -1556,8 +1950,8 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
           </div>
           <div>
-            <h3>\u89C6\u9891\u622A\u56FE</h3>
-            <p class="sub">\u53EA\u622A\u53D6\u89C6\u9891\u753B\u9762\uFF0C\u4E0D\u542B\u5B57\u5E55\u4E0E\u5DE5\u5177\u680F</p>
+            <h3>\u622A\u56FE\u9884\u89C8</h3>
+            <p class="sub">\u4F18\u5148\u88C1\u5230\u89C6\u9891\u533A\u57DF\uFF1B\u627E\u4E0D\u5230\u89C6\u9891\u65F6\u4FDD\u7559\u6574\u9875\uFF0C\u53EF\u5B58\u5165\u7B14\u8BB0\u6216\u63D2\u5165\u4F34\u5B66</p>
           </div>
           <button id="rtts-shot-close-x" class="rtts-modal-close" type="button" aria-label="\u5173\u95ED"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         </div>
@@ -1567,6 +1961,7 @@
         <div class="rtts-modal-footer">
           <button id="rtts-shot-download" class="rtts-btn-ghost" type="button">\u4E0B\u8F7D\u56FE\u7247</button>
           <div style="margin-left:auto;display:flex;gap:8px">
+            <button id="rtts-shot-insert" class="rtts-btn-ghost" type="button">\u63D2\u5165\u4F34\u5B66</button>
             <button id="rtts-shot-close" class="rtts-btn-ghost" type="button">\u5173\u95ED</button>
             <button id="rtts-shot-save" class="rtts-btn-primary" type="button">\u5B58\u5165\u7B14\u8BB0</button>
           </div>
@@ -1664,6 +2059,7 @@
     const shotCloseX = shadow.getElementById("rtts-shot-close-x");
     const shotDownload = shadow.getElementById("rtts-shot-download");
     const shotSave = shadow.getElementById("rtts-shot-save");
+    const shotInsert = shadow.getElementById("rtts-shot-insert");
     const imageModal = shadow.getElementById("rtts-image-modal");
     const imgClose = shadow.getElementById("rtts-img-close");
     const imgPrompt = shadow.getElementById("rtts-img-prompt");
@@ -1673,8 +2069,11 @@
     const imgStatus = shadow.getElementById("rtts-img-status");
     const imgResult = shadow.getElementById("rtts-img-result");
     const imgResultImg = shadow.getElementById("rtts-img-result-img");
+    const imgOpen = shadow.getElementById("rtts-img-open");
     const imgActions = shadow.getElementById("rtts-img-actions");
+    const imgFun = shadow.getElementById("rtts-img-fun");
     const imgSave = shadow.getElementById("rtts-img-save");
+    const imgInsert = shadow.getElementById("rtts-img-insert");
     const imgDownload = shadow.getElementById("rtts-img-download");
     const toasts = shadow.getElementById("rtts-toasts");
     function buildLangPicker() {
@@ -1782,6 +2181,7 @@
         activeNoteId: session.activeNoteId,
         isDemoMode: session.isDemoMode
       };
+      if (!Array.isArray(session.messages)) session.messages = [];
       render();
     }
     let sessionSyncSerial = 0;
@@ -1791,14 +2191,6 @@
       if (serial !== sessionSyncSerial || !res.ok || !res.session) return false;
       adoptBackgroundSession(res.session);
       return true;
-    }
-    async function fetchAsDataUrl(url) {
-      try {
-        const res = await bg("FETCH_URL", { url });
-        if (res.ok && res.dataUrl) return res.dataUrl;
-      } catch {
-      }
-      return url;
     }
     function toast(message, tone = "info") {
       const el = document.createElement("div");
@@ -1991,82 +2383,76 @@
         saveSettings();
       }
     });
-    let lastImageUrl = "";
+    function subtitleDigest(limit = 6) {
+      const text = session.subtitles.slice(-limit).map((line) => line.target && line.target !== line.source ? `${line.source} / ${line.target}` : line.source).filter(Boolean).join("\uFF1B");
+      return text || "\uFF08\u5F53\u524D\u8FD8\u6CA1\u6709\u5B57\u5E55\uFF0C\u53EF\u4EE5\u6309\u753B\u9762\u81EA\u7531\u53D1\u6325\uFF09";
+    }
+    function funQuestion(kind) {
+      const context = subtitleDigest();
+      if (kind === "roast") {
+        return `\u8BF7\u7528\u4E00\u53E5\u7280\u5229\u4F46\u4E0D\u5192\u72AF\u7684\u5410\u69FD\u70B9\u8BC4\u8FD9\u5F20\u56FE\uFF0C\u7ED3\u5408\u5F53\u524D\u5267\u60C5\uFF1A
+${context}`;
+      }
+      if (kind === "continue") {
+        return `\u6839\u636E\u8FD9\u5F20\u56FE\u548C\u5F53\u524D\u5B57\u5E55\uFF0C\u7EED\u5199\u63A5\u4E0B\u6765 3 \u53E5\u5267\u60C5\uFF0C\u4FDD\u6301\u4EBA\u7269\u548C\u8BED\u6C14\u4E00\u81F4\uFF1A
+${context}`;
+      }
+      return `\u4E3A\u8FD9\u5F20\u56FE\u914D\u4E00\u53E5\u6709\u51B2\u51FB\u529B\u7684\u53F0\u8BCD\uFF0C\u8D34\u5408\u5F53\u524D\u5267\u60C5\uFF1A
+${context}`;
+    }
+    const imagePanel = createImagePanel({
+      refs: {
+        modal: imageModal,
+        close: imgClose,
+        prompt: imgPrompt,
+        size: imgSize,
+        negative: imgNeg,
+        status: imgStatus,
+        result: imgResult,
+        resultImg: imgResultImg,
+        actions: imgActions,
+        generate: imgGenerate,
+        save: imgSave,
+        insert: imgInsert,
+        download: imgDownload,
+        fun: imgFun,
+        openOriginal: imgOpen
+      },
+      generate: (input) => bg("GENERATE_IMAGE", input),
+      materialize: async (url) => {
+        const res = await bg("FETCH_IMAGE", { url });
+        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u65E0\u6CD5\u7F13\u5B58\u56FE\u7247");
+        return res.dataUrl;
+      },
+      addNote: (imageUrl, text) => {
+        addNoteEntry({
+          id: `image_${Date.now()}`,
+          type: "image",
+          at: Date.now(),
+          imageUrl,
+          text
+        });
+      },
+      insertChat: (imageUrl) => {
+        if (pendingImages.length >= 4) {
+          throw new Error("\u6700\u591A 4 \u5F20\u56FE\u7247");
+        }
+        pendingImages.push(imageUrl);
+        renderAttachments();
+        openDrawer("chat");
+      },
+      play: (kind, imageUrl) => {
+        openDrawer("chat");
+        void submitQuestion(funQuestion(kind), [imageUrl]);
+      },
+      toast
+    });
     function openImagePanel(prompt) {
-      imgPrompt.value = prompt || "";
-      imgStatus.className = "rtts-status";
-      imgStatus.textContent = "";
-      imgResult.classList.remove("show");
-      imgResultImg.removeAttribute("src");
-      imgActions.classList.remove("show");
-      lastImageUrl = "";
-      imageModal.classList.add("open");
-      setTimeout(() => imgPrompt.focus(), 30);
+      imagePanel.open(prompt);
     }
     function closeImagePanel() {
-      imageModal.classList.remove("open");
+      imagePanel.close();
     }
-    async function generateImageInPage() {
-      const prompt = imgPrompt.value.trim();
-      if (!prompt) {
-        toast("\u8BF7\u5148\u8F93\u5165\u63D0\u793A\u8BCD", "err");
-        return;
-      }
-      const label = imgGenerate.querySelector("span");
-      imgGenerate.disabled = true;
-      imgGenerate.classList.add("loading");
-      if (label) label.textContent = "\u751F\u6210\u4E2D\u2026";
-      imgStatus.className = "rtts-status show info";
-      imgStatus.textContent = "\u6B63\u5728\u8BF7\u6C42\u751F\u56FE\u63A5\u53E3\uFF0C\u901A\u5E38\u9700\u8981 20\u201330 \u79D2";
-      const res = await bg("GENERATE_IMAGE", {
-        prompt,
-        size: imgSize.value,
-        negativePrompt: imgNeg.value.trim()
-      });
-      imgGenerate.disabled = false;
-      imgGenerate.classList.remove("loading");
-      if (label) label.textContent = "\u751F\u6210\u56FE\u7247";
-      if (res.ok && Array.isArray(res.images) && res.images.length) {
-        lastImageUrl = res.images[0];
-        imgResultImg.src = lastImageUrl;
-        imgResult.classList.add("show");
-        imgActions.classList.add("show");
-        imgStatus.className = "rtts-status show ok";
-        imgStatus.textContent = "\u751F\u6210\u5B8C\u6210 \xB7 " + (res.model || "MOSS-Image");
-      } else {
-        imgStatus.className = "rtts-status show err";
-        imgStatus.textContent = res.error || "\u751F\u6210\u5931\u8D25";
-      }
-    }
-    async function saveImageToNotes() {
-      if (!lastImageUrl) return;
-      const dataUrl = lastImageUrl.startsWith("data:") ? lastImageUrl : await fetchAsDataUrl(lastImageUrl);
-      addNoteEntry({
-        id: `image_${Date.now()}`,
-        type: "image",
-        at: Date.now(),
-        imageUrl: dataUrl,
-        text: imgPrompt.value.trim().slice(0, 80) || "\u751F\u6210\u914D\u56FE"
-      });
-      toast("\u5DF2\u5B58\u5165\u7B14\u8BB0", "ok");
-      closeImagePanel();
-    }
-    function downloadImage() {
-      if (!lastImageUrl) return;
-      const a = document.createElement("a");
-      a.href = lastImageUrl;
-      a.download = `snooper-${Date.now()}.png`;
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.click();
-    }
-    imgClose.addEventListener("click", closeImagePanel);
-    imageModal.addEventListener("click", (e) => {
-      if (e.target === imageModal) closeImagePanel();
-    });
-    imgGenerate.addEventListener("click", generateImageInPage);
-    imgSave.addEventListener("click", saveImageToNotes);
-    imgDownload.addEventListener("click", downloadImage);
     function render() {
       const s = session.state;
       recordBtn.className = "rtts-btn rtts-record-btn" + (s === "running" ? " running" : "");
@@ -2077,6 +2463,12 @@
       updateLangLabel();
       const subs = session.subtitles || [];
       const streaming = session.streamingSubtitle;
+      const last = subs[subs.length - 1];
+      const subtitleSignal = `${subs.length}:${last?.id || ""}:${streaming?.at || ""}`;
+      if (subtitleSignal !== lastSubtitleSignal) {
+        lastSubtitleSignal = subtitleSignal;
+        if (last || streaming) markSubtitleActivity();
+      }
       if (!uiHidden && (s === "running" || subs.length > 0 || streaming)) {
         subBox.classList.remove("hidden");
         const hasContent = subs.length > 0 || !!streaming;
@@ -2117,14 +2509,19 @@
         subRows.textContent = "";
         clearStreaming();
         subBox.classList.add("hidden");
+        subBox.classList.remove("auto-idle");
       }
       applyUiHidden();
       positionSubBox();
       updateChat();
       renderNotes();
     }
+    let lastChatSignature = null;
     function updateChat() {
       const msgs = session.messages || [];
+      const signature = chatRenderSignature(msgs);
+      if (signature === lastChatSignature) return;
+      lastChatSignature = signature;
       chatEl.textContent = "";
       if (msgs.length === 0) {
         const w = document.createElement("div");
@@ -2161,6 +2558,7 @@
         return;
       }
       streamingRow.classList.remove("hidden");
+      markSubtitleActivity();
       const displayText = sub.partialTarget || "\u22EF";
       streamingText.textContent = displayText;
       if (sub.source) {
@@ -2179,8 +2577,25 @@
     }
     const SUB_BOX_SIZE_KEY = "snooper.subtitle-box-size.v1";
     const SUB_BOX_COMPACT_KEY = "snooper.subtitle-box-compact.v1";
+    const SUB_BOX_IDLE_MS = 6500;
     let subBoxAutoPosition = true;
     let subBoxCompact = false;
+    let subIdleTimer = null;
+    let lastSubtitleSignal = "";
+    function markSubtitleActivity() {
+      subBox.classList.remove("auto-idle");
+      if (subIdleTimer) window.clearTimeout(subIdleTimer);
+      subIdleTimer = window.setTimeout(() => {
+        const hasContent = session.subtitles.length > 0 || !!session.streamingSubtitle;
+        if (!subBoxCompact && hasContent && !subBox.matches(":hover") && !subBox.classList.contains("hidden")) {
+          subBox.classList.add("auto-idle");
+        }
+      }, SUB_BOX_IDLE_MS);
+    }
+    function wakeSubtitleBox() {
+      subBox.classList.remove("auto-idle");
+      markSubtitleActivity();
+    }
     function persistSubBoxSize(width, height) {
       const size = { width: Math.round(width), height: Math.round(height) };
       try {
@@ -2351,6 +2766,7 @@
     subBox.addEventListener("dblclick", (event) => {
       if (event.target.closest("#rtts-sub-resize, #rtts-sub-handle")) return;
       subBoxCompact = !subBoxCompact;
+      subBox.classList.remove("auto-idle");
       subBox.classList.toggle("compact", subBoxCompact);
       try {
         localStorage.setItem(SUB_BOX_COMPACT_KEY, String(subBoxCompact));
@@ -2361,6 +2777,9 @@
       } catch {
       }
     });
+    subBox.addEventListener("pointerenter", wakeSubtitleBox);
+    subBox.addEventListener("pointerleave", markSubtitleActivity);
+    subBox.addEventListener("focusin", wakeSubtitleBox);
     let subResizeState = null;
     subResize.addEventListener("pointerdown", (event) => {
       event.preventDefault();
@@ -2865,17 +3284,12 @@
       chatComposer.classList.remove("dragover");
       if (e.dataTransfer?.files) addFiles(e.dataTransfer.files);
     });
-    async function sendQuestion() {
-      if (isAskBusy) return;
-      setCiteOpen(false);
-      if (isPreviewing) togglePreview();
-      const q = getChatText();
-      const imgs = pendingImages.slice();
-      if (!q && imgs.length === 0) return;
+    async function submitQuestion(q, imgs) {
+      if (isAskBusy) {
+        toast("\u6B63\u5728\u56DE\u7B54\u4E0A\u4E00\u9898\uFF0C\u8BF7\u7A0D\u5019", "info");
+        return;
+      }
       isAskBusy = true;
-      clearChatEditor();
-      pendingImages = [];
-      renderAttachments();
       chatEditor.setAttribute("contenteditable", "false");
       sendBtn.disabled = true;
       sendBtn.textContent = "...";
@@ -2884,16 +3298,44 @@
       updateChat();
       const rid = "q_" + Date.now();
       const res = await bg("ASK", { question: q, images: imgs, requestId: rid });
-      session.messages.push({
-        role: "assistant",
-        content: res.ok && res.answer ? res.answer : "\u8BF7\u6C42\u5931\u8D25\uFF1A" + (res.error || "\u672A\u77E5\u9519\u8BEF")
-      });
+      if (res.ok && res.answer) {
+        if (!isLatestAssistantReply(session.messages || [], res.answer)) {
+          if (res.session) {
+            adoptBackgroundSession(res.session);
+            if (!hasAssistantTail(session.messages || [])) {
+              if (!Array.isArray(session.messages)) session.messages = [];
+              session.messages.push({ role: "assistant", content: res.answer });
+            }
+          } else {
+            if (!Array.isArray(session.messages)) session.messages = [];
+            session.messages.push({ role: "assistant", content: res.answer });
+          }
+        }
+      } else {
+        if (!Array.isArray(session.messages)) session.messages = [];
+        session.messages.push({
+          role: "assistant",
+          content: "\u8BF7\u6C42\u5931\u8D25\uFF1A" + (res.error || "\u672A\u77E5\u9519\u8BEF")
+        });
+      }
       isAskBusy = false;
       chatEditor.setAttribute("contenteditable", "plaintext-only");
       sendBtn.disabled = false;
       sendBtn.textContent = "\u53D1\u9001";
       updateChat();
       chatEditor.focus();
+    }
+    async function sendQuestion() {
+      if (isAskBusy) return;
+      setCiteOpen(false);
+      if (isPreviewing) togglePreview();
+      const q = getChatText();
+      const imgs = pendingImages.slice();
+      if (!q && imgs.length === 0) return;
+      clearChatEditor();
+      pendingImages = [];
+      renderAttachments();
+      await submitQuestion(q, imgs);
     }
     sendBtn.addEventListener("click", sendQuestion);
     chatEditor.addEventListener("keydown", (e) => {
@@ -3048,7 +3490,7 @@
             img.className = "note-img-preview";
             img.alt = "\u7B14\u8BB0\u56FE\u7247";
             img.style.cssText = "max-width:100%;max-height:80px;border-radius:4px;object-fit:cover;cursor:pointer";
-            img.addEventListener("click", () => openShotPreview(entry.imageUrl, true));
+            img.addEventListener("click", () => openShotPreview(entry.imageUrl, true, true));
             item.appendChild(img);
           }
           if (entry.type === "svg" && entry.svg) {
@@ -3100,87 +3542,17 @@
         notesList.scrollTop = notesList.scrollHeight;
       }
     }
-    function loadImageElement(src) {
-      return new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error("\u622A\u56FE\u89E3\u7801\u5931\u8D25"));
-        img.src = src;
-      });
-    }
-    function getVideoContentRect(video) {
-      const r = video.getBoundingClientRect();
-      let x = r.left;
-      let y = r.top;
-      let w = r.width;
-      let h = r.height;
-      if (!w || !h || !video.videoWidth || !video.videoHeight) return null;
-      const fit = getComputedStyle(video).objectFit || "contain";
-      if (fit === "contain" || fit === "scale-down") {
-        const videoAspect = video.videoWidth / video.videoHeight;
-        const boxAspect = w / h;
-        if (videoAspect > boxAspect) {
-          const nh = w / videoAspect;
-          y += (h - nh) / 2;
-          h = nh;
-        } else {
-          const nw = h * videoAspect;
-          x += (w - nw) / 2;
-          w = nw;
-        }
-      }
-      const left = Math.max(0, x);
-      const top = Math.max(0, y);
-      const right = Math.min(window.innerWidth, x + w);
-      const bottom = Math.min(window.innerHeight, y + h);
-      if (right - left < 8 || bottom - top < 8) return null;
-      return { x: left, y: top, w: right - left, h: bottom - top };
-    }
-    async function captureVideoFrame() {
-      const video = document.querySelector("video");
-      if (!video) throw new Error("\u5F53\u524D\u9875\u9762\u6CA1\u6709\u89C6\u9891");
-      if (!video.videoWidth || !video.videoHeight) throw new Error("\u89C6\u9891\u8FD8\u6CA1\u6709\u753B\u9762\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5");
-      const rect = getVideoContentRect(video);
-      if (!rect) throw new Error("\u89C6\u9891\u4E0D\u5728\u53EF\u89C6\u533A\u57DF\u5185");
-      host.style.display = "none";
-      try {
-        await new Promise((resolve) => {
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-        });
-        await new Promise((resolve) => setTimeout(resolve, 120));
-        const res = await bg("CAPTURE_SCREENSHOT");
-        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u6D4F\u89C8\u5668\u622A\u56FE\u5931\u8D25");
-        const img = await loadImageElement(res.dataUrl);
-        const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
-        const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
-        const sx = Math.round(rect.x * scaleX);
-        const sy = Math.round(rect.y * scaleY);
-        const sw = Math.max(1, Math.round(rect.w * scaleX));
-        const sh = Math.max(1, Math.round(rect.h * scaleY));
-        let outW = sw;
-        let outH = sh;
-        const maxW = 1600;
-        if (outW > maxW) {
-          outH = Math.round(outH * maxW / outW);
-          outW = maxW;
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = outW;
-        canvas.height = outH;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) throw new Error("\u65E0\u6CD5\u521B\u5EFA\u753B\u5E03");
-        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
-        return canvas.toDataURL("image/jpeg", 0.9);
-      } finally {
-        host.style.display = "";
-      }
-    }
+    const { captureVideoFrame } = createScreenshotCapturer({
+      host,
+      capture: () => bg("CAPTURE_SCREENSHOT")
+    });
     let shotPreviewUrl = "";
-    function openShotPreview(dataUrl, saved) {
+    function openShotPreview(dataUrl, saved, insertable = false) {
       shotPreviewUrl = dataUrl;
       shotImg.src = dataUrl;
       shotSave.disabled = saved;
       shotSave.textContent = saved ? "\u5DF2\u5B58\u5165\u7B14\u8BB0" : "\u5B58\u5165\u7B14\u8BB0";
+      shotInsert.style.display = insertable ? "" : "none";
       shotModal.classList.add("open");
     }
     function closeShotPreview() {
@@ -3212,6 +3584,18 @@
       shotSave.disabled = true;
       shotSave.textContent = "\u5DF2\u5B58\u5165\u7B14\u8BB0";
       toast("\u622A\u56FE\u5DF2\u5B58\u5165\u7B14\u8BB0", "ok");
+    });
+    shotInsert.addEventListener("click", () => {
+      if (!shotPreviewUrl) return;
+      if (pendingImages.length >= 4) {
+        toast("\u6700\u591A 4 \u5F20\u56FE\u7247", "err");
+        return;
+      }
+      pendingImages.push(shotPreviewUrl);
+      renderAttachments();
+      closeShotPreview();
+      openDrawer("chat");
+      toast("\u5DF2\u63D2\u5165\u4F34\u5B66\u5BF9\u8BDD", "ok");
     });
     function getSubtitleText() {
       return (session.subtitles || []).map((sub) => {
@@ -3388,17 +3772,20 @@
     screenshotBtn.addEventListener("click", async () => {
       screenshotBtn.classList.add("busy");
       try {
-        const dataUrl = await captureVideoFrame();
+        const shot = await captureVideoFrame();
         addNoteEntry({
           id: `screenshot_${Date.now()}`,
           type: "screenshot",
           at: Date.now(),
-          imageUrl: dataUrl,
-          text: "\u89C6\u9891\u622A\u56FE"
+          imageUrl: shot.dataUrl,
+          text: shot.cropped ? "\u89C6\u9891\u622A\u56FE" : "\u9875\u9762\u622A\u56FE"
         });
-        openShotPreview(dataUrl, true);
+        openShotPreview(shot.dataUrl, true, true);
         flashChip(screenshotBtn);
-        toast("\u5DF2\u622A\u53D6\u89C6\u9891\u753B\u9762\u5E76\u5B58\u5165\u7B14\u8BB0", "ok");
+        toast(
+          shot.cropped ? "\u5DF2\u622A\u53D6\u89C6\u9891\u753B\u9762\u5E76\u5B58\u5165\u7B14\u8BB0" : "\u5DF2\u622A\u53D6\u5F53\u524D\u753B\u9762\uFF08\u672A\u8BC6\u522B\u5230\u89C6\u9891\u533A\u57DF\uFF09\u5E76\u5B58\u5165\u7B14\u8BB0",
+          "ok"
+        );
       } catch (err) {
         toast("\u622A\u56FE\u5931\u8D25\uFF1A" + (err.message || "\u672A\u77E5\u9519\u8BEF"), "err");
       } finally {
@@ -3495,6 +3882,7 @@
           persistUiHidden();
           applyUiHidden();
           render();
+          wakeSubtitleBox();
           if (session.state === "idle" && session.subtitles.length === 0) {
             subPlaceholder.textContent = "\u70B9\u51FB\u300C\u5F55\u97F3\u300D\u5F00\u59CB\u5B9E\u65F6\u8F6C\u5199";
           }

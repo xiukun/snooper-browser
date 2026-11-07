@@ -11,7 +11,9 @@
     "dev:app": "cd app && pnpm dev",
     "build:app": "cd app && pnpm build",
     "type-check": "cd app && pnpm exec vue-tsc -b --force",
-    "test:guards": "node scripts/test-audio-guards.mjs"
+    "test:guards": "node scripts/test-audio-guards.mjs",
+    "test:chat-state": "node scripts/test-chat-state.mjs",
+    "test:image-material": "node scripts/test-image-material.mjs"
   },
   "dependencies": {
     "docx": "^9.15.2"

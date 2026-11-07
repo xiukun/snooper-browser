@@ -1,3 +1,83 @@
+// src/lib/image-material.ts
+var MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+function planImageFetch(url, baseUrl, apiKey) {
+  let target;
+  try {
+    target = /^[a-z][a-z0-9+.-]*:/i.test(url) ? new URL(url) : new URL(url, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
+  } catch {
+    throw new Error("\u56FE\u7247\u5730\u5740\u65E0\u6548");
+  }
+  if (target.protocol !== "https:" && target.protocol !== "http:") {
+    throw new Error(`\u4E0D\u652F\u6301\u7684\u56FE\u7247\u534F\u8BAE\uFF1A${target.protocol}`);
+  }
+  const headers = {};
+  try {
+    if (apiKey && new URL(baseUrl).origin === target.origin) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+  } catch {
+  }
+  return { url: target.toString(), headers };
+}
+var PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+var ascii = (bytes, offset, text) => text.split("").every((char, index) => bytes[offset + index] === char.charCodeAt(0));
+function detectImageMime(contentType, bytes) {
+  const declared = contentType.split(";")[0].trim().toLowerCase();
+  if (declared.startsWith("image/")) return declared;
+  if (bytes.length >= 8 && PNG_SIGNATURE.every((byte, index) => bytes[index] === byte)) {
+    return "image/png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) {
+    return "image/jpeg";
+  }
+  if (bytes.length >= 6 && (ascii(bytes, 0, "GIF87a") || ascii(bytes, 0, "GIF89a"))) {
+    return "image/gif";
+  }
+  if (bytes.length >= 12 && ascii(bytes, 0, "RIFF") && ascii(bytes, 8, "WEBP")) {
+    return "image/webp";
+  }
+  if (bytes.length >= 2 && ascii(bytes, 0, "BM")) {
+    return "image/bmp";
+  }
+  return null;
+}
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 32768;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+async function materializeImage(url, baseUrl, apiKey, options = {}) {
+  if (url.startsWith("data:")) return url;
+  const plan = planImageFetch(url, baseUrl, apiKey);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const maxBytes = options.maxBytes ?? MAX_IMAGE_BYTES;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 15e3);
+  try {
+    const res = await fetchImpl(plan.url, { headers: plan.headers, signal: controller.signal });
+    if (!res.ok) throw new Error(`\u56FE\u7247\u4E0B\u8F7D\u5931\u8D25 HTTP ${res.status}`);
+    const declared = Number(res.headers.get("content-length") || "0");
+    if (declared > maxBytes) throw new Error("\u56FE\u7247\u8D85\u8FC7 12 MB\uFF0C\u5DF2\u8DF3\u8FC7\u7F13\u5B58");
+    const buffer = await res.arrayBuffer();
+    if (buffer.byteLength > maxBytes) throw new Error("\u56FE\u7247\u8D85\u8FC7 12 MB\uFF0C\u5DF2\u8DF3\u8FC7\u7F13\u5B58");
+    const mime = detectImageMime(
+      res.headers.get("content-type") || "",
+      new Uint8Array(buffer)
+    );
+    if (!mime) throw new Error("\u56FE\u7247\u5730\u5740\u8FD4\u56DE\u7684\u5185\u5BB9\u4E0D\u662F\u56FE\u7247");
+    return `data:${mime};base64,${arrayBufferToBase64(buffer)}`;
+  } catch (err) {
+    if (err?.name === "AbortError") throw new Error("\u56FE\u7247\u4E0B\u8F7D\u8D85\u65F6");
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // src/ext/action-flow.ts
 var UnsupportedPageError = class extends Error {
   code = "UNSUPPORTED_PAGE";
@@ -582,7 +662,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return parseImageResponse(text);
           }
           const images = await tryGenerate(body);
-          sendResponse({ ok: true, images, model: route?.model || "moss-image-sft-1.0" });
+          const outcomes = await Promise.all(images.map(async (image) => {
+            if (image.startsWith("data:")) {
+              return { rendered: image, remote: "", warning: "" };
+            }
+            try {
+              return {
+                rendered: await materializeImage(image, baseUrl, provider.apiKey),
+                remote: image,
+                warning: ""
+              };
+            } catch (err) {
+              return {
+                rendered: image,
+                remote: image,
+                warning: err?.message || "\u56FE\u7247\u4E0B\u8F7D\u5931\u8D25"
+              };
+            }
+          }));
+          const renderedImages = outcomes.map((item) => item.rendered);
+          const remoteImages = outcomes.map((item) => item.remote).filter(Boolean);
+          const warnings = outcomes.map((item) => item.warning).filter(Boolean);
+          console.log("[RTTS] image generation", {
+            fields: images.length,
+            remote: remoteImages.length,
+            dataUrls: renderedImages.filter((item) => item.startsWith("data:")).length,
+            warnings
+          });
+          sendResponse({
+            ok: true,
+            images: renderedImages,
+            remoteImages,
+            warnings,
+            model: route?.model || "moss-image-sft-1.0"
+          });
         } catch (err) {
           sendResponse({ ok: false, error: err.message || "\u751F\u56FE\u5931\u8D25" });
         }
@@ -798,7 +911,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         s.pendingAskRequestId = null;
         s.messages.push({ role: "assistant", content: answer });
         pushSession(tabId);
-        sendResponse({ ok: true, answer });
+        sendResponse({ ok: true, answer, session: safeSession(s) });
       })().catch((err) => {
         if (s.pendingAskRequestId !== requestId) return;
         s.pendingAskRequestId = null;
@@ -829,8 +942,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     case "CAPTURE_SCREENSHOT": {
-      chrome.tabs.captureVisibleTab({ format: "png" }).then((dataUrl) => {
-        sendResponse({ ok: true, dataUrl });
+      const windowId = sender.tab?.windowId;
+      const captureVisible = () => windowId != null ? chrome.tabs.captureVisibleTab(windowId, { format: "png" }) : chrome.tabs.captureVisibleTab({ format: "png" });
+      captureVisible().then((dataUrl) => {
+        console.log("[RTTS] screenshot source=visible-tab");
+        sendResponse({ ok: true, dataUrl, path: "visible-tab" });
       }).catch(async (err) => {
         if (err.message && /active stream/i.test(err.message)) {
           if (!await hasOffscreenDocument()) {
@@ -839,9 +955,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           sendToOffscreen({ type: "CAPTURE_FRAME", tabId }).then((frame) => {
             if (frame && frame.dataUrl) {
-              sendResponse({ ok: true, dataUrl: frame.dataUrl });
+              console.log("[RTTS] screenshot source=offscreen-frame");
+              sendResponse({ ok: true, dataUrl: frame.dataUrl, path: "offscreen-frame" });
             } else {
-              sendResponse({ ok: false, error: frame?.error || "\u622A\u56FE\u5931\u8D25\uFF1A\u65E0\u6CD5\u83B7\u53D6\u89C6\u9891\u5E27" });
+              sendResponse({
+                ok: false,
+                error: frame?.error || "\u622A\u56FE\u5931\u8D25\uFF1A\u5F55\u5236\u4E2D\u7684\u89C6\u9891\u5E27\u5C1A\u672A\u5C31\u7EEA\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5"
+              });
             }
           }).catch((e) => {
             sendResponse({ ok: false, error: "\u622A\u56FE\u5931\u8D25\uFF1A" + (e.message || "") });
@@ -852,7 +972,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return true;
     }
-    case "FETCH_URL": {
+    case "FETCH_IMAGE": {
       const url = String(message.url || "").trim();
       if (!url) {
         sendResponse({ ok: false, error: "URL \u4E3A\u7A7A" });
@@ -860,14 +980,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       (async () => {
         try {
-          const res = await fetch(url);
-          const blob = await res.blob();
-          const reader = new FileReader();
-          reader.onload = () => sendResponse({ ok: true, dataUrl: reader.result });
-          reader.onerror = () => sendResponse({ ok: false, error: "\u65E0\u6CD5\u8BFB\u53D6\u56FE\u7247" });
-          reader.readAsDataURL(blob);
+          const config = await loadConfig();
+          const route = config.routes.image;
+          const provider = config.providers.find((p) => p.id === route?.providerId) || config.providers[0];
+          const dataUrl = await materializeImage(
+            url,
+            provider?.baseUrl || "",
+            provider?.apiKey || ""
+          );
+          sendResponse({ ok: true, dataUrl });
         } catch (err) {
-          sendResponse({ ok: false, error: "\u65E0\u6CD5\u4E0B\u8F7D\u56FE\u7247\uFF1A" + (err.message || "") });
+          sendResponse({ ok: false, error: err?.message || "\u65E0\u6CD5\u4E0B\u8F7D\u56FE\u7247" });
         }
       })();
       return true;

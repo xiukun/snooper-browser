@@ -477,6 +477,40 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
 
     .rtts-divider { width: 1px; height: 18px; background: rgba(255,255,255,0.1); flex-shrink: 0; margin: 0 2px; }
 
+    /* ===== Community (QQ group) ===== */
+    .rtts-community { position: relative; display: flex; }
+    .rtts-community-pop {
+      position: absolute; top: calc(100% + 10px); right: 0; z-index: 3;
+      width: 216px; padding: 10px;
+      background: rgba(14,14,22,0.98); border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px; box-shadow: 0 14px 38px rgba(0,0,0,0.55);
+      opacity: 0; pointer-events: none;
+      transform: translateY(-4px);
+      transition: opacity 0.15s ease, transform 0.15s ease;
+    }
+    #rtts-bar.tips-up .rtts-community-pop {
+      top: auto; bottom: calc(100% + 10px);
+      transform: translateY(4px);
+    }
+    .rtts-community:hover .rtts-community-pop,
+    .rtts-community:focus-within .rtts-community-pop {
+      opacity: 1; pointer-events: auto; transform: translateY(0);
+    }
+    /* While the QR popover is up, the button's own tooltip would overlap it. */
+    #rtts-bar .rtts-community:hover .rtts-btn::after,
+    #rtts-bar .rtts-community:focus-within .rtts-btn::after {
+      opacity: 0;
+    }
+    .rtts-community-pop img {
+      width: 100%; border-radius: 8px; display: block;
+      background: #fff; outline: 1px solid rgba(0,0,0,0.1); outline-offset: -1px;
+    }
+    .rtts-community-pop figcaption {
+      margin-top: 7px; text-align: center;
+      font-size: 11px; line-height: 1.5; color: rgba(255,255,255,0.78);
+    }
+    .rtts-community-pop small { display: block; margin-top: 2px; font-size: 10px; color: rgba(255,255,255,0.45); }
+
     #rtts-show-btn {
       position: fixed; top: 16px; right: 16px;
       z-index: 2147483641;
@@ -1364,6 +1398,17 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
         <span>笔记</span>
         <span id="rtts-notes-badge" class="rtts-badge" hidden>0</span>
       </button>
+
+      <!-- Community: hover shows the QQ group QR code for scanning -->
+      <div class="rtts-community">
+        <button id="rtts-community-btn" class="rtts-btn" data-tip="加入交流群" aria-label="加入 QQ 交流群" aria-haspopup="true">
+          <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </button>
+        <figure class="rtts-community-pop" role="img" aria-label="QQ 群二维码：snooper 实时翻译交流群，群号 545073970">
+          <img id="rtts-community-qr" alt="" />
+          <figcaption>QQ 群：545073970<small>鼠标停留扫码，点击复制群号</small></figcaption>
+        </figure>
+      </div>
 
       <button id="rtts-more-btn" class="rtts-btn" data-tip="更多工具" aria-label="更多工具" aria-haspopup="menu" aria-expanded="false">
         <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>
@@ -2752,6 +2797,26 @@ async function saveObsidianConfig(config: SharedObsidianConfig) {
   drawerTabChat.addEventListener('click', () => setDrawerTab('chat'));
   drawerTabNotes.addEventListener('click', () => setDrawerTab('notes'));
   shadow.getElementById('rtts-drawer-close')!.addEventListener('click', closeDrawer);
+
+  /* ===== Community: copy the QQ group number on click ===== */
+
+  const QQ_GROUP_NUMBER = '545073970';
+  const communityBtn = shadow.getElementById('rtts-community-btn') as HTMLButtonElement;
+  const communityQr = shadow.getElementById('rtts-community-qr') as HTMLImageElement;
+  try {
+    communityQr.src = chrome.runtime.getURL('assets/qq-group-qrcode.jpg');
+  } catch {
+    // The image stays empty if the asset URL cannot be resolved; the group
+    // number remains visible in the caption.
+  }
+  communityBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(QQ_GROUP_NUMBER);
+      toast(`群号已复制：${QQ_GROUP_NUMBER}`, 'ok');
+    } catch {
+      toast(`复制失败，请手动加群：${QQ_GROUP_NUMBER}`, 'err');
+    }
+  });
 
   /* ===== Markdown rendering (safe subset) ===== */
 

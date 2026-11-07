@@ -58,7 +58,8 @@
       ],
       "resources": [
         "audio-worklet.js",
-        "fullscreen-bridge.js"
+        "fullscreen-bridge.js",
+        "assets/*"
       ]
     }
   ],

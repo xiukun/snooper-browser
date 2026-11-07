@@ -220,6 +220,18 @@ app/
 - Audio is sent in 6-second segments to the provider behind your `Audio` route; images are sent as base64 to the provider behind your `LLM` route.
 - Provider URLs, keys and model choices stay in the browser. See [SECURITY.md](./SECURITY.md) for the threat model.
 
+## Community
+
+Join the QQ group for usage questions, translation tips, and feedback:
+
+- **Group number**: `545073970`（snooper 实时翻译交流群）
+- Scan the QR code below, or click the **加入交流群** button in the extension
+  toolbar — hovering shows the QR code, clicking copies the group number.
+
+<p align="center">
+  <img src="./docs/screenshots/qq-group-qrcode.jpg" alt="QQ group QR code — snooper 实时翻译交流群 545073970" width="320" />
+</p>
+
 ## Contributing
 
 Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request. Security issues should follow [SECURITY.md](./SECURITY.md) instead of the public tracker.

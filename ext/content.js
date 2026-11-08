@@ -485,7 +485,14 @@
       border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.4);
     }
     .rtts-image-result.show { display: block; }
-    .rtts-image-result img { display: block; width: 100%; height: auto; }
+    /* The generated image renders in an extension-origin iframe (CSP-safe
+       on any host page). aspect-ratio keeps the panel stable while loading;
+       the viewer letterboxes the image inside. */
+    .rtts-image-frame { width: 100%; aspect-ratio: 1 / 1; max-height: 420px; }
+    .rtts-image-frame-element {
+      display: block; width: 100%; height: 100%;
+      border: none; background: rgba(255,255,255,0.04);
+    }
     .rtts-image-open {
       display: block; padding: 8px 10px; font-size: 11px; text-align: center;
       color: #b9a6ff; text-decoration: none; border-top: 1px solid rgba(255,255,255,0.08);
@@ -1385,7 +1392,11 @@
           </div>
           <div id="rtts-img-status" class="rtts-status" role="status" aria-live="polite"></div>
           <div id="rtts-img-result" class="rtts-image-result">
-            <img id="rtts-img-result-img" alt="\u751F\u6210\u7684\u914D\u56FE">
+            <!-- Generated images render inside an extension-origin iframe
+                 (image-viewer.html): the host page's CSP img-src can forbid
+                 data: and third-party CDN images, which left the panel blank
+                 even though generation succeeded. -->
+            <div id="rtts-img-result-frame" class="rtts-image-frame"></div>
             <a id="rtts-img-open" class="rtts-image-open" target="_blank" rel="noopener noreferrer" hidden>\u5F53\u524D\u9875\u9762\u65E0\u6CD5\u52A0\u8F7D\uFF0C\u6253\u5F00\u539F\u56FE</a>
           </div>
           <div id="rtts-img-fun" class="rtts-image-fun" role="group" aria-label="\u56FE\u7247\u5A31\u4E50\u4E92\u52A8">
@@ -3472,9 +3483,7 @@
       refs.result.classList.remove("show");
       refs.actions.classList.remove("show");
       refs.fun.classList.remove("show");
-      refs.resultImg.onload = null;
-      refs.resultImg.onerror = null;
-      refs.resultImg.removeAttribute("src");
+      destroyViewer();
       refs.openOriginal.hidden = true;
       refs.openOriginal.removeAttribute("href");
     }
@@ -3494,25 +3503,56 @@
       refs.status.className = "rtts-status";
       refs.status.textContent = "";
     }
+    let viewerFrame = null;
+    let viewerReport = null;
+    let viewerToken = 0;
+    function destroyViewer() {
+      viewerToken++;
+      if (viewerReport) window.removeEventListener("message", viewerReport);
+      viewerReport = null;
+      viewerFrame?.remove();
+      viewerFrame = null;
+    }
     function showImage(url, remote) {
       lastImageUrl = url;
       lastRemoteUrl = remote;
       refs.result.classList.add("show");
       refs.actions.classList.add("show");
       refs.fun.classList.add("show");
-      refs.resultImg.onload = () => {
-        setStatus("\u751F\u6210\u5B8C\u6210 \xB7 " + (refs.resultImg.naturalWidth || "?") + " \xD7 " + (refs.resultImg.naturalHeight || "?"), "ok");
-        refs.openOriginal.hidden = true;
-      };
-      refs.resultImg.onerror = () => {
-        setStatus("\u56FE\u7247\u5DF2\u751F\u6210\uFF0C\u4F46\u5F53\u524D\u9875\u9762\u65E0\u6CD5\u52A0\u8F7D\u3002\u53EF\u6253\u5F00\u539F\u56FE\u6216\u91CD\u65B0\u751F\u6210\u3002", "err");
-        const safeRemote = remote ? safeExternalUrl(remote) : "";
-        if (safeRemote) {
-          refs.openOriginal.href = safeRemote;
-          refs.openOriginal.hidden = false;
+      destroyViewer();
+      const token = viewerToken;
+      const frame = document.createElement("iframe");
+      frame.className = "rtts-image-frame-element";
+      frame.setAttribute("sandbox", "allow-scripts");
+      frame.setAttribute("title", "\u751F\u6210\u7684\u914D\u56FE");
+      frame.setAttribute("referrerpolicy", "no-referrer");
+      viewerFrame = frame;
+      refs.resultFrame.textContent = "";
+      refs.resultFrame.appendChild(frame);
+      const report = (event) => {
+        const data = event.data;
+        if (!data || event.source !== frame.contentWindow) return;
+        if (data.type === "rtts-image-viewer:ready") {
+          if (token !== viewerToken) return;
+          setStatus(`\u751F\u6210\u5B8C\u6210${data.width ? ` \xB7 ${data.width} \xD7 ${data.height}` : ""}`, "ok");
+          refs.openOriginal.hidden = true;
+        } else if (data.type === "rtts-image-viewer:error") {
+          if (token !== viewerToken) return;
+          setStatus("\u56FE\u7247\u5DF2\u751F\u6210\uFF0C\u4F46\u5F53\u524D\u9875\u9762\u65E0\u6CD5\u52A0\u8F7D\u3002\u53EF\u6253\u5F00\u539F\u56FE\u6216\u91CD\u65B0\u751F\u6210\u3002", "err");
+          const safeRemote = remote ? safeExternalUrl(remote) : "";
+          if (safeRemote) {
+            refs.openOriginal.href = safeRemote;
+            refs.openOriginal.hidden = false;
+          }
         }
       };
-      refs.resultImg.src = url;
+      viewerReport = report;
+      window.addEventListener("message", report);
+      frame.addEventListener("load", () => {
+        if (token !== viewerToken || viewerFrame !== frame) return;
+        frame.contentWindow?.postMessage({ type: "rtts-image-viewer:show", src: url, id: String(token) }, "*");
+      });
+      frame.src = chrome.runtime.getURL("image-viewer.html");
     }
     async function ensureDataUrl() {
       if (lastImageUrl.startsWith("data:")) return lastImageUrl;
@@ -3788,7 +3828,7 @@ ${context}`;
       imgGenerate: shadow.getElementById("rtts-img-generate"),
       imgStatus: shadow.getElementById("rtts-img-status"),
       imgResult: shadow.getElementById("rtts-img-result"),
-      imgResultImg: shadow.getElementById("rtts-img-result-img"),
+      imgResultFrame: shadow.getElementById("rtts-img-result-frame"),
       imgOpen: shadow.getElementById("rtts-img-open"),
       imgActions: shadow.getElementById("rtts-img-actions"),
       imgFun: shadow.getElementById("rtts-img-fun"),
@@ -4167,7 +4207,7 @@ ${context}`;
       imgGenerate,
       imgStatus,
       imgResult,
-      imgResultImg,
+      imgResultFrame,
       imgOpen,
       imgActions,
       imgFun,
@@ -4539,7 +4579,7 @@ ${context}`;
         negative: imgNeg,
         status: imgStatus,
         result: imgResult,
-        resultImg: imgResultImg,
+        resultFrame: imgResultFrame,
         actions: imgActions,
         generate: imgGenerate,
         save: imgSave,

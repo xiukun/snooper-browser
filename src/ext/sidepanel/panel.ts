@@ -343,6 +343,24 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
   }
 
   function exportNote(note: NoteDocument) {
+    // Decode assets FIRST: the Markdown references them by name, so the map
+    // must be filled before any line is rendered (a previous version built
+    // the text before decoding, so the first export always showed
+    // placeholders and only a second export worked).
+    const assets = collectAssets([note], []).map((asset) => ({
+      ...asset,
+      entryId: asset.entryId.replace(/^note:[^:]+:/, `note:${note.id}:`),
+    }))
+    const decoded: Array<{ name: string; bytes: Uint8Array }> = []
+    noteAssetNames = new Map()
+    for (const asset of assets) {
+      const result = decodeExportAsset(asset)
+      if (result) {
+        noteAssetNames.set(asset.entryId, asset.fileName)
+        decoded.push({ name: `assets/${asset.fileName}`, bytes: result.file.bytes })
+      }
+    }
+
     const lines = [
       `# ${note.title}`,
       '',
@@ -392,22 +410,6 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
 
     lines.push('', '---', '*由 snooper-browser 生成*')
     const markdown = lines.join('\n')
-
-    // Images ship as real files in a ZIP (`note.md` + `assets/`); a raw
-    // data: URL inside the .md was unreadable in every editor.
-    const assets = collectAssets([note], []).map((asset) => ({
-      ...asset,
-      entryId: asset.entryId.replace(/^note:[^:]+:/, `note:${note.id}:`),
-    }))
-    const decoded: Array<{ name: string; bytes: Uint8Array }> = []
-    noteAssetNames = new Map()
-    for (const asset of assets) {
-      const result = decodeExportAsset(asset)
-      if (result) {
-        noteAssetNames.set(asset.entryId, asset.fileName)
-        decoded.push({ name: `assets/${asset.fileName}`, bytes: result.file.bytes })
-      }
-    }
 
     if (decoded.length === 0) {
       const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })

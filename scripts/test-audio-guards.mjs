@@ -36,6 +36,9 @@ const {
 } = await import(
   pathToFileURL(bundle('src/lib/audio-segments.ts', 'audio-segments.mjs')).href
 );
+const { classifyAudioFrames } = await import(
+  pathToFileURL(bundle('src/lib/audio-noise-gate.ts', 'audio-noise-gate.mjs')).href
+);
 
 let passed = 0;
 const failures = [];
@@ -160,6 +163,19 @@ for (const text of realLines) {
   check('zh reported: 你去 dropped (burst active)', zhPipe('你去。'), true);
   check('zh recovery: real sentence accepted', zhPipe('这个动作要慢一点，腰背挺直'), false);
   check('zh recovery: generic line accepted again', zhPipe('小心。'), false);
+
+  // A non-lexical ASR loop can be followed by otherwise plausible stock
+  // phrases. Keep the phrases when standalone, but drop the whole short
+  // noise episode once the loop is rejected.
+  const screenshotPipe = pipeline();
+  check('noise episode: Yayayaya dropped', screenshotPipe('Yayayaya.'), true);
+  check('noise episode: Come out here dropped', screenshotPipe('Come out here.'), true);
+  check('noise episode: Thank you dropped', screenshotPipe('Thank you.'), true);
+  check('noise episode: Thank you all dropped', screenshotPipe('Thank you all.'), true);
+  check('noise episode: 有人吗 dropped', screenshotPipe('有人吗？'), true);
+  check('noise episode: long real line recovers', screenshotPipe('The speaker is explaining the next step clearly.'), false);
+  check('noise episode: standalone Come out here passes', isLikelyAsrHallucinationSequence([], 'Come out here.'), false);
+  check('noise episode: standalone 有人吗 passes', isLikelyAsrHallucinationSequence([], '有人吗？'), false);
 }
 
 // whisper-guard L4: a 2–4 char unit looped 3+ times is a decoder loop.
@@ -188,6 +204,29 @@ for (const text of realLines) {
 const SAMPLE_RATE = 16000;
 const FRAME = 320; // 20 ms
 const AAC_FRAME_MS = (FRAME / SAMPLE_RATE) * 1000;
+
+/* ---------- 3. Persistent-noise feature gate ---------- */
+{
+  const frameMs = 20;
+  const frameSamples = SAMPLE_RATE * frameMs / 1000;
+  const lengths = (count) => Array(count).fill(frameSamples);
+  const steadyNoise = classifyAudioFrames(Array(100).fill(0.04), lengths(100), SAMPLE_RATE);
+  check('steady bed rejects', steadyNoise.accept, false);
+  check('steady bed reason', steadyNoise.reason, 'steady-noise');
+
+  const silence = classifyAudioFrames(Array(100).fill(0), lengths(100), SAMPLE_RATE);
+  check('silence rejects', silence.accept, false);
+
+  const click = classifyAudioFrames(Array(10).fill(0.08), lengths(10), SAMPLE_RATE);
+  check('short click rejects by duration', click.accept, false);
+
+  const speechRms = Array.from({ length: 100 }, (_, index) => {
+    if (index >= 30 && index < 70) return index % 2 ? 0.055 : 0.025;
+    return 0.002;
+  });
+  const speech = classifyAudioFrames(speechRms, lengths(100), SAMPLE_RATE);
+  check('speech with pauses kept', speech.accept, true);
+}
 
 const silenceFrame = () => new Int16Array(FRAME);
 const speechFrame = () => {

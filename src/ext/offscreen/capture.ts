@@ -7,6 +7,7 @@
  */
 
 import type { AppConfig } from '../../lib/providers'
+import { classifyAudioFrames } from '../../lib/audio-noise-gate'
 import {
   isCurrentCaptureGeneration,
   requestCaptureGeneration,
@@ -544,6 +545,18 @@ async function finalizeSegment(tabId: number) {
   // "123456789", "请不吝点赞订阅…") which translation then makes look real.
   if (speechMs < MIN_SPEECH_MS) {
     reportAudioState(session, true)
+    return
+  }
+  const audioFeatures = classifyAudioFrames(frameRms, frameLens, TARGET_SAMPLE_RATE)
+  if (!audioFeatures.accept) {
+    reportAudioState(session, true)
+    console.info('[RTTS] dropped non-speech audio:', {
+      reason: audioFeatures.reason,
+      durationMs: Math.round(frameLens.reduce((sum, length) => sum + length, 0) / TARGET_SAMPLE_RATE * 1000),
+      speechRatio: Number(audioFeatures.speechRatio.toFixed(3)),
+      transitions: audioFeatures.transitions,
+      variation: Number(audioFeatures.variation.toFixed(3)),
+    })
     return
   }
   reportAudioState(session, false)

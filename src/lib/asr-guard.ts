@@ -63,7 +63,9 @@ const DEGENERATE_RUN = /(.)\1{7,}/u;
  * is stripped first — "小心。小心。小心。" is the same loop as "小心小心小心".
  */
 function isCharacterLoop(text: string): boolean {
-  const t = normalize(text).replace(/[。.!！?？…，,、;；:：\s]+/g, '');
+  // ASR casing can drift between repeated ASCII syllables ("Yayayaya"),
+  // while the underlying decoder loop is still the same sequence.
+  const t = normalize(text).replace(/[。.!！?？…，,、;；:：\s]+/g, '').toLowerCase();
   if (t.length < 6) return false;
   for (let len = 2; len <= 4; len++) {
     const unit = t.slice(0, len);
@@ -99,6 +101,12 @@ const GENERIC_BURST_LINES = new Set(['what s up', 'keep it up', 'thank you', 'be
 const COUNTING_BURST_LINE = 'one two three four five six seven eight nine ten';
 const GENERIC_BURST_LINES_ZH = new Set(['谢谢', '加油', '小心', '你去']);
 const COUNTING_BURST_LINE_ZH = '一二三四五六七八九十';
+
+// These are common ASR continuations after a non-lexical decoder loop. They
+// remain valid dialogue on their own; only a nearby rejected character loop
+// makes them suspicious.
+const NOISE_BURST_CONTINUATIONS_EN = new Set(['come out here', 'thank you all']);
+const NOISE_BURST_CONTINUATIONS_ZH = new Set(['有人吗']);
 
 /** Normalize a zh counting line to its bare digits so separators don't matter. */
 function normalizeChineseCounting(text: string): string {
@@ -142,6 +150,7 @@ export function isLikelyAsrHallucinationSequence(rejectedHistory: string[], text
 
   const recent = rejectedHistory.slice(-4);
   const current = normalizeEnglish(text);
+  const followsCharacterLoop = recent.some((candidate) => isCharacterLoop(candidate));
 
   if (GENERIC_BURST_LINES.has(current)) {
     if (recent.some((candidate) => normalizeEnglish(candidate) === COUNTING_BURST_LINE)) {
@@ -150,6 +159,13 @@ export function isLikelyAsrHallucinationSequence(rejectedHistory: string[], text
     if (recent.some((candidate) => GENERIC_BURST_LINES.has(normalizeEnglish(candidate)))) {
       return true;
     }
+    if (followsCharacterLoop) {
+      return true;
+    }
+  }
+
+  if (NOISE_BURST_CONTINUATIONS_EN.has(current) && followsCharacterLoop) {
+    return true;
   }
 
   // zh burst: bare 谢谢/加油 are common real dialogue, but a counting-burst
@@ -163,6 +179,13 @@ export function isLikelyAsrHallucinationSequence(rejectedHistory: string[], text
     if (recent.some((candidate) => GENERIC_BURST_LINES_ZH.has(bareText(candidate)))) {
       return true;
     }
+    if (followsCharacterLoop) {
+      return true;
+    }
+  }
+
+  if (NOISE_BURST_CONTINUATIONS_ZH.has(bareZh) && followsCharacterLoop) {
+    return true;
   }
 
   return false;

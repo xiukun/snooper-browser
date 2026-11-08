@@ -374,6 +374,7 @@ function persistSessions() {
 // src/ext/background/history.ts
 var HISTORY_KEY = "snooper.extension.history.v1";
 var MAX_HISTORY = 100;
+var MAX_SUBTITLES_PER_RECORD = 500;
 async function persistSessionHistory(tabId) {
   const s = sessions.get(tabId);
   if (!s || !s.subtitles || s.subtitles.length === 0) return;
@@ -387,7 +388,14 @@ async function persistSessionHistory(tabId) {
       endedAt: Date.now(),
       sourceLang: s.sourceLang || "auto",
       targetLang: s.targetLang || "zh",
-      subtitleCount: s.subtitles.length
+      subtitleCount: s.subtitles.length,
+      subtitles: s.subtitles.slice(-MAX_SUBTITLES_PER_RECORD).map(({ at, endedAt, source, target, latency }) => ({
+        at,
+        endedAt,
+        source,
+        target,
+        latency
+      }))
     };
     const got = await chrome.storage.local.get(HISTORY_KEY);
     const history = Array.isArray(got[HISTORY_KEY]) ? got[HISTORY_KEY] : [];
@@ -580,7 +588,7 @@ function registerOffscreenEventRouter() {
       }
       case "CAPTURE_ENDED": {
         const s = sessions.get(message.tabId);
-        if (s && (s.state === "running" || s.state === "starting")) {
+        if (s && s.generation === message.generation && (s.state === "running" || s.state === "starting")) {
           s.state = "idle";
           s.streamId = "";
           s.configSnapshot = null;
@@ -1023,6 +1031,35 @@ var imageHandlers = {
   }
 };
 
+// src/lib/export-assets.ts
+function decodeExportAsset(asset) {
+  if (asset.mimeType === "image/svg+xml" && asset.svgText) {
+    return { file: { name: asset.fileName, bytes: new TextEncoder().encode(asset.svgText) } };
+  }
+  const dataUrl = asset.dataUrl || "";
+  const match = /^data:([^;,]+)?;base64,(.*)$/s.exec(dataUrl);
+  if (!match) return null;
+  const mime = match[1] || "image/png";
+  if (mime !== asset.mimeType) return null;
+  try {
+    const binary = atob(match[2] || "");
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return { file: { name: asset.fileName, bytes } };
+  } catch {
+    return null;
+  }
+}
+var CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
 // src/ext/background/obsidian.ts
 function normalizeObsidianKey(raw) {
   return String(raw || "").trim().replace(/^Bearer\s+/i, "").trim();
@@ -1084,28 +1121,22 @@ async function uploadObsidianAsset(message) {
   try {
     let bytes;
     let mime = String(message.mimeType || "image/png");
-    const dataUrl = String(message.dataUrl || "");
-    if (dataUrl.startsWith("data:")) {
-      const match = /^data:([^;,]+)?(?:;base64)?,(.*)$/s.exec(dataUrl);
-      if (!match) throw new Error("\u56FE\u7247\u6570\u636E\u683C\u5F0F\u65E0\u6CD5\u8BC6\u522B");
-      if (match[1]) mime = match[1];
-      const isBase64 = /;base64,/.test(dataUrl);
-      if (isBase64) {
-        const binary = atob(match[2] || "");
-        bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      } else {
-        bytes = new TextEncoder().encode(decodeURIComponent(match[2] || ""));
-      }
-    } else if (/^https?:\/\//i.test(dataUrl)) {
-      const r = await fetch(dataUrl);
+    const decoded = decodeExportAsset({
+      entryId: "obsidian",
+      fileName,
+      mimeType: mime === "image/svg+xml" ? "image/svg+xml" : mime,
+      dataUrl: String(message.dataUrl || ""),
+      svgText: String(message.rawText || "")
+    });
+    if (decoded) {
+      bytes = decoded.file.bytes;
+      if (mime === "image/svg+xml") mime = "image/svg+xml";
+    } else if (/^https?:\/\//i.test(String(message.dataUrl || ""))) {
+      const r = await fetch(String(message.dataUrl));
       if (!r.ok) throw new Error(`\u4E0B\u8F7D\u56FE\u7247\u5931\u8D25 HTTP ${r.status}`);
       const buf = await r.arrayBuffer();
       bytes = new Uint8Array(buf);
       mime = r.headers.get("content-type") || mime;
-    } else if (String(message.rawText || "")) {
-      bytes = new TextEncoder().encode(String(message.rawText));
-      mime = "image/svg+xml";
     } else {
       throw new Error("\u6CA1\u6709\u53EF\u4E0A\u4F20\u7684\u56FE\u7247\u6570\u636E");
     }
@@ -1250,6 +1281,161 @@ ${question || "\u8BF7\u63CF\u8FF0\u8FD9\u5F20\u56FE\u7247\uFF0C\u5E76\u7ED3\u540
 }
 
 // src/ext/background/router/session.ts
+var startAttempts = /* @__PURE__ */ new Map();
+var startCancelVersions = /* @__PURE__ */ new Map();
+var stopAttempts = /* @__PURE__ */ new Map();
+function currentStartVersion(tabId) {
+  return startCancelVersions.get(tabId) || 0;
+}
+function cancelStart(tabId) {
+  startCancelVersions.set(tabId, currentStartVersion(tabId) + 1);
+}
+function requestStreamId(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (id) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+      } else if (!id) {
+        reject(new Error("\u83B7\u53D6\u97F3\u9891\u6D41 ID \u5931\u8D25"));
+      } else {
+        resolve(id);
+      }
+    });
+  });
+}
+async function runStart(message, tabId, startVersion) {
+  const s = await reconcileSessionState(tabId);
+  if (currentStartVersion(tabId) !== startVersion) return { ok: true, cancelled: true };
+  if (s.state === "running" || s.state === "starting") {
+    const live = await offscreenHasCapture(tabId);
+    if (live) {
+      return { ok: true, alreadyRunning: true, session: safeSession(s) };
+    }
+    s.state = "idle";
+    s.streamId = "";
+    s.configSnapshot = null;
+    s.streamingSubtitle = null;
+    pushSession(tabId);
+  }
+  const config = await loadConfig();
+  if (currentStartVersion(tabId) !== startVersion) return { ok: true, cancelled: true };
+  const hasKey = config.providers.some((p) => p.apiKey && p.apiKey.trim().length > 0);
+  if (!hasKey) {
+    console.info("[RTTS] START skipped: \u5C1A\u672A\u914D\u7F6E API Key");
+    return {
+      ok: false,
+      code: "CONFIG_REQUIRED",
+      error: "\u5C1A\u672A\u914D\u7F6E API Key\u3002\u8BBE\u7F6E\u9762\u677F\u5DF2\u6253\u5F00\uFF0C\u586B\u5165\u540E\u4FDD\u5B58\u518D\u5F00\u59CB"
+    };
+  }
+  const audioRoute = config.routes.audio;
+  const audioProvider = config.providers.find((p) => p.id === audioRoute.providerId);
+  if (!audioProvider || !audioProvider.apiKey) {
+    console.info("[RTTS] START skipped: \u97F3\u9891\u8F6C\u5199\u670D\u52A1\u5546\u7F3A\u5C11 API Key");
+    return {
+      ok: false,
+      code: "CONFIG_REQUIRED",
+      error: `\u97F3\u9891\u8F6C\u5199\u670D\u52A1\u5546\u300C${audioProvider?.name || "\u672A\u914D\u7F6E"}\u300D\u7F3A\u5C11 API Key\uFF0C\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E`
+    };
+  }
+  if (!audioRoute.model) {
+    console.info("[RTTS] START skipped: \u97F3\u9891\u8F6C\u5199\u672A\u9009\u62E9\u6A21\u578B");
+    return {
+      ok: false,
+      code: "CONFIG_REQUIRED",
+      error: "\u97F3\u9891\u8F6C\u5199\u672A\u9009\u62E9\u6A21\u578B\uFF0C\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u9009\u62E9"
+    };
+  }
+  s.state = "starting";
+  s.sourceLang = message.sourceLang || "auto";
+  s.targetLang = message.targetLang || "zh";
+  s.generation = nextGeneration();
+  s.subtitles = [];
+  s.streamingSubtitle = null;
+  s.audioSilent = false;
+  s.configSnapshot = JSON.parse(JSON.stringify(config));
+  pushSession(tabId);
+  const generation = s.generation;
+  const isCurrent = () => currentStartVersion(tabId) === startVersion && s.state === "starting" && s.generation === generation;
+  try {
+    console.log("[RTTS] START:", tabId, "gen:", generation, "lang:", s.sourceLang, "\u2192", s.targetLang);
+    await stopOrphanCapture(tabId);
+    if (!isCurrent()) return { ok: true, cancelled: true };
+    let streamId;
+    try {
+      streamId = await requestStreamId(tabId);
+    } catch (err) {
+      if (!/active stream/i.test(err?.message || "")) throw err;
+      await stopOrphanCapture(tabId);
+      await forceResetOffscreenCapture();
+      try {
+        streamId = await requestStreamId(tabId);
+      } catch (retryErr) {
+        if (/active stream/i.test(retryErr?.message || "")) {
+          throw new Error("\u5F55\u97F3\u6D41\u5728\u91CD\u7F6E\u540E\u4ECD\u88AB\u6D4F\u89C8\u5668\u5360\u7528");
+        }
+        throw retryErr;
+      }
+    }
+    if (!isCurrent()) return { ok: true, cancelled: true };
+    s.streamId = streamId;
+    console.log("[RTTS] streamId obtained for tab", tabId);
+    const started = await sendToOffscreen({
+      type: "START_CAPTURE",
+      tabId,
+      streamId,
+      sourceLang: s.sourceLang,
+      targetLang: s.targetLang,
+      config: s.configSnapshot,
+      generation
+    });
+    if (started && started.ok === false) {
+      throw new Error(started.error || "\u542F\u52A8\u5F55\u97F3\u5931\u8D25");
+    }
+    if (!isCurrent()) {
+      await sendToOffscreen({ type: "STOP_CAPTURE", tabId, generation }).catch(() => {
+      });
+      return { ok: true, cancelled: true };
+    }
+    s.state = "running";
+    pushSession(tabId);
+    return { ok: true };
+  } catch (err) {
+    if (!isCurrent()) {
+      console.info("[RTTS] START cancelled during startup");
+      return { ok: true, cancelled: true };
+    }
+    console.warn("[RTTS] START failed:", err.message);
+    s.state = "idle";
+    s.configSnapshot = null;
+    s.streamId = "";
+    s.streamingSubtitle = null;
+    pushSession(tabId);
+    const msg = err && err.message || String(err);
+    let friendly = msg;
+    if (/重置后仍被浏览器占用/i.test(msg)) {
+      friendly = "\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\u3002\u8BF7\u5173\u95ED\u5176\u4ED6\u5F55\u97F3\u6269\u5C55\u6216\u6807\u7B7E\u9875\uFF0C\u5B8C\u5168\u9000\u51FA\u5E76\u91CD\u65B0\u6253\u5F00 Chrome \u540E\u518D\u8BD5";
+    } else if (/active stream/i.test(msg)) {
+      friendly = "\u8BE5\u6807\u7B7E\u9875\u4ECD\u6709\u6B8B\u7559\u5F55\u97F3\u6D41\uFF08\u6269\u5C55\u540E\u53F0\u91CD\u542F\u6240\u81F4\uFF09\u3002\u5DF2\u81EA\u52A8\u6E05\u7406\uFF0C\u8BF7\u518D\u70B9\u4E00\u6B21\u300C\u5F55\u97F3\u300D\uFF1B\u82E5\u4ECD\u5931\u8D25\uFF0C\u8BF7\u5237\u65B0\u9875\u9762\u540E\u91CD\u8BD5";
+    } else if (/旧录音流释放超时|无法停止旧录音流|无法确认旧录音流状态/i.test(msg)) {
+      friendly = "\u65E7\u5F55\u97F3\u6D41\u672A\u80FD\u91CA\u653E\u3002\u8BF7\u5237\u65B0\u9875\u9762\u540E\u91CD\u8BD5\uFF1B\u82E5\u4ECD\u5931\u8D25\uFF0C\u8BF7\u5728\u6269\u5C55\u7BA1\u7406\u9875\u91CD\u65B0\u52A0\u8F7D snooper \u540E\u518D\u8BD5";
+    } else if (/录音组件释放超时|其他标签页仍在录音|无法确认其他录音状态/i.test(msg)) {
+      friendly = "\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\u3002\u8BF7\u5148\u505C\u6B62\u5176\u4ED6\u6807\u7B7E\u9875\u7684\u5F55\u97F3\uFF0C\u518D\u5237\u65B0\u672C\u9875\u91CD\u8BD5";
+    } else if (/重置后仍被浏览器占用|录音流在重置后仍被/i.test(msg)) {
+      const suspects = await describeCaptureSuspects(
+        await chrome.management.getAll().then(
+          (all) => all.filter((e) => (e.permissions || []).includes("tabCapture")).map((e) => ({ name: e.name, id: e.id }))
+        ).catch(() => [])
+      );
+      friendly = suspects ? `\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\uFF0C\u7591\u4F3C\u6765\u81EA\uFF1A${suspects}\u3002\u8BF7\u505C\u7528\u5BF9\u5E94\u6269\u5C55\u540E\u91CD\u8BD5` : "\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\u3002\u8BF7\u5173\u95ED\u5176\u4ED6\u5F55\u97F3\u6269\u5C55\u6216\u6807\u7B7E\u9875\uFF0C\u5B8C\u5168\u9000\u51FA\u5E76\u91CD\u65B0\u6253\u5F00 Chrome \u540E\u518D\u8BD5";
+    } else if (/not been invoked|activeTab/i.test(msg)) {
+      friendly = "\u9700\u8981\u5148\u5B8C\u6210\u4E00\u6B21\u6388\u6743\uFF1A\u70B9\u51FB\u6D4F\u89C8\u5668\u5DE5\u5177\u680F\u7684 snooper \u56FE\u6807\uFF08\u5F39\u51FA\u7684\u9762\u677F\u53EF\u7ACB\u5373\u5173\u95ED\uFF09\uFF0C\u4E4B\u540E\u672C\u9875\u53EF\u76F4\u63A5\u4F7F\u7528";
+    } else if (/permission|Permission|not allowed|not permitted/i.test(msg)) {
+      friendly = "\u7F3A\u5C11\u5F55\u97F3\u6743\u9650\uFF1A\u8BF7\u786E\u8BA4\u6269\u5C55\u5DF2\u83B7\u5F97\u300C\u8BFB\u53D6\u548C\u66F4\u6539\u7F51\u7AD9\u6570\u636E\u300D\u6743\u9650\uFF0C\u7136\u540E\u91CD\u8BD5";
+    }
+    return { ok: false, error: friendly };
+  }
+}
 var sessionHandlers = {
   /* ---------- Session (content script) ---------- */
   GET_SESSION: (_message, { tabId, sendResponse }) => {
@@ -1280,138 +1466,59 @@ var sessionHandlers = {
     return true;
   },
   START: (message, { tabId, sendResponse }) => {
-    (async () => {
-      const s = await reconcileSessionState(tabId);
-      if (s.state === "running" || s.state === "starting") {
-        const live = await offscreenHasCapture(tabId);
-        if (live) {
-          sendResponse({ ok: true, alreadyRunning: true, session: safeSession(s) });
-          return;
-        }
-        s.state = "idle";
-        s.streamId = "";
-        s.configSnapshot = null;
-        s.streamingSubtitle = null;
-      }
-      s.state = "starting";
-      s.sourceLang = message.sourceLang || "auto";
-      s.targetLang = message.targetLang || "zh";
-      s.generation = nextGeneration();
-      s.subtitles = [];
-      s.streamingSubtitle = null;
-      s.audioSilent = false;
-      pushSession(tabId);
-      try {
-        const config = await loadConfig();
-        const hasKey = config.providers.some((p) => p.apiKey && p.apiKey.trim().length > 0);
-        if (!hasKey) {
-          throw new Error("\u5C1A\u672A\u914D\u7F6E API Key\u3002\u8BF7\u70B9\u51FB\u9875\u9762\u60AC\u6D6E\u680F\u7684 \u2699 \u6309\u94AE\uFF0C\u5728\u9875\u9762\u5185\u586B\u5165\u5BC6\u94A5\u540E\u91CD\u8BD5");
-        }
-        const audioRoute = config.routes.audio;
-        const audioProvider = config.providers.find((p) => p.id === audioRoute.providerId);
-        if (!audioProvider || !audioProvider.apiKey) {
-          throw new Error(`\u97F3\u9891\u8F6C\u5199\u670D\u52A1\u5546\u300C${audioProvider?.name || "\u672A\u914D\u7F6E"}\u300D\u7F3A\u5C11 API Key\uFF0C\u8BF7\u70B9\u51FB \u2699 \u5728\u9875\u9762\u5185\u914D\u7F6E`);
-        }
-        if (!audioRoute.model) {
-          throw new Error("\u97F3\u9891\u8F6C\u5199\u672A\u9009\u62E9\u6A21\u578B\uFF0C\u8BF7\u70B9\u51FB\u60AC\u6D6E\u680F\u7684 \u2699 \u5728\u9875\u9762\u5185\u914D\u7F6E");
-        }
-        s.configSnapshot = JSON.parse(JSON.stringify(config));
-        console.log("[RTTS] START:", tabId, "gen:", s.generation, "lang:", s.sourceLang, "\u2192", s.targetLang);
-        await stopOrphanCapture(tabId);
-        const requestStreamId = () => new Promise((resolve, reject) => {
-          chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (id) => {
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
-            } else if (!id) {
-              reject(new Error("\u83B7\u53D6\u97F3\u9891\u6D41 ID \u5931\u8D25"));
-            } else {
-              resolve(id);
-            }
-          });
-        });
-        let streamId;
-        try {
-          streamId = await requestStreamId();
-        } catch (err) {
-          if (!/active stream/i.test(err?.message || "")) throw err;
-          await stopOrphanCapture(tabId);
-          await forceResetOffscreenCapture();
-          try {
-            streamId = await requestStreamId();
-          } catch (retryErr) {
-            if (/active stream/i.test(retryErr?.message || "")) {
-              throw new Error("\u5F55\u97F3\u6D41\u5728\u91CD\u7F6E\u540E\u4ECD\u88AB\u6D4F\u89C8\u5668\u5360\u7528");
-            }
-            throw retryErr;
-          }
-        }
-        s.streamId = streamId;
-        console.log("[RTTS] streamId obtained for tab", tabId);
-        await sendToOffscreen({
-          type: "START_CAPTURE",
-          tabId,
-          streamId,
-          sourceLang: s.sourceLang,
-          targetLang: s.targetLang,
-          config: s.configSnapshot,
-          generation: s.generation
-        });
-        s.state = "running";
-        pushSession(tabId);
-        sendResponse({ ok: true });
-      } catch (err) {
-        console.warn("[RTTS] START failed:", err.message);
-        s.state = "idle";
-        s.configSnapshot = null;
-        s.streamId = "";
-        s.streamingSubtitle = null;
-        pushSession(tabId);
-        const msg = err && err.message || String(err);
-        let friendly = msg;
-        if (/重置后仍被浏览器占用/i.test(msg)) {
-          friendly = "\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\u3002\u8BF7\u5173\u95ED\u5176\u4ED6\u5F55\u97F3\u6269\u5C55\u6216\u6807\u7B7E\u9875\uFF0C\u5B8C\u5168\u9000\u51FA\u5E76\u91CD\u65B0\u6253\u5F00 Chrome \u540E\u518D\u8BD5";
-        } else if (/active stream/i.test(msg)) {
-          friendly = "\u8BE5\u6807\u7B7E\u9875\u4ECD\u6709\u6B8B\u7559\u5F55\u97F3\u6D41\uFF08\u6269\u5C55\u540E\u53F0\u91CD\u542F\u6240\u81F4\uFF09\u3002\u5DF2\u81EA\u52A8\u6E05\u7406\uFF0C\u8BF7\u518D\u70B9\u4E00\u6B21\u300C\u5F55\u97F3\u300D\uFF1B\u82E5\u4ECD\u5931\u8D25\uFF0C\u8BF7\u5237\u65B0\u9875\u9762\u540E\u91CD\u8BD5";
-        } else if (/旧录音流释放超时|无法停止旧录音流|无法确认旧录音流状态/i.test(msg)) {
-          friendly = "\u65E7\u5F55\u97F3\u6D41\u672A\u80FD\u91CA\u653E\u3002\u8BF7\u5237\u65B0\u9875\u9762\u540E\u91CD\u8BD5\uFF1B\u82E5\u4ECD\u5931\u8D25\uFF0C\u8BF7\u5728\u6269\u5C55\u7BA1\u7406\u9875\u91CD\u65B0\u52A0\u8F7D snooper \u540E\u518D\u8BD5";
-        } else if (/录音组件释放超时|其他标签页仍在录音|无法确认其他录音状态/i.test(msg)) {
-          friendly = "\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\u3002\u8BF7\u5148\u505C\u6B62\u5176\u4ED6\u6807\u7B7E\u9875\u7684\u5F55\u97F3\uFF0C\u518D\u5237\u65B0\u672C\u9875\u91CD\u8BD5";
-        } else if (/重置后仍被浏览器占用|录音流在重置后仍被/i.test(msg)) {
-          const suspects = await describeCaptureSuspects(
-            await chrome.management.getAll().then(
-              (all) => all.filter((e) => (e.permissions || []).includes("tabCapture")).map((e) => ({ name: e.name, id: e.id }))
-            ).catch(() => [])
-          );
-          friendly = suspects ? `\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\uFF0C\u7591\u4F3C\u6765\u81EA\uFF1A${suspects}\u3002\u8BF7\u505C\u7528\u5BF9\u5E94\u6269\u5C55\u540E\u91CD\u8BD5` : "\u6D4F\u89C8\u5668\u4ECD\u5360\u7528\u672C\u9875\u7684\u5F55\u97F3\u6D41\u3002\u8BF7\u5173\u95ED\u5176\u4ED6\u5F55\u97F3\u6269\u5C55\u6216\u6807\u7B7E\u9875\uFF0C\u5B8C\u5168\u9000\u51FA\u5E76\u91CD\u65B0\u6253\u5F00 Chrome \u540E\u518D\u8BD5";
-        } else if (/not been invoked|activeTab/i.test(msg)) {
-          friendly = "\u9700\u8981\u5148\u5B8C\u6210\u4E00\u6B21\u6388\u6743\uFF1A\u70B9\u51FB\u6D4F\u89C8\u5668\u5DE5\u5177\u680F\u7684 snooper \u56FE\u6807\uFF08\u5F39\u51FA\u7684\u9762\u677F\u53EF\u7ACB\u5373\u5173\u95ED\uFF09\uFF0C\u4E4B\u540E\u672C\u9875\u53EF\u76F4\u63A5\u4F7F\u7528";
-        } else if (/permission|Permission|not allowed|not permitted/i.test(msg)) {
-          friendly = "\u7F3A\u5C11\u5F55\u97F3\u6743\u9650\uFF1A\u8BF7\u786E\u8BA4\u6269\u5C55\u5DF2\u83B7\u5F97\u300C\u8BFB\u53D6\u548C\u66F4\u6539\u7F51\u7AD9\u6570\u636E\u300D\u6743\u9650\uFF0C\u7136\u540E\u91CD\u8BD5";
-        }
-        sendResponse({ ok: false, error: friendly });
-      }
-    })();
+    const startVersion = currentStartVersion(tabId);
+    const previous = startAttempts.get(tabId);
+    let attempt;
+    if (previous?.version === startVersion) {
+      attempt = previous;
+    } else {
+      const pendingStop = stopAttempts.get(tabId);
+      const afterPrevious = previous ? previous.promise.catch(() => void 0) : Promise.resolve();
+      const afterStop = pendingStop ? pendingStop.catch(() => void 0) : Promise.resolve();
+      const run = Promise.all([afterPrevious, afterStop]).then(() => runStart(message, tabId, startVersion));
+      attempt = { version: startVersion, promise: run };
+      startAttempts.set(tabId, attempt);
+      const settle = () => {
+        if (startAttempts.get(tabId) !== attempt) return;
+        startAttempts.delete(tabId);
+        startCancelVersions.delete(tabId);
+      };
+      run.then(settle, settle);
+    }
+    attempt.promise.then(
+      (result) => sendResponse(result),
+      (err) => sendResponse({ ok: false, error: err?.message || "\u542F\u52A8\u5931\u8D25" })
+    );
     return true;
   },
   STOP: (_message, { tabId, sendResponse }) => {
+    cancelStart(tabId);
     const s = sessions.get(tabId);
     if (!s) {
-      stopOrphanCapture(tabId).catch(() => {
+      const stop2 = stopOrphanCapture(tabId).then(() => void 0).catch(() => void 0);
+      stopAttempts.set(tabId, stop2);
+      stop2.finally(() => {
+        if (stopAttempts.get(tabId) === stop2) stopAttempts.delete(tabId);
+      }).catch(() => {
       });
-      sendResponse({ ok: true });
-      return false;
+      stop2.then(() => sendResponse({ ok: true }), () => sendResponse({ ok: true }));
+      return true;
     }
     if (s.state === "idle" && s.generation !== 0) {
-      stopOrphanCapture(tabId).catch(() => {
+      const stop2 = stopOrphanCapture(tabId).then(() => void 0).catch(() => void 0);
+      stopAttempts.set(tabId, stop2);
+      stop2.finally(() => {
+        if (stopAttempts.get(tabId) === stop2) stopAttempts.delete(tabId);
+      }).catch(() => {
       });
-      sendResponse({ ok: true });
-      return false;
+      stop2.then(() => sendResponse({ ok: true }), () => sendResponse({ ok: true }));
+      return true;
     }
     s.state = "stopping";
     pushSession(tabId);
     const stoppedGeneration = s.generation;
     s.generation = nextGeneration();
-    sendToOffscreen({
+    const stop = sendToOffscreen({
       type: "STOP_CAPTURE",
       tabId,
       generation: stoppedGeneration
@@ -1428,6 +1535,11 @@ var sessionHandlers = {
       pushSession(tabId);
       maybeCloseOffscreen();
       sendResponse({ ok: true, session: safeSession(s) });
+    });
+    stopAttempts.set(tabId, stop);
+    stop.finally(() => {
+      if (stopAttempts.get(tabId) === stop) stopAttempts.delete(tabId);
+    }).catch(() => {
     });
     return true;
   },

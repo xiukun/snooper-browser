@@ -28,6 +28,158 @@
     }
   }
 
+  // src/lib/export-assets.ts
+  function decodeExportAsset(asset) {
+    if (asset.mimeType === "image/svg+xml" && asset.svgText) {
+      return { file: { name: asset.fileName, bytes: new TextEncoder().encode(asset.svgText) } };
+    }
+    const dataUrl = asset.dataUrl || "";
+    const match = /^data:([^;,]+)?;base64,(.*)$/s.exec(dataUrl);
+    if (!match) return null;
+    const mime = match[1] || "image/png";
+    if (mime !== asset.mimeType) return null;
+    try {
+      const binary = atob(match[2] || "");
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return { file: { name: asset.fileName, bytes } };
+    } catch {
+      return null;
+    }
+  }
+  var CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+      table[i] = c >>> 0;
+    }
+    return table;
+  })();
+  function crc32(bytes) {
+    let c = 4294967295;
+    for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 255] ^ c >>> 8;
+    return (c ^ 4294967295) >>> 0;
+  }
+  function buildZip(files) {
+    const encoder = new TextEncoder();
+    const chunks = [];
+    const entries = [];
+    let offset = 0;
+    const push = (bytes) => {
+      chunks.push(bytes);
+      offset += bytes.length;
+    };
+    for (const file of files) {
+      const nameBytes = encoder.encode(file.name);
+      const crc = crc32(file.bytes);
+      const size = file.bytes.length;
+      const header = new Uint8Array(30 + nameBytes.length);
+      const view = new DataView(header.buffer);
+      view.setUint32(0, 67324752, true);
+      view.setUint16(4, 20, true);
+      view.setUint16(6, 2048, true);
+      view.setUint16(8, 0, true);
+      view.setUint16(10, 0, true);
+      view.setUint16(12, 33, true);
+      view.setUint32(14, crc, true);
+      view.setUint32(18, size, true);
+      view.setUint32(22, size, true);
+      view.setUint16(26, nameBytes.length, true);
+      view.setUint16(28, 0, true);
+      header.set(nameBytes, 30);
+      push(header);
+      push(file.bytes);
+      entries.push({ nameBytes, crc, size, offset: offset - size, bytes: file.bytes });
+    }
+    const centralStart = offset;
+    for (const entry of entries) {
+      const central = new Uint8Array(46 + entry.nameBytes.length);
+      const view = new DataView(central.buffer);
+      view.setUint32(0, 33639248, true);
+      view.setUint16(4, 20, true);
+      view.setUint16(6, 20, true);
+      view.setUint16(8, 2048, true);
+      view.setUint16(10, 0, true);
+      view.setUint16(12, 0, true);
+      view.setUint16(14, 33, true);
+      view.setUint32(16, entry.crc, true);
+      view.setUint32(20, entry.size, true);
+      view.setUint32(24, entry.size, true);
+      view.setUint16(28, entry.nameBytes.length, true);
+      view.setUint16(30, 0, true);
+      view.setUint16(32, 0, true);
+      view.setUint16(34, 0, true);
+      view.setUint16(36, 0, true);
+      view.setUint32(38, 0, true);
+      view.setUint32(42, entry.offset, true);
+      central.set(entry.nameBytes, 46);
+      push(central);
+    }
+    const end = new Uint8Array(22);
+    const endView = new DataView(end.buffer);
+    endView.setUint32(0, 101010256, true);
+    endView.setUint16(8, entries.length, true);
+    endView.setUint16(10, entries.length, true);
+    endView.setUint32(12, offset - centralStart, true);
+    endView.setUint32(16, centralStart, true);
+    push(end);
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const out = new Uint8Array(total);
+    let position = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, position);
+      position += chunk.length;
+    }
+    return out;
+  }
+  function collectAssets(notes, messages, options = {}) {
+    const assets = [];
+    const used = options.existingNames || /* @__PURE__ */ new Set();
+    const stamp = Date.now();
+    const uniqueName = (base, ext) => {
+      let index = assets.length + 1;
+      let name = `${base}-${stamp}-${index}.${ext}`;
+      while (used.has(name)) {
+        index += 1;
+        name = `${base}-${stamp}-${index}.${ext}`;
+      }
+      used.add(name);
+      return name;
+    };
+    const extFor = (mime) => mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : mime.includes("svg") ? "svg" : "png";
+    notes.forEach((note) => note.entries.forEach((entry) => {
+      const entryId = `note:${note.id}:${entry.id}`;
+      if ((entry.type === "image" || entry.type === "screenshot") && entry.imageUrl?.startsWith("data:")) {
+        const mime = /^data:([^;,]+)/.exec(entry.imageUrl)?.[1] || "image/png";
+        assets.push({
+          entryId,
+          fileName: uniqueName("snooper", extFor(mime)),
+          mimeType: mime,
+          dataUrl: entry.imageUrl
+        });
+      } else if (entry.type === "svg" && entry.svg) {
+        assets.push({
+          entryId,
+          fileName: uniqueName("snooper", "svg"),
+          mimeType: "image/svg+xml",
+          svgText: entry.svg
+        });
+      }
+    }));
+    messages.forEach((message, messageIndex) => (message.images || []).forEach((image, imageIndex) => {
+      if (!image.startsWith("data:")) return;
+      const mime = /^data:([^;,]+)/.exec(image)?.[1] || "image/png";
+      assets.push({
+        entryId: `chat:${messageIndex}:${imageIndex}`,
+        fileName: uniqueName("snooper-chat", extFor(mime)),
+        mimeType: mime,
+        dataUrl: image
+      });
+    }));
+    return assets;
+  }
+
   // src/ext/sidepanel/panel.ts
   (() => {
     const DEFAULT_OBSIDIAN = {
@@ -124,6 +276,7 @@
     }
     let obsidianCfg = { ...DEFAULT_OBSIDIAN };
     let notes = [];
+    let noteAssetNames = /* @__PURE__ */ new Map();
     const noticeBanner = document.getElementById("noticeBanner");
     const tabNotes = document.getElementById("tab-notes");
     const tabObsidian = document.getElementById("tab-obsidian");
@@ -267,8 +420,10 @@
         actions.appendChild(exportBtn);
         const delBtn = document.createElement("button");
         delBtn.type = "button";
-        delBtn.className = "btn btn-danger-ghost btn-xs";
-        delBtn.textContent = "\u5220\u9664";
+        delBtn.className = "icon-btn icon-btn-danger";
+        delBtn.setAttribute("aria-label", `\u5220\u9664${note.title || "\u7B14\u8BB0"}`);
+        delBtn.title = "\u5220\u9664\u7B14\u8BB0";
+        delBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>';
         delBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
           if (!confirm("\u786E\u5B9A\u5220\u9664\u8FD9\u7BC7\u7B14\u8BB0\uFF1F")) return;
@@ -308,34 +463,62 @@
             lines.push("");
             break;
           case "screenshot":
-            lines.push(`### \u622A\u56FE ${time}`);
-            lines.push(entry.text || "\u622A\u56FE");
-            if (entry.imageUrl) lines.push(`![](${entry.imageUrl})`);
+          case "image": {
+            const title = entry.type === "screenshot" ? "\u622A\u56FE" : "\u914D\u56FE";
+            lines.push(`### ${title} ${time}`);
+            lines.push(entry.text || entry.source || title);
+            const assetName = noteAssetNames.get(`note:${note.id}:${entry.id}`);
+            if (assetName) lines.push(`![](assets/${assetName})`);
+            else lines.push(`> [\u56FE\u7247\uFF1A${entry.text || title} \u2014 \u56FE\u7247\u6570\u636E\u672A\u80FD\u968F\u5BFC\u51FA\u643A\u5E26]`);
             lines.push("");
             break;
-          case "image":
-            lines.push(`### \u914D\u56FE ${time}`);
-            lines.push(entry.text || entry.source || "");
-            if (entry.imageUrl) lines.push(`![](${entry.imageUrl})`);
-            lines.push("");
-            break;
-          case "svg":
+          }
+          case "svg": {
             lines.push(`### SVG ${time}`);
             lines.push(entry.text || entry.source || "");
-            if (entry.svg) lines.push("```svg\n" + entry.svg + "\n```");
+            const svgName = noteAssetNames.get(`note:${note.id}:${entry.id}`);
+            if (svgName) lines.push(`![](assets/${svgName})`);
+            else if (entry.svg) lines.push("```svg\n" + entry.svg + "\n```");
             lines.push("");
             break;
+          }
         }
       }
       lines.push("", "---", "*\u7531 snooper-browser \u751F\u6210*");
-      const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${note.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_")}.md`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 2e3);
-      showNotice("\u7B14\u8BB0\u5DF2\u5BFC\u51FA");
+      const markdown = lines.join("\n");
+      const assets = collectAssets([note], []).map((asset) => ({
+        ...asset,
+        entryId: asset.entryId.replace(/^note:[^:]+:/, `note:${note.id}:`)
+      }));
+      const decoded = [];
+      noteAssetNames = /* @__PURE__ */ new Map();
+      for (const asset of assets) {
+        const result = decodeExportAsset(asset);
+        if (result) {
+          noteAssetNames.set(asset.entryId, asset.fileName);
+          decoded.push({ name: `assets/${asset.fileName}`, bytes: result.file.bytes });
+        }
+      }
+      if (decoded.length === 0) {
+        const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${note.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_")}.md`;
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 2e3);
+        showNotice("\u7B14\u8BB0\u5DF2\u5BFC\u51FA");
+        return;
+      }
+      decoded.unshift({ name: "note.md", bytes: new TextEncoder().encode(markdown) });
+      const zipBlob = new Blob([buildZip(decoded)], { type: "application/zip" });
+      const zipUrl = URL.createObjectURL(zipBlob);
+      const zipAnchor = document.createElement("a");
+      zipAnchor.href = zipUrl;
+      zipAnchor.download = `${note.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_")}.zip`;
+      zipAnchor.click();
+      setTimeout(() => URL.revokeObjectURL(zipUrl), 2e3);
+      showNotice(`\u7B14\u8BB0\u5DF2\u5BFC\u51FA\uFF08ZIP\uFF0C${decoded.length} \u4E2A\u6587\u4EF6\uFF09`);
     }
     notesRefreshBtn.addEventListener("click", loadAndRenderNotes);
     notesSelectAll.addEventListener("change", () => {
@@ -393,17 +576,79 @@
         el.appendChild(check);
         const main = document.createElement("div");
         main.className = "history-item-main";
-        main.innerHTML = `
-        <div class="history-item-title" title="${escapeHtml(item.pageTitle || "")}">${escapeHtml(item.pageTitle || "\u672A\u77E5\u9875\u9762")}</div>
-        <div class="history-item-meta">
-          <span>&#x1F550; ${formatTime(item.startedAt)}</span>
-          <span>&#x1F3AF; ${item.subtitleCount || 0} \u6761\u5B57\u5E55</span>
-          <span>${escapeHtml(item.sourceLang || "")} \u2192 ${escapeHtml(item.targetLang || "")}</span>
-        </div>
-      `;
+        const title = document.createElement("div");
+        title.className = "history-item-title";
+        title.title = item.pageTitle || "";
+        title.textContent = item.pageTitle || "\u672A\u77E5\u9875\u9762";
+        const meta = document.createElement("div");
+        meta.className = "history-item-meta";
+        meta.textContent = `${formatTime(item.startedAt)} \xB7 ${item.subtitleCount || 0} \u6761\u5B57\u5E55 \xB7 ${item.sourceLang || ""} \u2192 ${item.targetLang || ""}`;
+        main.append(title, meta);
         el.appendChild(main);
+        const detail = document.createElement("div");
+        detail.className = "history-item-detail";
+        detail.hidden = true;
+        const rows = item.subtitles || [];
+        if (rows.length === 0) {
+          detail.textContent = "\u8FD9\u662F\u65E7\u7248\u5386\u53F2\u8BB0\u5F55\uFF0C\u53EA\u4FDD\u5B58\u4E86\u6761\u6570\uFF0C\u6CA1\u6709\u4FDD\u5B58\u5B57\u5E55\u6B63\u6587\u3002";
+        } else {
+          rows.forEach((subtitle) => {
+            const row = document.createElement("div");
+            row.className = "history-subtitle-row";
+            const time = document.createElement("time");
+            time.textContent = subtitle.at ? new Date(subtitle.at).toLocaleTimeString("zh-CN") : "--:--:--";
+            const source = document.createElement("span");
+            source.className = "history-source";
+            source.textContent = subtitle.source || "\uFF08\u65E0\u539F\u6587\uFF09";
+            const target = document.createElement("span");
+            target.className = "history-target";
+            target.textContent = subtitle.target || "\uFF08\u65E0\u8BD1\u6587\uFF09";
+            row.append(time, source, target);
+            detail.appendChild(row);
+          });
+        }
+        el.appendChild(detail);
         const actions = document.createElement("div");
         actions.className = "history-item-actions";
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "btn btn-sm btn-secondary";
+        toggle.textContent = "\u67E5\u770B\u5185\u5BB9";
+        toggle.addEventListener("click", () => {
+          detail.hidden = !detail.hidden;
+          toggle.textContent = detail.hidden ? "\u67E5\u770B\u5185\u5BB9" : "\u6536\u8D77\u5185\u5BB9";
+        });
+        actions.appendChild(toggle);
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "btn btn-sm btn-secondary";
+        copy.textContent = "\u590D\u5236";
+        copy.addEventListener("click", async () => {
+          const rows2 = item.subtitles || [];
+          if (rows2.length === 0) {
+            showNotice("\u65E7\u8BB0\u5F55\u6CA1\u6709\u4FDD\u5B58\u5B57\u5E55\u6B63\u6587\uFF0C\u65E0\u6CD5\u590D\u5236", true);
+            return;
+          }
+          const text = rows2.map((subtitle) => `${subtitle.source || ""}
+${subtitle.target || ""}`).join("\n\n");
+          const ok = await copyText(text);
+          showNotice(ok ? "\u5DF2\u590D\u5236\u8F6C\u5199\u5185\u5BB9" : "\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u8BBE\u7F6E\u4E2D\u5141\u8BB8\u526A\u8D34\u677F\u8BBF\u95EE", !ok);
+        });
+        actions.appendChild(copy);
+        const exportButton = document.createElement("button");
+        exportButton.type = "button";
+        exportButton.className = "btn btn-sm btn-secondary";
+        exportButton.textContent = "\u5BFC\u51FA Markdown";
+        exportButton.addEventListener("click", () => {
+          const blob = new Blob([historyMarkdown(item)], { type: "text/markdown;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = `snooper-history-${item.id}.md`;
+          anchor.click();
+          setTimeout(() => URL.revokeObjectURL(url), 2e3);
+        });
+        actions.appendChild(exportButton);
         const del = document.createElement("button");
         del.type = "button";
         del.className = "btn btn-sm btn-secondary";
@@ -435,10 +680,40 @@
       if (!confirm("\u786E\u5B9A\u6E05\u7A7A\u5168\u90E8\u5386\u53F2\u8BB0\u5F55\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002")) return;
       chrome.runtime.sendMessage({ target: "background", type: "DELETE_ALL_HISTORY" }).then(() => loadAndRenderHistory());
     });
-    function escapeHtml(text) {
-      const div = document.createElement("div");
-      div.textContent = text;
-      return div.innerHTML;
+    function historyMarkdown(item) {
+      const lines = [
+        `# ${item.pageTitle || "\u8F6C\u5199\u5386\u53F2"}`,
+        "",
+        `- **\u5F00\u59CB**\uFF1A${formatTime(item.startedAt)}`,
+        `- **\u7ED3\u675F**\uFF1A${formatTime(item.endedAt)}`,
+        `- **\u8BED\u8A00**\uFF1A${item.sourceLang || "auto"} \u2192 ${item.targetLang || "zh"}`,
+        "",
+        "| \u65F6\u95F4 | \u539F\u6587 | \u8BD1\u6587 |",
+        "| :--- | :--- | :--- |"
+      ];
+      for (const subtitle of item.subtitles || []) {
+        const time = subtitle.at ? new Date(subtitle.at).toLocaleTimeString("zh-CN") : "";
+        const source = (subtitle.source || "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+        const target = (subtitle.target || "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+        lines.push(`| ${time} | ${source} | ${target} |`);
+      }
+      if (!item.subtitles?.length) lines.push("|  | \u65E7\u8BB0\u5F55\u672A\u4FDD\u5B58\u5B57\u5E55\u6B63\u6587 |  |");
+      return lines.join("\n");
+    }
+    async function copyText(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.cssText = "position:fixed;left:-9999px;top:-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const ok = document.execCommand("copy");
+        textarea.remove();
+        return ok;
+      }
     }
     async function renderObsidianConfig() {
       obsidianCfg = await loadObsidianConfig();

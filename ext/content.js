@@ -2484,8 +2484,9 @@
       });
       if (!res.ok) {
         const message = res.error || "\u542F\u52A8\u5931\u8D25";
-        deps.toast(message, "err");
-        if (message.includes("API Key") || message.includes("\u672A\u9009\u62E9\u6A21\u578B")) deps.openSettings();
+        const needsSetup = res.code === "CONFIG_REQUIRED" || message.includes("API Key") || message.includes("\u672A\u9009\u62E9\u6A21\u578B");
+        deps.toast(message, needsSetup ? "info" : "err");
+        if (needsSetup) deps.openSettings();
         await deps.syncSession();
         deps.ensureToolbarVisible();
         return;
@@ -2959,6 +2960,163 @@
     return { setOpen };
   }
 
+  // src/lib/export-assets.ts
+  function decodeExportAsset(asset) {
+    if (asset.mimeType === "image/svg+xml" && asset.svgText) {
+      return { file: { name: asset.fileName, bytes: new TextEncoder().encode(asset.svgText) } };
+    }
+    const dataUrl = asset.dataUrl || "";
+    const match = /^data:([^;,]+)?;base64,(.*)$/s.exec(dataUrl);
+    if (!match) return null;
+    const mime = match[1] || "image/png";
+    if (mime !== asset.mimeType) return null;
+    try {
+      const binary = atob(match[2] || "");
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return { file: { name: asset.fileName, bytes } };
+    } catch {
+      return null;
+    }
+  }
+  var CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+      table[i] = c >>> 0;
+    }
+    return table;
+  })();
+  function crc32(bytes) {
+    let c = 4294967295;
+    for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 255] ^ c >>> 8;
+    return (c ^ 4294967295) >>> 0;
+  }
+  function buildZip(files) {
+    const encoder = new TextEncoder();
+    const chunks = [];
+    const entries = [];
+    let offset = 0;
+    const push = (bytes) => {
+      chunks.push(bytes);
+      offset += bytes.length;
+    };
+    for (const file of files) {
+      const nameBytes = encoder.encode(file.name);
+      const crc = crc32(file.bytes);
+      const size = file.bytes.length;
+      const header = new Uint8Array(30 + nameBytes.length);
+      const view = new DataView(header.buffer);
+      view.setUint32(0, 67324752, true);
+      view.setUint16(4, 20, true);
+      view.setUint16(6, 2048, true);
+      view.setUint16(8, 0, true);
+      view.setUint16(10, 0, true);
+      view.setUint16(12, 33, true);
+      view.setUint32(14, crc, true);
+      view.setUint32(18, size, true);
+      view.setUint32(22, size, true);
+      view.setUint16(26, nameBytes.length, true);
+      view.setUint16(28, 0, true);
+      header.set(nameBytes, 30);
+      push(header);
+      push(file.bytes);
+      entries.push({ nameBytes, crc, size, offset: offset - size, bytes: file.bytes });
+    }
+    const centralStart = offset;
+    for (const entry of entries) {
+      const central = new Uint8Array(46 + entry.nameBytes.length);
+      const view = new DataView(central.buffer);
+      view.setUint32(0, 33639248, true);
+      view.setUint16(4, 20, true);
+      view.setUint16(6, 20, true);
+      view.setUint16(8, 2048, true);
+      view.setUint16(10, 0, true);
+      view.setUint16(12, 0, true);
+      view.setUint16(14, 33, true);
+      view.setUint32(16, entry.crc, true);
+      view.setUint32(20, entry.size, true);
+      view.setUint32(24, entry.size, true);
+      view.setUint16(28, entry.nameBytes.length, true);
+      view.setUint16(30, 0, true);
+      view.setUint16(32, 0, true);
+      view.setUint16(34, 0, true);
+      view.setUint16(36, 0, true);
+      view.setUint32(38, 0, true);
+      view.setUint32(42, entry.offset, true);
+      central.set(entry.nameBytes, 46);
+      push(central);
+    }
+    const end = new Uint8Array(22);
+    const endView = new DataView(end.buffer);
+    endView.setUint32(0, 101010256, true);
+    endView.setUint16(8, entries.length, true);
+    endView.setUint16(10, entries.length, true);
+    endView.setUint32(12, offset - centralStart, true);
+    endView.setUint32(16, centralStart, true);
+    push(end);
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const out = new Uint8Array(total);
+    let position = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, position);
+      position += chunk.length;
+    }
+    return out;
+  }
+  function collectAssets(notes, messages, options = {}) {
+    const assets = [];
+    const used = options.existingNames || /* @__PURE__ */ new Set();
+    const stamp = Date.now();
+    const uniqueName = (base, ext) => {
+      let index = assets.length + 1;
+      let name = `${base}-${stamp}-${index}.${ext}`;
+      while (used.has(name)) {
+        index += 1;
+        name = `${base}-${stamp}-${index}.${ext}`;
+      }
+      used.add(name);
+      return name;
+    };
+    const extFor = (mime) => mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : mime.includes("svg") ? "svg" : "png";
+    notes.forEach((note) => note.entries.forEach((entry) => {
+      const entryId = `note:${note.id}:${entry.id}`;
+      if ((entry.type === "image" || entry.type === "screenshot") && entry.imageUrl?.startsWith("data:")) {
+        const mime = /^data:([^;,]+)/.exec(entry.imageUrl)?.[1] || "image/png";
+        assets.push({
+          entryId,
+          fileName: uniqueName("snooper", extFor(mime)),
+          mimeType: mime,
+          dataUrl: entry.imageUrl
+        });
+      } else if (entry.type === "svg" && entry.svg) {
+        assets.push({
+          entryId,
+          fileName: uniqueName("snooper", "svg"),
+          mimeType: "image/svg+xml",
+          svgText: entry.svg
+        });
+      }
+    }));
+    messages.forEach((message, messageIndex) => (message.images || []).forEach((image, imageIndex) => {
+      if (!image.startsWith("data:")) return;
+      const mime = /^data:([^;,]+)/.exec(image)?.[1] || "image/png";
+      assets.push({
+        entryId: `chat:${messageIndex}:${imageIndex}`,
+        fileName: uniqueName("snooper-chat", extFor(mime)),
+        mimeType: mime,
+        dataUrl: image
+      });
+    }));
+    return assets;
+  }
+  function formatBytes(total) {
+    if (total >= 1024 * 1024) return `${(total / (1024 * 1024)).toFixed(1)} MB`;
+    if (total >= 1024) return `${Math.round(total / 1024)} KB`;
+    return `${total} B`;
+  }
+
   // src/ext/content/exporter.ts
   function getSubtitleText(subtitles) {
     return subtitles.map((sub) => {
@@ -3024,7 +3182,7 @@
           const uploaded = assetNames?.get(`chat:${messageIndex}:${imageIndex}`);
           if (uploaded) lines.push(`![[${uploaded}]]`, "");
           else if (/^https?:\/\//i.test(image)) lines.push(`![\u4F34\u5B66\u56FE\u7247](${image})`, "");
-          else lines.push("> [\u4F34\u5B66\u56FE\u7247\u672A\u80FD\u4E0A\u4F20]", "");
+          else lines.push("> [\u4F34\u5B66\u56FE\u7247\u672A\u80FD\u5BFC\u51FA\uFF1A\u56FE\u7247\u6570\u636E\u4EC5\u4FDD\u5B58\u5728\u6269\u5C55\u5B58\u50A8\u4E2D]", "");
         });
       });
     }
@@ -3039,7 +3197,7 @@
           if (uploaded) lines.push(`![[${uploaded}]]`);
           else if (entry.imageUrl && /^https?:\/\//i.test(entry.imageUrl)) lines.push(`![${label2}](${entry.imageUrl})`);
           else if (entry.svg) lines.push("```svg", entry.svg, "```");
-          else lines.push(`> [\u56FE\u7247\uFF1A${label2} \u2014 \u56FE\u7247\u6570\u636E\u65E0\u6CD5\u76F4\u63A5\u5D4C\u5165 Markdown]`);
+          else lines.push(`> [\u56FE\u7247\uFF1A${label2} \u2014 \u56FE\u7247\u6570\u636E\u4EC5\u4FDD\u5B58\u5728\u6269\u5C55\u5B58\u50A8\u4E2D\uFF0C\u672A\u968F\u672C\u6B21\u5BFC\u51FA\u643A\u5E26]`);
           if (entry.text) lines.push("", `*${entry.text}*`);
           lines.push("");
         } else if (entry.target) {
@@ -3080,6 +3238,18 @@
       }
     }
   }
+  function sessionHasAssets(session) {
+    return collectAssets(session.notes, session.messages).length > 0;
+  }
+  function downloadZip(filename, files) {
+    const blob = new Blob([buildZip(files)], { type: "application/zip" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2e3);
+  }
   function bindActions(deps) {
     const r = deps.refs;
     r.copy.addEventListener("click", async () => {
@@ -3106,15 +3276,40 @@
       deps.flashChip(r.exportTxt);
       deps.toast("TXT \u5DF2\u5BFC\u51FA", "ok");
     });
-    r.exportMd.addEventListener("click", () => {
-      const text = getSubtitleMarkdown(deps.getSession());
+    r.exportMd.addEventListener("click", async () => {
+      const session = deps.getSession();
+      const text = getSubtitleMarkdown(session);
       if (!text) {
         deps.toast("\u6CA1\u6709\u5185\u5BB9\u53EF\u5BFC\u51FA", "err");
         return;
       }
-      downloadBlob(`snooper-notes-${Date.now()}.md`, text);
       deps.flashChip(r.exportMd);
-      deps.toast("Markdown \u5DF2\u5BFC\u51FA", "ok");
+      if (!sessionHasAssets(session)) {
+        downloadBlob(`snooper-notes-${Date.now()}.md`, text);
+        deps.toast("Markdown \u5DF2\u5BFC\u51FA", "ok");
+        return;
+      }
+      const assets = collectAssets(session.notes, session.messages);
+      const names = /* @__PURE__ */ new Map();
+      const files = [];
+      let failed = 0;
+      for (const asset of assets) {
+        const decoded = decodeExportAsset(asset);
+        if (decoded) {
+          names.set(asset.entryId, `assets/${asset.fileName}`);
+          files.push({ name: `assets/${asset.fileName}`, bytes: decoded.file.bytes });
+        } else {
+          failed += 1;
+        }
+      }
+      const markdown = getSubtitleMarkdown(
+        session,
+        new Map([...names].map(([entryId, name]) => [entryId, name]))
+      );
+      files.unshift({ name: "record.md", bytes: new TextEncoder().encode(markdown) });
+      downloadZip(`snooper-notes-${Date.now()}.zip`, files);
+      const note = failed > 0 ? `\uFF0C${failed} \u5F20\u56FE\u7247\u65E0\u6CD5\u8BFB\u53D6\u5DF2\u7528\u5360\u4F4D\u8BF4\u660E` : "";
+      deps.toast(`\u5DF2\u5BFC\u51FA ZIP\uFF08${files.length} \u4E2A\u6587\u4EF6\uFF0C${formatBytes(files.reduce((sum, file) => sum + file.bytes.length, 0))}\uFF09${note}`, failed > 0 ? "err" : "ok");
     });
     r.note.addEventListener("click", () => {
       const session = deps.getSession();

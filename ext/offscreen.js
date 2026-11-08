@@ -417,6 +417,120 @@ ${question}`
     return output || "";
   }
 
+  // src/lib/audio-segments.ts
+  var SPEECH_RMS_THRESHOLD = 0.012;
+  var MIN_SPEECH_MS = 320;
+  var SPEECH_PAD_MS = 120;
+  function computeRMS(buffer) {
+    if (buffer.length === 0) return 0;
+    let sum = 0;
+    for (let i = 0; i < buffer.length; i++) {
+      const normalized = buffer[i] / 32768;
+      sum += normalized * normalized;
+    }
+    return Math.sqrt(sum / buffer.length);
+  }
+  function speechDurationMs(frameRms, frameLens, sampleRate) {
+    let ms = 0;
+    for (let i = 0; i < frameRms.length; i++) {
+      if (frameRms[i] >= SPEECH_RMS_THRESHOLD) {
+        const len = frameLens[i] ?? 0;
+        ms += len / sampleRate * 1e3;
+      }
+    }
+    return ms;
+  }
+  function trimToSpeechBounds(pcm, frameRms, frameLens, sampleRate) {
+    if (frameRms.length === 0) return pcm;
+    let first = -1;
+    let last = -1;
+    for (let i = 0; i < frameRms.length; i++) {
+      if (frameRms[i] >= SPEECH_RMS_THRESHOLD) {
+        if (first < 0) first = i;
+        last = i;
+      }
+    }
+    if (first < 0) return pcm;
+    const frameMs = frameLens[0] ? frameLens[0] / sampleRate * 1e3 : 20;
+    const pad = Math.max(0, Math.ceil(SPEECH_PAD_MS / frameMs));
+    first = Math.max(0, first - pad);
+    last = Math.min(frameRms.length - 1, last + pad);
+    let startSample = 0;
+    for (let i = 0; i < first; i++) startSample += frameLens[i] ?? 0;
+    let endSample = startSample;
+    for (let i = first; i <= last; i++) endSample += frameLens[i] ?? 0;
+    endSample = Math.min(endSample, pcm.length);
+    return endSample > startSample ? pcm.slice(startSample, endSample) : pcm;
+  }
+
+  // src/lib/audio-noise-gate.ts
+  function classifyAudioFrames(frameRms, frameLens, sampleRate) {
+    const totalMs = frameLens.reduce((sum, length) => sum + length, 0) / sampleRate * 1e3;
+    const active = frameRms.filter((rms) => rms >= SPEECH_RMS_THRESHOLD);
+    const speechRatio = frameRms.length === 0 ? 0 : active.length / frameRms.length;
+    if (frameRms.length === 0 || totalMs <= 0) {
+      return { accept: false, reason: "empty", speechRatio, transitions: 0, variation: 0 };
+    }
+    const transitions = frameRms.slice(1).reduce((count, rms, index) => {
+      const wasActive = frameRms[index] >= SPEECH_RMS_THRESHOLD;
+      const isActive = rms >= SPEECH_RMS_THRESHOLD;
+      return count + (wasActive !== isActive ? 1 : 0);
+    }, 0);
+    const activeRms = active.length > 0 ? active : [0];
+    const mean = activeRms.reduce((sum, rms) => sum + rms, 0) / activeRms.length;
+    const variation = mean > 0 ? activeRms.reduce((sum, rms) => sum + Math.abs(rms - mean), 0) / activeRms.length / mean : 0;
+    if (totalMs < 320 || active.length === 0) {
+      return { accept: false, reason: "too-short", speechRatio, transitions, variation };
+    }
+    if (totalMs >= 900 && speechRatio >= 0.9 && transitions <= 2 && variation < 0.16) {
+      return { accept: false, reason: "steady-noise", speechRatio, transitions, variation };
+    }
+    return { accept: true, reason: "speech", speechRatio, transitions, variation };
+  }
+
+  // src/lib/capture-generation.ts
+  function requestCaptureGeneration(state, generation) {
+    if (generation <= state.stopped) return false;
+    if (state.requested !== void 0 && generation < state.requested) return false;
+    state.requested = generation;
+    return true;
+  }
+  function isCurrentCaptureGeneration(state, generation) {
+    return state.requested === generation && generation > state.stopped;
+  }
+  function stopCaptureGeneration(state, activeGeneration, generation) {
+    if (generation === void 0) {
+      state.requested = void 0;
+      if (activeGeneration !== void 0) {
+        state.stopped = Math.max(state.stopped, activeGeneration);
+      }
+      return {
+        cancelRequested: true,
+        stopActive: activeGeneration !== void 0
+      };
+    }
+    state.stopped = Math.max(state.stopped, generation);
+    const cancelRequested = state.requested === generation;
+    if (cancelRequested) state.requested = void 0;
+    return {
+      cancelRequested,
+      stopActive: cancelRequested || activeGeneration === generation
+    };
+  }
+
+  // src/lib/keyed-task.ts
+  function runKeyedTask(tasks, key, mode, task) {
+    const previous = tasks.get(key);
+    if (mode === "share" && previous) return previous;
+    const run = mode === "queue" && previous ? previous.catch(() => void 0).then(task) : task();
+    tasks.set(key, run);
+    const settle = () => {
+      if (tasks.get(key) === run) tasks.delete(key);
+    };
+    run.then(settle, settle);
+    return run;
+  }
+
   // src/lib/passthrough.ts
   var HAN = new RegExp("\\p{Script=Han}", "u");
   var HIRAGANA_KATAKANA = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
@@ -471,7 +585,7 @@ ${question}`
   var NO_CONTENT = /^(?:[0-9\s.,，、:：;；!！?？'"“”‘’()（）\-—–_*/\\|]+|[.…·\s]+)$/;
   var DEGENERATE_RUN = /(.)\1{7,}/u;
   function isCharacterLoop(text) {
-    const t = normalize(text).replace(/[。.!！?？…，,、;；:：\s]+/g, "");
+    const t = normalize(text).replace(/[。.!！?？…，,、;；:：\s]+/g, "").toLowerCase();
     if (t.length < 6) return false;
     for (let len = 2; len <= 4; len++) {
       const unit = t.slice(0, len);
@@ -499,6 +613,8 @@ ${question}`
   var COUNTING_BURST_LINE = "one two three four five six seven eight nine ten";
   var GENERIC_BURST_LINES_ZH = /* @__PURE__ */ new Set(["\u8C22\u8C22", "\u52A0\u6CB9", "\u5C0F\u5FC3", "\u4F60\u53BB"]);
   var COUNTING_BURST_LINE_ZH = "\u4E00\u4E8C\u4E09\u56DB\u4E94\u516D\u4E03\u516B\u4E5D\u5341";
+  var NOISE_BURST_CONTINUATIONS_EN = /* @__PURE__ */ new Set(["come out here", "thank you all"]);
+  var NOISE_BURST_CONTINUATIONS_ZH = /* @__PURE__ */ new Set(["\u6709\u4EBA\u5417"]);
   function normalizeChineseCounting(text) {
     return normalize(text).replace(/[、,，\s。.!！?？…]/g, "");
   }
@@ -518,6 +634,7 @@ ${question}`
     if (isLikelyAsrHallucination(text)) return true;
     const recent = rejectedHistory.slice(-4);
     const current = normalizeEnglish(text);
+    const followsCharacterLoop = recent.some((candidate) => isCharacterLoop(candidate));
     if (GENERIC_BURST_LINES.has(current)) {
       if (recent.some((candidate) => normalizeEnglish(candidate) === COUNTING_BURST_LINE)) {
         return true;
@@ -525,6 +642,12 @@ ${question}`
       if (recent.some((candidate) => GENERIC_BURST_LINES.has(normalizeEnglish(candidate)))) {
         return true;
       }
+      if (followsCharacterLoop) {
+        return true;
+      }
+    }
+    if (NOISE_BURST_CONTINUATIONS_EN.has(current) && followsCharacterLoop) {
+      return true;
     }
     const bareZh = bareText(text);
     if (GENERIC_BURST_LINES_ZH.has(bareZh)) {
@@ -534,6 +657,12 @@ ${question}`
       if (recent.some((candidate) => GENERIC_BURST_LINES_ZH.has(bareText(candidate)))) {
         return true;
       }
+      if (followsCharacterLoop) {
+        return true;
+      }
+    }
+    if (NOISE_BURST_CONTINUATIONS_ZH.has(bareZh) && followsCharacterLoop) {
+      return true;
     }
     return false;
   }
@@ -548,52 +677,6 @@ ${question}`
       return fullWindow.some((candidate) => bareText(candidate) === currentZh);
     }
     return false;
-  }
-
-  // src/lib/audio-segments.ts
-  var SPEECH_RMS_THRESHOLD = 0.012;
-  var MIN_SPEECH_MS = 320;
-  var SPEECH_PAD_MS = 120;
-  function computeRMS(buffer) {
-    if (buffer.length === 0) return 0;
-    let sum = 0;
-    for (let i = 0; i < buffer.length; i++) {
-      const normalized = buffer[i] / 32768;
-      sum += normalized * normalized;
-    }
-    return Math.sqrt(sum / buffer.length);
-  }
-  function speechDurationMs(frameRms, frameLens, sampleRate) {
-    let ms = 0;
-    for (let i = 0; i < frameRms.length; i++) {
-      if (frameRms[i] >= SPEECH_RMS_THRESHOLD) {
-        const len = frameLens[i] ?? 0;
-        ms += len / sampleRate * 1e3;
-      }
-    }
-    return ms;
-  }
-  function trimToSpeechBounds(pcm, frameRms, frameLens, sampleRate) {
-    if (frameRms.length === 0) return pcm;
-    let first = -1;
-    let last = -1;
-    for (let i = 0; i < frameRms.length; i++) {
-      if (frameRms[i] >= SPEECH_RMS_THRESHOLD) {
-        if (first < 0) first = i;
-        last = i;
-      }
-    }
-    if (first < 0) return pcm;
-    const frameMs = frameLens[0] ? frameLens[0] / sampleRate * 1e3 : 20;
-    const pad = Math.max(0, Math.ceil(SPEECH_PAD_MS / frameMs));
-    first = Math.max(0, first - pad);
-    last = Math.min(frameRms.length - 1, last + pad);
-    let startSample = 0;
-    for (let i = 0; i < first; i++) startSample += frameLens[i] ?? 0;
-    let endSample = startSample;
-    for (let i = first; i <= last; i++) endSample += frameLens[i] ?? 0;
-    endSample = Math.min(endSample, pcm.length);
-    return endSample > startSample ? pcm.slice(startSample, endSample) : pcm;
   }
 
   // src/ext/offscreen/capture.ts
@@ -612,8 +695,54 @@ ${question}`
       session.recentContext = session.recentContext.slice(-MAX_CONTEXT_ENTRIES);
     }
   }
-  async function startTabCapture({ tabId, streamId, sourceLang, targetLang, config, generation }) {
-    await stopTabCapture(tabId);
+  var startLocks = /* @__PURE__ */ new Map();
+  var startTasks = /* @__PURE__ */ new Map();
+  var generationStates = /* @__PURE__ */ new Map();
+  function generationState(tabId) {
+    let state = generationStates.get(tabId);
+    if (!state) {
+      state = { stopped: -1 };
+      generationStates.set(tabId, state);
+    }
+    return state;
+  }
+  function startTabCapture(args) {
+    const { tabId, generation } = args;
+    const state = generationState(tabId);
+    if (!requestCaptureGeneration(state, generation)) {
+      return Promise.resolve({ ok: true });
+    }
+    const existing = captureSessions.get(tabId);
+    if (existing?.generation === generation && !existing.aborted) {
+      return Promise.resolve({ ok: true });
+    }
+    let tasksForTab = startTasks.get(tabId);
+    const existingTask = tasksForTab?.get(generation);
+    if (existingTask) return existingTask;
+    if (!tasksForTab) {
+      tasksForTab = /* @__PURE__ */ new Map();
+      startTasks.set(tabId, tasksForTab);
+    }
+    const task = runKeyedTask(startLocks, tabId, "queue", () => {
+      if (!isCurrentStart(tabId, generation)) return Promise.resolve({ ok: true });
+      return startTabCaptureNow(args);
+    });
+    tasksForTab.set(generation, task);
+    const cleanup = () => {
+      if (tasksForTab?.get(generation) === task) tasksForTab.delete(generation);
+      if (tasksForTab?.size === 0 && startTasks.get(tabId) === tasksForTab) {
+        startTasks.delete(tabId);
+      }
+    };
+    task.then(cleanup, cleanup);
+    return task;
+  }
+  function isCurrentStart(tabId, generation) {
+    return isCurrentCaptureGeneration(generationState(tabId), generation);
+  }
+  async function startTabCaptureNow({ tabId, streamId, sourceLang, targetLang, config, generation }) {
+    await stopCurrentCapture(tabId);
+    if (!isCurrentStart(tabId, generation)) return { ok: true };
     const session = {
       tabId,
       generation,
@@ -670,6 +799,10 @@ ${question}`
           video: false
         });
       }
+      if (session.aborted || captureSessions.get(tabId) !== session || !isCurrentStart(tabId, generation)) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        return { ok: true };
+      }
       session.mediaStream = mediaStream;
       for (const track of mediaStream.getTracks()) {
         track.addEventListener("ended", () => {
@@ -682,7 +815,7 @@ ${question}`
             reason: track.kind
           }).catch(() => {
           });
-          stopTabCapture(tabId);
+          stopTabCapture(tabId, generation);
         });
       }
       if (mediaStream.getVideoTracks().length > 0) {
@@ -700,6 +833,10 @@ ${question}`
       session.monitorAudioCtx = new AudioContext();
       const sourceNode = session.audioCtx.createMediaStreamSource(session.mediaStream);
       await session.audioCtx.audioWorklet.addModule(WORKLET_PATH);
+      if (session.aborted || captureSessions.get(tabId) !== session || !isCurrentStart(tabId, generation)) {
+        await stopCurrentCapture(tabId, session);
+        return { ok: true };
+      }
       session.workletNode = new AudioWorkletNode(session.audioCtx, "rtts-audio-processor", {
         processorOptions: { frameSize: FRAME_SIZE }
       });
@@ -722,13 +859,28 @@ ${question}`
       });
       return { ok: true };
     } catch (err) {
-      await stopTabCapture(tabId);
+      await stopCurrentCapture(tabId, session);
       throw err;
     }
   }
-  async function stopTabCapture(tabId) {
+  async function stopTabCapture(tabId, generation) {
     const session = captureSessions.get(tabId);
-    if (!session) return;
+    const result = stopCaptureGeneration(
+      generationState(tabId),
+      session?.generation,
+      generation
+    );
+    if (!result.stopActive) return;
+    await runKeyedTask(
+      startLocks,
+      tabId,
+      "queue",
+      () => stopCurrentCapture(tabId, session)
+    );
+  }
+  async function stopCurrentCapture(tabId, expectedSession) {
+    const session = captureSessions.get(tabId);
+    if (!session || expectedSession && session !== expectedSession) return;
     session.aborted = true;
     if (session.currentAskController) {
       session.currentAskController.abort();
@@ -752,7 +904,7 @@ ${question}`
       session.audioCtx && session.audioCtx.state !== "closed" ? session.audioCtx.close() : Promise.resolve(),
       session.monitorAudioCtx && session.monitorAudioCtx.state !== "closed" ? session.monitorAudioCtx.close() : Promise.resolve()
     ]);
-    captureSessions.delete(tabId);
+    if (captureSessions.get(tabId) === session) captureSessions.delete(tabId);
     stopKeepAliveIfIdle();
   }
   function onPcmChunk(tabId, msg) {
@@ -859,6 +1011,18 @@ ${question}`
       reportAudioState(session, true);
       return;
     }
+    const audioFeatures = classifyAudioFrames(frameRms, frameLens, TARGET_SAMPLE_RATE);
+    if (!audioFeatures.accept) {
+      reportAudioState(session, true);
+      console.info("[RTTS] dropped non-speech audio:", {
+        reason: audioFeatures.reason,
+        durationMs: Math.round(frameLens.reduce((sum, length) => sum + length, 0) / TARGET_SAMPLE_RATE * 1e3),
+        speechRatio: Number(audioFeatures.speechRatio.toFixed(3)),
+        transitions: audioFeatures.transitions,
+        variation: Number(audioFeatures.variation.toFixed(3))
+      });
+      return;
+    }
     reportAudioState(session, false);
     const pcmData = trimmedPcm;
     const durationMs = pcmData.length / TARGET_SAMPLE_RATE * 1e3;
@@ -870,11 +1034,13 @@ ${question}`
       const transcription = await transcribeAudio(wavBlob, session.config, session.sourceLang);
       if (session.aborted) return;
       if (!transcription) return;
+      const asrMs = Math.round(performance.now() - t0);
       console.log("[RTTS] ASR segment:", {
         text: transcription,
         durationMs: Math.round(durationMs),
         speechMs,
-        sourceLang: session.sourceLang
+        sourceLang: session.sourceLang,
+        asrMs
       });
       const isHallucination = isLikelyAsrHallucinationSequence(
         session.recentAsrCandidates,
@@ -906,14 +1072,15 @@ ${question}`
         ...session.recentAsrWindow.slice(-2),
         transcription
       ];
-      const asrLatency = Math.round(performance.now() - t0);
+      const asrLatency = asrMs;
       if (shouldSkipTranslation(session.sourceLang, session.targetLang, transcription)) {
         const passthroughLatency = Math.round(performance.now() - t0 + (Date.now() - segmentStartTime));
         if (session.aborted) return;
         console.log("[RTTS] subtitle emitted:", {
           source: transcription,
           target: transcription,
-          passthrough: true
+          passthrough: true,
+          asrMs
         });
         chrome.runtime.sendMessage({
           type: "CAPTURE_SUBTITLE",
@@ -962,9 +1129,9 @@ ${question}`
           });
         }
       });
-      const totalLatency = Math.round(
-        performance.now() - t0 + (Date.now() - segmentStartTime)
-      );
+      const processingMs = Math.round(performance.now() - t0);
+      const llmMs = Math.max(0, processingMs - asrMs);
+      const totalLatency = processingMs + (Date.now() - segmentStartTime);
       if (transcription && translation) {
         pushContext(session, transcription, translation);
       }
@@ -972,7 +1139,9 @@ ${question}`
       console.log("[RTTS] subtitle emitted:", {
         source: transcription,
         target: translation,
-        passthrough: false
+        passthrough: false,
+        asrMs,
+        llmMs
       });
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE",
@@ -1093,7 +1262,7 @@ ${question}`
       }
       case "STOP_CAPTURE": {
         const tabId = message.tabId;
-        stopTabCapture(tabId).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }));
+        stopTabCapture(tabId, message.generation).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }));
         return true;
       }
       case "GET_CAPTURE_SESSIONS": {

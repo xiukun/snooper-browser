@@ -523,27 +523,13 @@ import { createScreenshotCapturer } from './screenshot'
 
   /* ===== Close / reopen ===== */
   hideBtn.addEventListener('click', () => {
-    // Closing the toolbar must also stop a live capture: otherwise the
-    // session keeps transcribing (and billing) invisibly, which users read
-    // as "I stopped it but subtitles kept coming".
-    if (session.state === 'running' || session.state === 'starting') {
-      void stopCaptureForHide();
-    }
     // Closing is explicit and persists across subtitle updates/reloads: the
     // render loop must not resurrect the bar or the subtitle overlay.
     uiHidden = true;
     persistUiHidden();
     applyUiHidden();
-    toast('工具已关闭，转写已停止', 'ok');
+    toast('工具已关闭', 'ok');
   });
-
-  /** Stop capture without the recorder button's render round-trips. */
-  async function stopCaptureForHide() {
-    session.state = 'stopping';
-    render();
-    await bg('STOP');
-    await syncSessionFromBackground();
-  }
   showBtn.addEventListener('click', () => {
     uiHidden = false;
     hasBeenShownOnce = true;

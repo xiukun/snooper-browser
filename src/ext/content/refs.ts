@@ -46,6 +46,7 @@ export interface ContentRefs {
   notesPreviewBtn: HTMLButtonElement
   drawerTabChat: HTMLButtonElement
   drawerTabNotes: HTMLButtonElement
+  chatNewTopic: HTMLButtonElement
   paneChat: HTMLElement
   paneNotes: HTMLElement
   chatBtn: HTMLElement
@@ -151,6 +152,7 @@ export function collectRefs(shadow: ShadowRoot): ContentRefs {
     notesPreviewBtn: shadow.getElementById('rtts-notes-preview-btn') as ContentRefs['notesPreviewBtn'],
     drawerTabChat: shadow.getElementById('rtts-tab-chat') as ContentRefs['drawerTabChat'],
     drawerTabNotes: shadow.getElementById('rtts-tab-notes') as ContentRefs['drawerTabNotes'],
+    chatNewTopic: shadow.getElementById('rtts-chat-new-topic') as ContentRefs['chatNewTopic'],
     paneChat: shadow.getElementById('rtts-pane-chat') as ContentRefs['paneChat'],
     paneNotes: shadow.getElementById('rtts-pane-notes') as ContentRefs['paneNotes'],
     chatBtn: shadow.getElementById('rtts-chat-btn') as ContentRefs['chatBtn'],

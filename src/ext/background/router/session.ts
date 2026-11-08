@@ -2,6 +2,17 @@
 
 import { describeCaptureSuspects } from '../../capture-recovery'
 import type { AppConfig } from '../../../lib/providers'
+import {
+  buildAskParts,
+  deleteSession as agentDeleteSession,
+  listSessions as agentListSessions,
+  loadAgentStore,
+  recordExchange,
+  resolveCurrentSession,
+  saveAgentStore,
+  selectHistoryTurns,
+  switchSession as agentSwitchSession,
+} from '../agent'
 import { loadConfig } from '../config'
 import { persistSessionHistory } from '../history'
 import { askLLM } from '../llm'
@@ -378,10 +389,6 @@ export const sessionHandlers: MessageHandlerMap = {
     const s = getOrCreateSession(tabId)
     const question = (message.question || '').trim()
     const images: string[] = Array.isArray(message.images) ? message.images.slice(0, 4) : []
-    if (!question && images.length === 0) {
-      sendResponse({ ok: false, error: '问题不能为空' })
-      return false
-    }
     if (question.length > 2000) {
       sendResponse({ ok: false, error: '问题过长（最多 2000 字）' })
       return false
@@ -390,7 +397,14 @@ export const sessionHandlers: MessageHandlerMap = {
     const requestId = message.requestId || `ask_${Date.now()}`
     s.pendingAskRequestId = requestId
 
-    // Build context from recent subtitles
+    if (!question && images.length === 0) {
+      s.pendingAskRequestId = null
+      sendResponse({ ok: false, error: '问题不能为空' })
+      return false
+    }
+
+    // Multi-turn memory: replay recent turns through the agent, attach the
+    // subtitle context to the current question only.
     const recentContext = s.subtitles
       .slice(-20)
       .map((sub) => `[${sub.source}] → ${sub.target}`)
@@ -398,18 +412,21 @@ export const sessionHandlers: MessageHandlerMap = {
 
     void (async () => {
       const config = s.configSnapshot || await loadConfig()
-      const answer = await askLLM({
-        question,
-        images,
-        context: recentContext,
-        config,
-        sourceLang: s.sourceLang,
-        targetLang: s.targetLang,
-      })
+      const store = await loadAgentStore()
+      const session = await resolveCurrentSession(store, message.newSession === true)
+      const history = selectHistoryTurns([...session.turns, { role: 'user', content: question, images, at: Date.now() }])
+      const parts = buildAskParts({ history, subtitleContext: recentContext, question, images })
+      const answer = await askLLM({ parts, config, sourceLang: s.sourceLang, targetLang: s.targetLang })
       if (s.pendingAskRequestId !== requestId) return
       s.pendingAskRequestId = null
       s.messages.push({ role: 'assistant', content: answer })
       pushSession(tabId)
+      await recordExchange(
+        store,
+        session,
+        { role: 'user', content: question, images, at: Date.now() },
+        { role: 'assistant', content: answer, at: Date.now() },
+      )
       sendResponse({ ok: true, answer, session: safeSession(s) })
     })().catch((err: any) => {
       if (s.pendingAskRequestId !== requestId) return
@@ -424,7 +441,42 @@ export const sessionHandlers: MessageHandlerMap = {
     return true // async – response will be sent later
   },
 
-  /* ---------- Panel launching ---------- */
+  /* ---------- Agent conversation management ---------- */
+
+  AGENT_LIST_SESSIONS: (_message, { sendResponse }) => {
+    void loadAgentStore().then((store) => sendResponse({ ok: true, sessions: agentListSessions(store), currentId: store.currentId }))
+    return true
+  },
+
+  AGENT_SWITCH_SESSION: (message, { sendResponse }) => {
+    void loadAgentStore().then(async (store) => {
+      const session = agentSwitchSession(store, String(message.id || ''))
+      if (!session) {
+        sendResponse({ ok: false, error: '会话不存在' })
+        return
+      }
+      await saveAgentStore(store).catch(() => {})
+      sendResponse({ ok: true, currentId: store.currentId })
+    })
+    return true
+  },
+
+  AGENT_NEW_SESSION: (_message, { sendResponse }) => {
+    void loadAgentStore().then(async (store) => {
+      await resolveCurrentSession(store, true)
+      await saveAgentStore(store).catch(() => {})
+      sendResponse({ ok: true, currentId: store.currentId })
+    })
+    return true
+  },
+
+  AGENT_DELETE_SESSION: (message, { sendResponse }) => {
+    void loadAgentStore().then(async (store) => {
+      await agentDeleteSession(store, String(message.id || ''))
+      sendResponse({ ok: true, currentId: store.currentId })
+    })
+    return true
+  },
   OPEN_SETTINGS: (_message, { tabId, sendResponse }) => {
     // sidePanel.open() from SW requires user gesture; content script messages
     // don't qualify, so this may fail. Fallback instructs user to click icon.

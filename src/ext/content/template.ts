@@ -138,6 +138,10 @@ export const CONTENT_HTML = `
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
             笔记 <span id="rtts-notes-count">0</span>
           </button>
+          <button id="rtts-chat-new-topic" class="rtts-drawer-newtopic" type="button" title="开始新话题（清空当前对话上下文）" aria-label="开始新话题">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            新话题
+          </button>
         </div>
         <button id="rtts-drawer-close" aria-label="关闭"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
@@ -294,9 +298,12 @@ export const CONTENT_HTML = `
       </div>
     </div>
 
-    <!-- In-page image generation -->
-    <div id="rtts-image-modal" class="rtts-modal-mask">
-      <div class="rtts-modal rtts-image-panel" role="dialog" aria-modal="true" aria-label="生成配图">
+    <!-- In-page image generation.
+         No fullscreen mask: the user is watching a video, so the panel is a
+         corner overlay (top-right) that must never darken or blur the page.
+         Clicks outside the panel close it. -->
+    <div id="rtts-image-modal" class="rtts-float-layer">
+      <div class="rtts-modal rtts-image-panel" role="dialog" aria-label="生成配图">
         <div class="rtts-modal-header">
           <div class="rtts-modal-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>

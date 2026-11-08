@@ -134,6 +134,13 @@ export function createImagePanel(deps: ImagePanelDeps) {
     refs.modal.classList.remove('open')
   }
 
+  // The float layer has no dark mask, so clicking anywhere outside the panel
+  // (the transparent area around it) is the dismiss affordance. Clicks inside
+  // the panel bubble from .rtts-modal and are ignored.
+  refs.modal.addEventListener('click', (event) => {
+    if (event.target === refs.modal) close()
+  })
+
   async function generate() {
     const prompt = refs.prompt.value.trim()
     if (!prompt) {

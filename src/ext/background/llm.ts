@@ -2,19 +2,22 @@
  * Text + vision Q&A for the content-script drawer.
  *
  * The background owns this call because it already holds the config snapshot
- * and the API key never enters the page's isolated world.
+ * and the API key never enters the page's isolated world. Conversation
+ * assembly (multi-turn history + subtitle context + images) lives in
+ * agent.ts and arrives here already gateway-shaped (single user message,
+ * text before images).
  */
 
 import type { AppConfig } from '../../lib/providers'
 
-export async function askLLM({ question, images, context, config, sourceLang, targetLang }: {
-  question: string
-  images: string[]
-  context: string
+export async function askLLM({ parts, config, sourceLang: _sourceLang, targetLang: _targetLang }: {
+  parts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>
   config: AppConfig
   sourceLang: string
   targetLang: string
 }): Promise<string> {
+  void _sourceLang
+  void _targetLang
   const route = config.routes.llm
   const provider = config.providers.find((p) => p.id === route.providerId)
   if (!provider || !provider.apiKey) {
@@ -25,19 +28,6 @@ export async function askLLM({ question, images, context, config, sourceLang, ta
   }
 
   const baseUrl = provider.baseUrl.replace(/\/+$/, '')
-  const parts: any[] = [{
-    type: 'text',
-    text: [
-      '你是一个视频伴学助手。',
-      context ? `【最近的字幕上下文】\n${context}\n` : '',
-      '请基于字幕上下文和用户提供的内容回答。用简体中文回答，保持简洁准确。',
-      '',
-      `【用户提问】\n${question || '请描述这张图片，并结合视频上下文解释。'}`,
-    ].filter(Boolean).join('\n'),
-  }]
-  for (const img of images) {
-    parts.push({ type: 'image_url', image_url: { url: img } })
-  }
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',

@@ -22,6 +22,22 @@ export const PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
     }
     .rtts-drawer-tab:hover { color: rgba(255,255,255,0.8); }
     .rtts-drawer-tab.active { background: rgba(124,92,255,0.3); color: #fff; }
+    /* New-topic: a quiet action on the far side of the tab strip; loud only on hover. */
+    .rtts-drawer-newtopic {
+      display: flex; align-items: center; gap: 4px;
+      margin-left: auto;
+      border: none; background: none; color: rgba(255,255,255,0.5);
+      font-size: 11px; font-weight: 500;
+      padding: 4px 8px; border-radius: 7px; cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .rtts-drawer-newtopic svg {
+      width: 12px; height: 12px;
+      fill: none; stroke: currentColor;
+      stroke-width: 2; stroke-linecap: round;
+    }
+    .rtts-drawer-newtopic:hover { background: rgba(124,92,255,0.22); color: #fff; }
     #rtts-notes-count {
       font-size: 10px; background: rgba(255,255,255,0.12);
       padding: 0 5px; border-radius: 8px; line-height: 16px;
@@ -331,6 +347,21 @@ export const PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
       padding: 16px;
     }
     .rtts-modal-mask.open { display: flex; }
+    /* Mask-free floating layer for panels that must not block the video.
+       The layer itself is transparent; clicking anywhere outside the panel
+       closes it. The panel keeps .rtts-modal styling. */
+    .rtts-float-layer {
+      position: fixed; inset: 0; z-index: 2147483646;
+      display: none; align-items: flex-start; justify-content: flex-end;
+      padding: 20px;
+      background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none;
+    }
+    .rtts-float-layer.open { display: flex; }
+    .rtts-float-layer .rtts-modal {
+      width: min(420px, 92vw);
+      max-height: min(86vh, 860px);
+      box-shadow: 0 18px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.08);
+    }
     .rtts-modal {
       width: min(460px, 94vw); max-height: 88vh; overflow: hidden;
       display: flex; flex-direction: column;

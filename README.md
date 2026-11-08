@@ -47,7 +47,11 @@ video is paused or silent.
   that grows while typing and scrolls past a bounded maximum.
 - Generate images in the page and send them straight to notes or the companion
   chat; three playful prompts cover roasting the image, continuing the plot,
-  and writing a line of dialogue.
+  and writing a line of dialogue. The generation panel is a mask-free corner
+  overlay, so the video keeps playing visibly while you type.
+- The companion chat remembers the conversation: recent turns are replayed as
+  context, a **New topic** button starts a fresh thread, and memory survives
+  service-worker restarts for the life of the browsing session.
 - Generated images are materialised into data URLs in the background, so a
   third-party CDN, CSP rule, or expired signature cannot leave a blank frame
   after a "successful" request.

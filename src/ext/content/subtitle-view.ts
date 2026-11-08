@@ -95,6 +95,14 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
         ? '演示模式启动中…'
         : '正在聆听…'
 
+      // Stopped with content on screen: keep the last lines readable, but the
+      // box must reach an end state — re-arm the idle collapse even though no
+      // new subtitle will arrive. Without this the box froze on screen forever
+      // when stop happened >6.5s after the last line (timer never armed).
+      if (s !== 'running' && s !== 'starting') {
+        markSubtitleActivity()
+      }
+
       // Build subtitle rows (show ALL, auto-scroll to bottom)
       r.subRows.textContent = ''
       const wasAtBottom = r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 40

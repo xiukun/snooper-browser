@@ -457,7 +457,10 @@ body {
   transition: background 0.15s;
 }
 .history-item:hover { background: rgba(255,255,255,0.06); }
-.history-item-main { flex: 1; min-width: 0; }
+/* min-width keeps the title block readable; when the actions row cannot fit
+   beside it, flex-wrap pushes the whole row below the title instead of
+   squeezing the title into a vertical sliver. */
+.history-item-main { flex: 1; min-width: 140px; }
 .history-item-title {
   font-size: 13px;
   font-weight: 500;

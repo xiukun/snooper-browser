@@ -172,7 +172,7 @@ import { createScreenshotCapturer } from './screenshot'
     cfgObProtocol, cfgObPort, cfgObKey, cfgObFolder, cfgObTest, cfgObStatus,
     shotModal, shotImg, shotClose, shotCloseX, shotDownload, shotSave, shotInsert,
     imageModal, imgClose, imgPrompt, imgSize, imgNeg, imgGenerate,
-    imgStatus, imgResult, imgResultImg, imgOpen, imgActions, imgFun,
+    imgStatus, imgResult, imgResultFrame, imgOpen, imgActions, imgFun,
     imgSave, imgInsert, imgDownload,
     toasts,
   } = collectRefs(shadow);
@@ -593,7 +593,7 @@ import { createScreenshotCapturer } from './screenshot'
       negative: imgNeg,
       status: imgStatus,
       result: imgResult,
-      resultImg: imgResultImg,
+      resultFrame: imgResultFrame,
       actions: imgActions,
       generate: imgGenerate,
       save: imgSave,

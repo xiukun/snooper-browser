@@ -485,7 +485,14 @@ export const PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
       border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.4);
     }
     .rtts-image-result.show { display: block; }
-    .rtts-image-result img { display: block; width: 100%; height: auto; }
+    /* The generated image renders in an extension-origin iframe (CSP-safe
+       on any host page). aspect-ratio keeps the panel stable while loading;
+       the viewer letterboxes the image inside. */
+    .rtts-image-frame { width: 100%; aspect-ratio: 1 / 1; max-height: 420px; }
+    .rtts-image-frame-element {
+      display: block; width: 100%; height: 100%;
+      border: none; background: rgba(255,255,255,0.04);
+    }
     .rtts-image-open {
       display: block; padding: 8px 10px; font-size: 11px; text-align: center;
       color: #b9a6ff; text-decoration: none; border-top: 1px solid rgba(255,255,255,0.08);

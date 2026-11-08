@@ -335,7 +335,11 @@ export const CONTENT_HTML = `
           </div>
           <div id="rtts-img-status" class="rtts-status" role="status" aria-live="polite"></div>
           <div id="rtts-img-result" class="rtts-image-result">
-            <img id="rtts-img-result-img" alt="生成的配图">
+            <!-- Generated images render inside an extension-origin iframe
+                 (image-viewer.html): the host page's CSP img-src can forbid
+                 data: and third-party CDN images, which left the panel blank
+                 even though generation succeeded. -->
+            <div id="rtts-img-result-frame" class="rtts-image-frame"></div>
             <a id="rtts-img-open" class="rtts-image-open" target="_blank" rel="noopener noreferrer" hidden>当前页面无法加载，打开原图</a>
           </div>
           <div id="rtts-img-fun" class="rtts-image-fun" role="group" aria-label="图片娱乐互动">

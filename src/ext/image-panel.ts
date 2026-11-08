@@ -27,7 +27,8 @@ export interface ImagePanelRefs {
   negative: HTMLInputElement
   status: HTMLElement
   result: HTMLElement
-  resultImg: HTMLImageElement
+  /** Container for the extension-origin viewer iframe (see showImage). */
+  resultFrame: HTMLElement
   actions: HTMLElement
   generate: HTMLButtonElement
   save: HTMLButtonElement
@@ -60,9 +61,7 @@ export function createImagePanel(deps: ImagePanelDeps) {
     refs.result.classList.remove('show')
     refs.actions.classList.remove('show')
     refs.fun.classList.remove('show')
-    refs.resultImg.onload = null
-    refs.resultImg.onerror = null
-    refs.resultImg.removeAttribute('src')
+    destroyViewer()
     refs.openOriginal.hidden = true
     refs.openOriginal.removeAttribute('href')
   }
@@ -87,6 +86,31 @@ export function createImagePanel(deps: ImagePanelDeps) {
     refs.status.textContent = ''
   }
 
+  /**
+   * Render the image inside an extension-origin iframe (image-viewer.html).
+   *
+   * Why not a plain <img> in the host page: the page's CSP `img-src` governs
+   * it, and video sites commonly forbid both data: URLs and third-party CDN
+   * hosts — the image generated fine, "open original" worked (direct
+   * navigation is not subject to the page CSP), but the panel stayed blank.
+   * An extension-origin document is governed by the extension's own CSP, so
+   * the same URL always renders there.
+   *
+   * The iframe is recreated per image (cheap, stateless) and torn down on
+   * reset so no viewer document outlives the panel.
+   */
+  let viewerFrame: HTMLIFrameElement | null = null
+  let viewerReport: ((event: MessageEvent) => void) | null = null
+  let viewerToken = 0
+
+  function destroyViewer() {
+    viewerToken++
+    if (viewerReport) window.removeEventListener('message', viewerReport)
+    viewerReport = null
+    viewerFrame?.remove()
+    viewerFrame = null
+  }
+
   function showImage(url: string, remote: string) {
     lastImageUrl = url
     lastRemoteUrl = remote
@@ -94,19 +118,41 @@ export function createImagePanel(deps: ImagePanelDeps) {
     refs.actions.classList.add('show')
     refs.fun.classList.add('show')
 
-    refs.resultImg.onload = () => {
-      setStatus('生成完成 · ' + (refs.resultImg.naturalWidth || '?') + ' × ' + (refs.resultImg.naturalHeight || '?'), 'ok')
-      refs.openOriginal.hidden = true
-    }
-    refs.resultImg.onerror = () => {
-      setStatus('图片已生成，但当前页面无法加载。可打开原图或重新生成。', 'err')
-      const safeRemote = remote ? safeExternalUrl(remote) : ''
-      if (safeRemote) {
-        refs.openOriginal.href = safeRemote
-        refs.openOriginal.hidden = false
+    destroyViewer()
+    const token = viewerToken
+    const frame = document.createElement('iframe')
+    frame.className = 'rtts-image-frame-element'
+    frame.setAttribute('sandbox', 'allow-scripts')
+    frame.setAttribute('title', '生成的配图')
+    frame.setAttribute('referrerpolicy', 'no-referrer')
+    viewerFrame = frame
+    refs.resultFrame.textContent = ''
+    refs.resultFrame.appendChild(frame)
+
+    const report = (event: MessageEvent) => {
+      const data = event.data as { type?: string; id?: string; width?: number; height?: number } | null
+      if (!data || event.source !== frame.contentWindow) return
+      if (data.type === 'rtts-image-viewer:ready') {
+        if (token !== viewerToken) return // a newer image already owns the panel
+        setStatus(`生成完成${data.width ? ` · ${data.width} × ${data.height}` : ''}`, 'ok')
+        refs.openOriginal.hidden = true
+      } else if (data.type === 'rtts-image-viewer:error') {
+        if (token !== viewerToken) return
+        setStatus('图片已生成，但当前页面无法加载。可打开原图或重新生成。', 'err')
+        const safeRemote = remote ? safeExternalUrl(remote) : ''
+        if (safeRemote) {
+          refs.openOriginal.href = safeRemote
+          refs.openOriginal.hidden = false
+        }
       }
     }
-    refs.resultImg.src = url
+    viewerReport = report
+    window.addEventListener('message', report)
+    frame.addEventListener('load', () => {
+      if (token !== viewerToken || viewerFrame !== frame) return
+      frame.contentWindow?.postMessage({ type: 'rtts-image-viewer:show', src: url, id: String(token) }, '*')
+    })
+    frame.src = chrome.runtime.getURL('image-viewer.html')
   }
 
   async function ensureDataUrl(): Promise<string> {

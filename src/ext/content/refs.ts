@@ -99,7 +99,7 @@ export interface ContentRefs {
   imgGenerate: HTMLButtonElement
   imgStatus: HTMLElement
   imgResult: HTMLElement
-  imgResultImg: HTMLImageElement
+  imgResultFrame: HTMLElement
   imgOpen: HTMLAnchorElement
   imgActions: HTMLElement
   imgFun: HTMLElement
@@ -205,7 +205,7 @@ export function collectRefs(shadow: ShadowRoot): ContentRefs {
     imgGenerate: shadow.getElementById('rtts-img-generate') as ContentRefs['imgGenerate'],
     imgStatus: shadow.getElementById('rtts-img-status') as ContentRefs['imgStatus'],
     imgResult: shadow.getElementById('rtts-img-result') as ContentRefs['imgResult'],
-    imgResultImg: shadow.getElementById('rtts-img-result-img') as ContentRefs['imgResultImg'],
+    imgResultFrame: shadow.getElementById('rtts-img-result-frame') as ContentRefs['imgResultFrame'],
     imgOpen: shadow.getElementById('rtts-img-open') as ContentRefs['imgOpen'],
     imgActions: shadow.getElementById('rtts-img-actions') as ContentRefs['imgActions'],
     imgFun: shadow.getElementById('rtts-img-fun') as ContentRefs['imgFun'],

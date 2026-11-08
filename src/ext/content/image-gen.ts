@@ -15,7 +15,7 @@ export interface ImageGenDeps {
     negative: HTMLInputElement
     status: HTMLElement
     result: HTMLElement
-    resultImg: HTMLImageElement
+    resultFrame: HTMLElement
     actions: HTMLElement
     generate: HTMLButtonElement
     save: HTMLButtonElement

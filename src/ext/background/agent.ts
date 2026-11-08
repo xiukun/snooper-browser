@@ -26,7 +26,7 @@
  * case.
  */
 
-import { flattenMessages } from '../../lib/moss'
+import { flattenMessages } from '../../lib/moss-messages'
 
 export interface AgentTurn {
   role: 'user' | 'assistant'

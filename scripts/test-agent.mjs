@@ -17,8 +17,9 @@ const out = join(outDir, 'agent-bundle.mjs')
 
 try {
   execSync(
-    // moss.ts reads import.meta.env (Vite); esbuild needs it defined.
-    `npx esbuild src/ext/background/agent.ts --bundle --format=esm --define:import.meta.env={} --log-level=error --outfile=${out}`,
+    // No import.meta.env define needed: agent.ts only imports
+    // moss-messages.ts (zero-dependency), matching the real esbuild build.
+    `npx esbuild src/ext/background/agent.ts --bundle --format=esm --log-level=error --outfile=${out}`,
     { stdio: 'inherit' },
   )
   const {

@@ -12,6 +12,8 @@
     "build:app": "cd app && pnpm build",
     "type-check": "cd app && pnpm exec vue-tsc -b --force",
     "test:guards": "node scripts/test-audio-guards.mjs",
+    "test:capture-generation": "node scripts/test-capture-generation.mjs",
+    "test:keyed-task": "node scripts/test-keyed-task.mjs",
     "test:chat-state": "node scripts/test-chat-state.mjs",
     "test:image-material": "node scripts/test-image-material.mjs"
   },

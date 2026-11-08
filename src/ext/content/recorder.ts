@@ -64,8 +64,12 @@ export function bindRecorder(deps: RecorderDeps) {
     })
     if (!res.ok) {
       const message = res.error || '启动失败'
-      deps.toast(message, 'err')
-      if (message.includes('API Key') || message.includes('未选择模型')) deps.openSettings()
+      // Missing configuration is a first-run setup step, not a failure.
+      const needsSetup = res.code === 'CONFIG_REQUIRED'
+        || message.includes('API Key')
+        || message.includes('未选择模型')
+      deps.toast(message, needsSetup ? 'info' : 'err')
+      if (needsSetup) deps.openSettings()
       await deps.syncSession()
       // A failed start must leave the UI where the user can see the reason
       // instead of a toolbar that looks like it closed itself.

@@ -7,6 +7,13 @@
  */
 
 import type { AppConfig } from '../../lib/providers'
+import {
+  isCurrentCaptureGeneration,
+  requestCaptureGeneration,
+  stopCaptureGeneration,
+  type CaptureGenerationState,
+} from '../../lib/capture-generation'
+import { runKeyedTask } from '../../lib/keyed-task'
 import { shouldSkipTranslation } from '../../lib/passthrough'
 import {
   isLikelyAsrHallucination,
@@ -100,15 +107,81 @@ function pushContext(session: CaptureSession, source: string, target: string) {
 
 /* ===== Start / stop ===== */
 
-export async function startTabCapture({ tabId, streamId, sourceLang, targetLang, config, generation }: {
+interface StartCaptureArgs {
   tabId: number
   streamId: string
   sourceLang: string
   targetLang: string
   config: AppConfig
   generation: number
-}): Promise<{ ok: true }> {
-  await stopTabCapture(tabId)
+}
+
+/**
+ * Serialize capture starts per tab.
+ *
+ * `startTabCapture` is async (getUserMedia + AudioWorklet). Two overlapping
+ * starts used to interleave here: the second one stopped the first while it
+ * was still initializing, then replaced its map entry. The first pipeline
+ * survived and kept pushing PCM into `onPcmChunk(tabId)`, which resolves the
+ * *second* session from the map — duplicated audio, duplicated ASR cost, and
+ * slower subtitles. One start per tab at a time, always.
+ */
+const startLocks = new Map<number, Promise<unknown>>()
+const startTasks = new Map<number, Map<number, Promise<{ ok: true }>>>()
+const generationStates = new Map<number, CaptureGenerationState>()
+
+function generationState(tabId: number): CaptureGenerationState {
+  let state = generationStates.get(tabId)
+  if (!state) {
+    state = { stopped: -1 }
+    generationStates.set(tabId, state)
+  }
+  return state
+}
+
+export function startTabCapture(args: StartCaptureArgs): Promise<{ ok: true }> {
+  const { tabId, generation } = args
+  const state = generationState(tabId)
+  if (!requestCaptureGeneration(state, generation)) {
+    return Promise.resolve({ ok: true })
+  }
+
+  const existing = captureSessions.get(tabId)
+  if (existing?.generation === generation && !existing.aborted) {
+    return Promise.resolve({ ok: true })
+  }
+
+  let tasksForTab = startTasks.get(tabId)
+  const existingTask = tasksForTab?.get(generation)
+  if (existingTask) return existingTask
+
+  if (!tasksForTab) {
+    tasksForTab = new Map()
+    startTasks.set(tabId, tasksForTab)
+  }
+
+  const task = runKeyedTask(startLocks, tabId, 'queue', () => {
+    if (!isCurrentStart(tabId, generation)) return Promise.resolve({ ok: true })
+    return startTabCaptureNow(args)
+  })
+  tasksForTab.set(generation, task)
+  const cleanup = () => {
+    if (tasksForTab?.get(generation) === task) tasksForTab.delete(generation)
+    if (tasksForTab?.size === 0 && startTasks.get(tabId) === tasksForTab) {
+      startTasks.delete(tabId)
+    }
+  }
+  task.then(cleanup, cleanup)
+  return task
+}
+
+function isCurrentStart(tabId: number, generation: number): boolean {
+  return isCurrentCaptureGeneration(generationState(tabId), generation)
+}
+
+async function startTabCaptureNow({ tabId, streamId, sourceLang, targetLang, config, generation }: StartCaptureArgs): Promise<{ ok: true }> {
+  await stopCurrentCapture(tabId)
+  if (!isCurrentStart(tabId, generation)) return { ok: true }
 
   const session: CaptureSession = {
     tabId,
@@ -172,6 +245,19 @@ export async function startTabCapture({ tabId, streamId, sourceLang, targetLang,
         video: false,
       })
     }
+
+    // STOP can land while getUserMedia is pending. The offscreen map no
+    // longer contains this session, so nobody would ever stop the stream
+    // that just resolved — it must be closed here instead of leaked.
+    if (
+      session.aborted ||
+      captureSessions.get(tabId) !== session ||
+      !isCurrentStart(tabId, generation)
+    ) {
+      mediaStream.getTracks().forEach((track) => track.stop())
+      return { ok: true }
+    }
+
     session.mediaStream = mediaStream
 
     // A captured tab ignores (or pauses) tabCapture streams when the track
@@ -189,7 +275,7 @@ export async function startTabCapture({ tabId, streamId, sourceLang, targetLang,
           generation,
           reason: track.kind,
         }).catch(() => {})
-        stopTabCapture(tabId)
+        stopTabCapture(tabId, generation)
       })
     }
 
@@ -209,6 +295,16 @@ export async function startTabCapture({ tabId, streamId, sourceLang, targetLang,
 
     const sourceNode = session.audioCtx.createMediaStreamSource(session.mediaStream)
     await session.audioCtx.audioWorklet.addModule(WORKLET_PATH)
+    // The context may have been closed by STOP while the worklet module was
+    // loading. Building a node on it would throw and bury the real reason.
+    if (
+      session.aborted ||
+      captureSessions.get(tabId) !== session ||
+      !isCurrentStart(tabId, generation)
+    ) {
+      await stopCurrentCapture(tabId, session)
+      return { ok: true }
+    }
 
     session.workletNode = new AudioWorkletNode(session.audioCtx, 'rtts-audio-processor', {
       processorOptions: { frameSize: FRAME_SIZE },
@@ -238,14 +334,30 @@ export async function startTabCapture({ tabId, streamId, sourceLang, targetLang,
 
     return { ok: true }
   } catch (err) {
-    await stopTabCapture(tabId)
+    await stopCurrentCapture(tabId, session)
     throw err
   }
 }
 
-export async function stopTabCapture(tabId: number): Promise<void> {
+export async function stopTabCapture(tabId: number, generation?: number): Promise<void> {
   const session = captureSessions.get(tabId)
-  if (!session) return
+  const result = stopCaptureGeneration(
+    generationState(tabId),
+    session?.generation,
+    generation,
+  )
+  if (!result.stopActive) return
+  await runKeyedTask(
+    startLocks,
+    tabId,
+    'queue',
+    () => stopCurrentCapture(tabId, session),
+  )
+}
+
+async function stopCurrentCapture(tabId: number, expectedSession?: CaptureSession): Promise<void> {
+  const session = captureSessions.get(tabId)
+  if (!session || (expectedSession && session !== expectedSession)) return
 
   // Mark first: in-flight finalizeSegment calls check this after every await
   // and must not emit subtitles once the user has stopped.
@@ -285,7 +397,7 @@ export async function stopTabCapture(tabId: number): Promise<void> {
       : Promise.resolve(),
   ])
 
-  captureSessions.delete(tabId)
+  if (captureSessions.get(tabId) === session) captureSessions.delete(tabId)
   stopKeepAliveIfIdle()
 }
 
@@ -450,6 +562,7 @@ async function finalizeSegment(tabId: number) {
     const transcription = await transcribeAudio(wavBlob, session.config, session.sourceLang)
     if (session.aborted) return
     if (!transcription) return
+    const asrMs = Math.round(performance.now() - t0)
     // Segment-level ASR trace: the primary tool for diagnosing "subtitles
     // nobody said". Every accepted line records what audio produced it, so a
     // hallucination that slips through every guard can be traced back to its
@@ -459,6 +572,7 @@ async function finalizeSegment(tabId: number) {
       durationMs: Math.round(durationMs),
       speechMs,
       sourceLang: session.sourceLang,
+      asrMs,
     })
     const isHallucination = isLikelyAsrHallucinationSequence(
       session.recentAsrCandidates,
@@ -502,7 +616,7 @@ async function finalizeSegment(tabId: number) {
         transcription,
       ]
 
-    const asrLatency = Math.round(performance.now() - t0)
+    const asrLatency = asrMs
 
     // Same-language passthrough: when the transcript already is the target
     // language (e.g. zh audio with zh subtitles), displaying it directly is
@@ -514,6 +628,7 @@ async function finalizeSegment(tabId: number) {
         source: transcription,
         target: transcription,
         passthrough: true,
+        asrMs,
       })
       chrome.runtime.sendMessage({
         type: 'CAPTURE_SUBTITLE',
@@ -572,9 +687,9 @@ async function finalizeSegment(tabId: number) {
       },
     })
 
-    const totalLatency = Math.round(
-      performance.now() - t0 + (Date.now() - segmentStartTime),
-    )
+    const processingMs = Math.round(performance.now() - t0)
+    const llmMs = Math.max(0, processingMs - asrMs)
+    const totalLatency = processingMs + (Date.now() - segmentStartTime)
 
     // 5. Track context for future coherence
     if (transcription && translation) {
@@ -587,6 +702,8 @@ async function finalizeSegment(tabId: number) {
       source: transcription,
       target: translation,
       passthrough: false,
+      asrMs,
+      llmMs,
     })
     chrome.runtime.sendMessage({
       type: 'CAPTURE_SUBTITLE',

@@ -58,7 +58,7 @@ export function registerOffscreenEventRouter(): void {
         // Chrome's sharing bar, device change...). Reflect reality instead of
         // leaving the toolbar stuck on "recording".
         const s = sessions.get(message.tabId)
-        if (s && (s.state === 'running' || s.state === 'starting')) {
+        if (s && s.generation === message.generation && (s.state === 'running' || s.state === 'starting')) {
           s.state = 'idle'
           s.streamId = ''
           s.configSnapshot = null

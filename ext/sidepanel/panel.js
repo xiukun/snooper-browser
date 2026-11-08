@@ -439,6 +439,19 @@
       updateNoteSelection();
     }
     function exportNote(note) {
+      const assets = collectAssets([note], []).map((asset) => ({
+        ...asset,
+        entryId: asset.entryId.replace(/^note:[^:]+:/, `note:${note.id}:`)
+      }));
+      const decoded = [];
+      noteAssetNames = /* @__PURE__ */ new Map();
+      for (const asset of assets) {
+        const result = decodeExportAsset(asset);
+        if (result) {
+          noteAssetNames.set(asset.entryId, asset.fileName);
+          decoded.push({ name: `assets/${asset.fileName}`, bytes: result.file.bytes });
+        }
+      }
       const lines = [
         `# ${note.title}`,
         "",
@@ -486,19 +499,6 @@
       }
       lines.push("", "---", "*\u7531 snooper-browser \u751F\u6210*");
       const markdown = lines.join("\n");
-      const assets = collectAssets([note], []).map((asset) => ({
-        ...asset,
-        entryId: asset.entryId.replace(/^note:[^:]+:/, `note:${note.id}:`)
-      }));
-      const decoded = [];
-      noteAssetNames = /* @__PURE__ */ new Map();
-      for (const asset of assets) {
-        const result = decodeExportAsset(asset);
-        if (result) {
-          noteAssetNames.set(asset.entryId, asset.fileName);
-          decoded.push({ name: `assets/${asset.fileName}`, bytes: result.file.bytes });
-        }
-      }
       if (decoded.length === 0) {
         const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
         const url = URL.createObjectURL(blob);

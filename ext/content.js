@@ -22,6 +22,22 @@
     }
     .rtts-drawer-tab:hover { color: rgba(255,255,255,0.8); }
     .rtts-drawer-tab.active { background: rgba(124,92,255,0.3); color: #fff; }
+    /* New-topic: a quiet action on the far side of the tab strip; loud only on hover. */
+    .rtts-drawer-newtopic {
+      display: flex; align-items: center; gap: 4px;
+      margin-left: auto;
+      border: none; background: none; color: rgba(255,255,255,0.5);
+      font-size: 11px; font-weight: 500;
+      padding: 4px 8px; border-radius: 7px; cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .rtts-drawer-newtopic svg {
+      width: 12px; height: 12px;
+      fill: none; stroke: currentColor;
+      stroke-width: 2; stroke-linecap: round;
+    }
+    .rtts-drawer-newtopic:hover { background: rgba(124,92,255,0.22); color: #fff; }
     #rtts-notes-count {
       font-size: 10px; background: rgba(255,255,255,0.12);
       padding: 0 5px; border-radius: 8px; line-height: 16px;
@@ -331,6 +347,21 @@
       padding: 16px;
     }
     .rtts-modal-mask.open { display: flex; }
+    /* Mask-free floating layer for panels that must not block the video.
+       The layer itself is transparent; clicking anywhere outside the panel
+       closes it. The panel keeps .rtts-modal styling. */
+    .rtts-float-layer {
+      position: fixed; inset: 0; z-index: 2147483646;
+      display: none; align-items: flex-start; justify-content: flex-end;
+      padding: 20px;
+      background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none;
+    }
+    .rtts-float-layer.open { display: flex; }
+    .rtts-float-layer .rtts-modal {
+      width: min(420px, 92vw);
+      max-height: min(86vh, 860px);
+      box-shadow: 0 18px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.08);
+    }
     .rtts-modal {
       width: min(460px, 94vw); max-height: 88vh; overflow: hidden;
       display: flex; flex-direction: column;
@@ -1157,6 +1188,10 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
             \u7B14\u8BB0 <span id="rtts-notes-count">0</span>
           </button>
+          <button id="rtts-chat-new-topic" class="rtts-drawer-newtopic" type="button" title="\u5F00\u59CB\u65B0\u8BDD\u9898\uFF08\u6E05\u7A7A\u5F53\u524D\u5BF9\u8BDD\u4E0A\u4E0B\u6587\uFF09" aria-label="\u5F00\u59CB\u65B0\u8BDD\u9898">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            \u65B0\u8BDD\u9898
+          </button>
         </div>
         <button id="rtts-drawer-close" aria-label="\u5173\u95ED"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
@@ -1313,9 +1348,12 @@
       </div>
     </div>
 
-    <!-- In-page image generation -->
-    <div id="rtts-image-modal" class="rtts-modal-mask">
-      <div class="rtts-modal rtts-image-panel" role="dialog" aria-modal="true" aria-label="\u751F\u6210\u914D\u56FE">
+    <!-- In-page image generation.
+         No fullscreen mask: the user is watching a video, so the panel is a
+         corner overlay (top-right) that must never darken or blur the page.
+         Clicks outside the panel close it. -->
+    <div id="rtts-image-modal" class="rtts-float-layer">
+      <div class="rtts-modal rtts-image-panel" role="dialog" aria-label="\u751F\u6210\u914D\u56FE">
         <div class="rtts-modal-header">
           <div class="rtts-modal-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
@@ -2068,6 +2106,9 @@
         r.subStatus.classList.toggle("hidden", !silent);
         r.subPlaceholder.style.display = hasContent || silent ? "none" : "";
         r.subPlaceholder.textContent = session.isDemoMode ? "\u6F14\u793A\u6A21\u5F0F\u542F\u52A8\u4E2D\u2026" : "\u6B63\u5728\u8046\u542C\u2026";
+        if (s !== "running" && s !== "starting") {
+          markSubtitleActivity();
+        }
         r.subRows.textContent = "";
         const wasAtBottom = r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 40;
         subs.forEach((sub) => {
@@ -3495,6 +3536,9 @@
     function close() {
       refs.modal.classList.remove("open");
     }
+    refs.modal.addEventListener("click", (event) => {
+      if (event.target === refs.modal) close();
+    });
     async function generate() {
       const prompt = refs.prompt.value.trim();
       if (!prompt) {
@@ -3691,6 +3735,7 @@ ${context}`;
       notesPreviewBtn: shadow.getElementById("rtts-notes-preview-btn"),
       drawerTabChat: shadow.getElementById("rtts-tab-chat"),
       drawerTabNotes: shadow.getElementById("rtts-tab-notes"),
+      chatNewTopic: shadow.getElementById("rtts-chat-new-topic"),
       paneChat: shadow.getElementById("rtts-pane-chat"),
       paneNotes: shadow.getElementById("rtts-pane-notes"),
       chatBtn: shadow.getElementById("rtts-chat-btn"),

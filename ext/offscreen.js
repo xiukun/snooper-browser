@@ -282,54 +282,75 @@ ${contextBlock}` : "",
   function cleanTranslation(value) {
     return value.trim().replace(/^["“「『]([\s\S]*)["”」』]$/, "$1").trim();
   }
+  var streamCapabilityCache = /* @__PURE__ */ new Map();
   async function translateTextStream(text, options) {
     if (!text) return "";
     const { onDelta } = options;
     const { provider, route } = validateRoute(options.config, "llm");
     const promptText = buildTranslatePrompt(options, text);
     const baseUrl = provider.baseUrl.replace(/\/+$/, "");
+    const probeKey = `${baseUrl}::${route.model}`;
     let fullTranslation = "";
     let hasError = false;
-    await streamSSE(
-      `${baseUrl}/chat/completions`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${provider.apiKey}`,
-          "Content-Type": "application/json"
+    let streamRejected = false;
+    const runStream = async () => {
+      await streamSSE(
+        `${baseUrl}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${provider.apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: route.model,
+            messages: [
+              {
+                role: "user",
+                content: [{ type: "text", text: promptText }]
+              }
+            ],
+            temperature: 0.12,
+            max_tokens: 512,
+            stream: true
+          })
         },
-        body: JSON.stringify({
-          model: route.model,
-          messages: [
-            {
-              role: "user",
-              content: [{ type: "text", text: promptText }]
+        {
+          onDelta: (delta) => {
+            fullTranslation += delta;
+            if (onDelta) onDelta(delta);
+          },
+          onDone: () => {
+          },
+          onError: (err) => {
+            console.warn("[RTTS] Translation SSE failed, falling back:", err.message);
+            hasError = true;
+            if (/stream must be false|invalid_field_value/i.test(err.message)) {
+              streamRejected = true;
             }
-          ],
-          temperature: 0.12,
-          max_tokens: 512,
-          stream: true
-        })
-      },
-      {
-        onDelta: (delta) => {
-          fullTranslation += delta;
-          if (onDelta) onDelta(delta);
-        },
-        onDone: () => {
-        },
-        onError: (err) => {
-          console.warn("[RTTS] Translation SSE failed, falling back:", err.message);
-          hasError = true;
-        },
-        allowNonStreamingFallback: true
+          },
+          allowNonStreamingFallback: true
+        }
+      );
+    };
+    const runSync = async () => {
+      const sync = await translateTextSync(text, options);
+      if (sync) {
+        fullTranslation = sync;
+        if (onDelta) onDelta(sync);
       }
-    );
+    };
+    if (streamCapabilityCache.get(probeKey) === false) {
+      await runSync();
+      return cleanTranslation(fullTranslation);
+    }
+    await runStream();
+    if (streamRejected) {
+      streamCapabilityCache.set(probeKey, false);
+      console.info("[RTTS] gateway rejects stream; cached sync-only for", probeKey);
+    }
     if (hasError && !fullTranslation) {
-      fullTranslation = await translateTextSync(text, options);
-      if (onDelta && fullTranslation) {
-        onDelta(fullTranslation);
-      }
+      await runSync();
     }
     return cleanTranslation(fullTranslation);
   }
@@ -488,6 +509,96 @@ ${question}`
     return { accept: true, reason: "speech", speechRatio, transitions, variation };
   }
 
+  // src/lib/audio-spectrum-gate.ts
+  var FFT_SIZE = 512;
+  var SPEECH_BAND_LOW = 85;
+  var SPEECH_BAND_HIGH = 3400;
+  var SPEECH_BAND_RATIO_MIN = 0.55;
+  var MIN_WINDOWS = 8;
+  function fft(re, im) {
+    const n = re.length;
+    for (let i = 1, j = 0; i < n; i++) {
+      let bit = n >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) {
+        const tr = re[i];
+        re[i] = re[j];
+        re[j] = tr;
+        const ti = im[i];
+        im[i] = im[j];
+        im[j] = ti;
+      }
+    }
+    for (let size = 2; size <= n; size <<= 1) {
+      const angle = -2 * Math.PI / size;
+      const stepCos = Math.cos(angle);
+      const stepSin = Math.sin(angle);
+      const half = size / 2;
+      for (let i = 0; i < n; i += size) {
+        let wCos = 1;
+        let wSin = 0;
+        for (let j = 0; j < half; j++) {
+          const a = i + j;
+          const b = a + half;
+          const tr = re[b] * wCos - im[b] * wSin;
+          const ti = re[b] * wSin + im[b] * wCos;
+          re[b] = re[a] - tr;
+          im[b] = im[a] - ti;
+          re[a] = re[a] + tr;
+          im[a] = im[a] + ti;
+          const nCos = wCos * stepCos - wSin * stepSin;
+          wSin = wSin * stepCos + wCos * stepSin;
+          wCos = nCos;
+        }
+      }
+    }
+  }
+  function classifyPcmSpectrum(pcm, sampleRate) {
+    const hop = FFT_SIZE / 2;
+    const windowCount = Math.max(0, Math.floor((pcm.length - FFT_SIZE) / hop) + 1);
+    if (windowCount < MIN_WINDOWS) {
+      return { accept: true, reason: "unanalyzable", speechBandRatio: 1, windows: 0 };
+    }
+    const hann = new Float32Array(FFT_SIZE);
+    for (let i = 0; i < FFT_SIZE; i++) {
+      hann[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (FFT_SIZE - 1)));
+    }
+    const re = new Float32Array(FFT_SIZE);
+    const im = new Float32Array(FFT_SIZE);
+    const ratios = [];
+    const lowBin = Math.ceil(SPEECH_BAND_LOW * FFT_SIZE / sampleRate);
+    const highBin = Math.floor(SPEECH_BAND_HIGH * FFT_SIZE / sampleRate);
+    for (let w = 0; w < windowCount; w++) {
+      const offset = w * hop;
+      for (let i = 0; i < FFT_SIZE; i++) {
+        re[i] = pcm[offset + i] / 32768 * hann[i];
+        im[i] = 0;
+      }
+      fft(re, im);
+      let total = 0;
+      let inBand = 0;
+      for (let bin = 1; bin < FFT_SIZE / 2; bin++) {
+        const power = re[bin] * re[bin] + im[bin] * im[bin];
+        total += power;
+        if (bin >= lowBin && bin <= highBin) inBand += power;
+      }
+      if (total > 1e-9) ratios.push(inBand / total);
+    }
+    if (ratios.length === 0) {
+      return { accept: true, reason: "unanalyzable", speechBandRatio: 1, windows: 0 };
+    }
+    ratios.sort((a, b) => a - b);
+    const median = ratios[Math.floor(ratios.length / 2)];
+    const accept = median >= SPEECH_BAND_RATIO_MIN;
+    return {
+      accept,
+      reason: accept ? "ok" : "music-like",
+      speechBandRatio: median,
+      windows: ratios.length
+    };
+  }
+
   // src/lib/capture-generation.ts
   function requestCaptureGeneration(state, generation) {
     if (generation <= state.stopped) return false;
@@ -584,6 +695,17 @@ ${question}`
   var ANNOTATION_ONLY = /^[\[(（【]?\s*(whistle|music|silence|blank_?audio|inaudible|noise|applause|laughter|sighs?|音乐|掌声|笑声|静音|無音)\s*[\])）】]?$/i;
   var NO_CONTENT = /^(?:[0-9\s.,，、:：;；!！?？'"“”‘’()（）\-—–_*/\\|]+|[.…·\s]+)$/;
   var DEGENERATE_RUN = /(.)\1{7,}/u;
+  function isCountingSequence(text) {
+    const t = normalize(text);
+    if (!t) return false;
+    const tokens = t.split(/[、,，\s.。;；!！?？…]+/).filter(Boolean);
+    if (tokens.length < 8) return false;
+    let numeric = 0;
+    for (const token of tokens) {
+      if (/^[0-9〇零一二两三四五六七八九十百千万]+$/.test(token)) numeric += 1;
+    }
+    return numeric >= 8 && numeric / tokens.length >= 0.85;
+  }
   function isCharacterLoop(text) {
     const t = normalize(text).replace(/[。.!！?？…，,、;；:：\s]+/g, "").toLowerCase();
     if (t.length < 6) return false;
@@ -628,6 +750,7 @@ ${question}`
     if (STOCK_LINES.some((re) => re.test(bare))) return true;
     if (DEGENERATE_RUN.test(t)) return true;
     if (isCharacterLoop(t)) return true;
+    if (isCountingSequence(t)) return true;
     return false;
   }
   function isLikelyAsrHallucinationSequence(rejectedHistory, text) {
@@ -1022,6 +1145,22 @@ ${question}`
         variation: Number(audioFeatures.variation.toFixed(3))
       });
       return;
+    }
+    const spectrum = classifyPcmSpectrum(trimmedPcm, TARGET_SAMPLE_RATE);
+    if (!spectrum.accept) {
+      reportAudioState(session, true);
+      console.info("[RTTS] dropped music-like audio:", {
+        speechBandRatio: Number(spectrum.speechBandRatio.toFixed(3)),
+        windows: spectrum.windows,
+        durationMs: Math.round(trimmedPcm.length / TARGET_SAMPLE_RATE * 1e3)
+      });
+      return;
+    }
+    if (spectrum.reason === "ok") {
+      console.info("[RTTS] spectrum ok:", {
+        speechBandRatio: Number(spectrum.speechBandRatio.toFixed(3)),
+        windows: spectrum.windows
+      });
     }
     reportAudioState(session, false);
     const pcmData = trimmedPcm;

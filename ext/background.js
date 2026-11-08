@@ -109,10 +109,10 @@ function reconcileSessionWithCapture(session, liveGeneration) {
 async function waitForCaptureRelease(isCaptureAlive, options = {}) {
   const maxAttempts = Math.max(1, options.maxAttempts ?? 8);
   const delayMs = Math.max(0, options.delayMs ?? 100);
-  const sleep = options.sleep ?? ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
+  const sleep2 = options.sleep ?? ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (!await isCaptureAlive()) return true;
-    if (attempt < maxAttempts - 1) await sleep(delayMs);
+    if (attempt < maxAttempts - 1) await sleep2(delayMs);
   }
   return false;
 }
@@ -1223,8 +1223,321 @@ var obsidianHandlers = {
   }
 };
 
+// src/lib/models.ts
+var MODEL_CATALOG = [
+  {
+    id: "moss-vl-1.0",
+    label: "MOSS VL 1.0",
+    kind: "chat",
+    blurb: "\u901A\u7528\u591A\u6A21\u6001\u7406\u89E3\uFF0C\u6587\u672C\u5BF9\u8BDD / \u7FFB\u8BD1 / OCR \u5168\u80FD",
+    badge: "\u63A8\u8350"
+  },
+  {
+    id: "moss-vl-realtime-1.0",
+    label: "MOSS VL Realtime",
+    kind: "vision",
+    blurb: "\u4F4E\u5EF6\u8FDF\u89C6\u9891\u5E27\u6D41\u5F0F\u7406\u89E3\uFF08WebSocket\uFF09"
+  },
+  {
+    id: "moss-transcribe-1.0",
+    label: "MOSS Transcribe",
+    kind: "audio",
+    blurb: "\u8BED\u97F3\u8F6C\u5199\uFF0C\u5B9E\u65F6\u5B57\u5E55\u7BA1\u7EBF\u6838\u5FC3"
+  },
+  {
+    id: "moss-transcribe-diarize-pro",
+    label: "Transcribe Diarize Pro",
+    kind: "audio",
+    blurb: "\u5E26\u8BF4\u8BDD\u4EBA\u5206\u79BB\u7684\u9AD8\u7CBE\u5EA6\u8F6C\u5199"
+  },
+  {
+    id: "moss-transcribe-diarize-flash-2026-09-02",
+    label: "Transcribe Diarize Flash",
+    kind: "audio",
+    blurb: "\u4F4E\u5EF6\u8FDF\u8BF4\u8BDD\u4EBA\u5206\u79BB\u8F6C\u5199"
+  },
+  {
+    id: "moss-tts-1.5-flash",
+    label: "MOSS TTS Flash",
+    kind: "speech",
+    blurb: "\u4F4E\u5EF6\u8FDF\u8BED\u97F3\u5408\u6210"
+  },
+  {
+    id: "moss-tts-1.0-pro",
+    label: "MOSS TTS Pro",
+    kind: "speech",
+    blurb: "\u9AD8\u81EA\u7136\u5EA6\u8BED\u97F3\u5408\u6210"
+  },
+  {
+    id: "moss-ttsd-1.0",
+    label: "MOSS TTSD",
+    kind: "speech",
+    blurb: "\u5BF9\u8BDD\u5F0F\u8BED\u97F3\u5408\u6210"
+  },
+  {
+    id: "moss-speech",
+    label: "MOSS Speech",
+    kind: "speech",
+    blurb: "\u8BED\u97F3\u7406\u89E3\u4E0E\u589E\u5F3A"
+  },
+  {
+    id: "moss-image-prompt-enhancer-1.0",
+    label: "Image Prompt Enhancer",
+    kind: "image",
+    blurb: "\u56FE\u50CF\u751F\u6210\u63D0\u793A\u8BCD\u589E\u5F3A"
+  },
+  {
+    id: "moss-image-sft-1.0",
+    label: "MOSS-Image SFT",
+    kind: "image",
+    blurb: "\u5B98\u65B9\u6587\u751F\u56FE\uFF0C\u4E2D\u82F1\u6587\u6587\u5B57\u6E32\u67D3/\u5E03\u5C40\u63A7\u5236\uFF0C\u9650\u65F6\u514D\u8D39",
+    badge: "\u514D\u8D39 \xB7 \u63A8\u8350"
+  },
+  {
+    id: "moss-image-base-1.0",
+    label: "MOSS-Image Base",
+    kind: "image",
+    blurb: "\u57FA\u7840\u6587\u751F\u56FE\u6A21\u578B\uFF0C\u9002\u5408\u98CE\u683C\u5316\u4E0E\u5FAE\u8C03\uFF0C\u9650\u65F6\u514D\u8D39",
+    badge: "\u514D\u8D39"
+  },
+  {
+    id: "moss-image-sft-1.0-2026-10-09",
+    label: "MOSS-Image SFT (\u5FEB\u7167)",
+    kind: "image",
+    blurb: "\u9501\u5B9A\u7248\u672C\u7684 SFT \u5FEB\u7167\uFF0C\u4FDD\u8BC1\u7ED3\u679C\u53EF\u590D\u73B0"
+  },
+  {
+    id: "moss-image-base-1.0-2026-10-09",
+    label: "MOSS-Image Base (\u5FEB\u7167)",
+    kind: "image",
+    blurb: "\u9501\u5B9A\u7248\u672C\u7684 Base \u5FEB\u7167\uFF0C\u4FDD\u8BC1\u7ED3\u679C\u53EF\u590D\u73B0"
+  },
+  {
+    id: "black-forest-labs/FLUX.1-schnell",
+    label: "FLUX.1-schnell",
+    kind: "image",
+    blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u6700\u5FEB\u5F00\u6E90\u751F\u56FE\uFF0C1-4\u6B65\u63A8\u7406\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
+  },
+  {
+    id: "stabilityai/stable-diffusion-3.5-medium",
+    label: "SD 3.5 Medium",
+    kind: "image",
+    blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u8D28\u91CF\u4E0E\u901F\u5EA6\u5747\u8861\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
+  },
+  {
+    id: "stabilityai/stable-diffusion-xl-base-1.0",
+    label: "SDXL 1.0",
+    kind: "image",
+    blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u9AD8\u5206\u8FA8\u7387\u751F\u6210\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
+  }
+];
+var SOURCE_LANGUAGES = [
+  { code: "auto", label: "\u81EA\u52A8\u68C0\u6D4B", short: "AUTO" },
+  { code: "zh", label: "\u7B80\u4F53\u4E2D\u6587", short: "ZH" },
+  { code: "en", label: "English", short: "EN" }
+];
+var TARGET_LANGUAGES = [
+  { code: "zh", label: "\u7B80\u4F53\u4E2D\u6587", short: "ZH" },
+  { code: "en", label: "English", short: "EN" },
+  { code: "ja", label: "\u65E5\u672C\u8A9E", short: "JA" },
+  { code: "ko", label: "\uD55C\uAD6D\uC5B4", short: "KO" },
+  { code: "fr", label: "Fran\xE7ais", short: "FR" },
+  { code: "de", label: "Deutsch", short: "DE" },
+  { code: "es", label: "Espa\xF1ol", short: "ES" },
+  { code: "ru", label: "\u0420\u0443\u0441\u0441\u043A\u0438\u0439", short: "RU" },
+  { code: "ar", label: "\u0627\u0644\u0639\u0631\u0628\u064A\u0629", short: "AR" },
+  { code: "pt", label: "Portugu\xEAs", short: "PT" }
+];
+var LANGUAGES = [...SOURCE_LANGUAGES, ...TARGET_LANGUAGES.filter(
+  (target) => !SOURCE_LANGUAGES.some((source) => source.code === target.code)
+)];
+
+// src/lib/brand.ts
+var STORAGE_KEYS = {
+  activeView: "snooper.active-view.v1",
+  providerConfig: "snooper.provider-config.v1",
+  providerConfigSession: "snooper.provider-config.session.v1"
+};
+
+// src/lib/providers.ts
+var MODEL_SUGGESTIONS = {
+  llm: MODEL_CATALOG.filter((model) => model.kind === "chat" || model.kind === "vision").map(
+    (model) => model.id
+  ),
+  audio: MODEL_CATALOG.filter((model) => model.kind === "audio").map((model) => model.id),
+  video: ["moss-vl-realtime-1.0", "moss-vl-1.0"],
+  image: [
+    "moss-image-sft-1.0",
+    "moss-image-base-1.0",
+    "moss-image-sft-1.0-2026-10-09",
+    "moss-image-base-1.0-2026-10-09",
+    "black-forest-labs/FLUX.1-schnell",
+    "stabilityai/stable-diffusion-3.5-medium",
+    "stabilityai/stable-diffusion-xl-base-1.0"
+  ]
+};
+var CONFIG_KEY2 = STORAGE_KEYS.providerConfig;
+var SESSION_CONFIG_KEY = STORAGE_KEYS.providerConfigSession;
+var env = import.meta.env;
+var envKey = (env.VITE_MOSS_API_KEY ?? "").trim();
+var envBaseUrl = (env.VITE_MOSS_BASE_URL ?? "https://api.mosi.cn/v1").trim();
+
+// src/lib/moss.ts
+function flattenMessages(messages) {
+  const systemText = messages.filter((message) => message.role === "system").map((message) => contentToText(message.content)).filter(Boolean).join("\n\n");
+  const turns = messages.filter((message) => message.role !== "system");
+  const prefix = systemText ? `\u3010\u7CFB\u7EDF\u6307\u4EE4\u3011
+${systemText}
+
+\u3010\u5BF9\u8BDD\u8BB0\u5F55\u3011` : turns.length > 1 ? "\u3010\u5BF9\u8BDD\u8BB0\u5F55\u3011" : "";
+  const lines = prefix ? [prefix] : [];
+  const images = [];
+  for (const message of turns) {
+    const label = message.role === "user" ? "\u7528\u6237" : "\u52A9\u624B";
+    const text = contentToText(message.content);
+    const attached = contentToImages(message.content);
+    if (text) lines.push(`${label}\uFF1A${text}`);
+    if (attached.length) {
+      lines.push(`${label}\u4E0A\u4F20\u4E86 ${attached.length} \u5F20\u56FE\u7247\u3002`);
+      images.push(...attached);
+    }
+  }
+  const parts = [];
+  if (lines.length) parts.push({ type: "text", text: lines.join("\n") });
+  parts.push(...images);
+  if (!parts.length) parts.push({ type: "text", text: "\u4F60\u597D" });
+  return parts;
+}
+function contentToText(content) {
+  if (typeof content === "string") return content;
+  return content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+}
+function contentToImages(content) {
+  if (typeof content === "string") return [];
+  return content.filter((part) => part.type === "image_url");
+}
+
+// src/ext/background/agent.ts
+var STORE_KEY = "snooper.agent.sessions.v1";
+var MAX_SESSIONS = 20;
+var MAX_TURNS_PER_SESSION = 50;
+var HISTORY_TOKEN_BUDGET = 3e3;
+var CHARS_PER_TOKEN = 3.2;
+var MIN_HISTORY_TURNS = 2;
+function emptyStore() {
+  return { currentId: null, sessions: [] };
+}
+function estimateTokens(text) {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+function newSession(title) {
+  const now = Date.now();
+  return { id: `agt_${now}_${Math.random().toString(36).slice(2, 8)}`, title, turns: [], createdAt: now, updatedAt: now };
+}
+async function loadAgentStore() {
+  try {
+    const result = await chrome.storage.session.get(STORE_KEY);
+    const store = result?.[STORE_KEY];
+    if (store && Array.isArray(store.sessions)) return store;
+  } catch {
+  }
+  return emptyStore();
+}
+async function saveAgentStore(store) {
+  await saveAgentStoreInternal(store);
+}
+async function saveAgentStoreInternal(store) {
+  try {
+    await chrome.storage.session.set({ [STORE_KEY]: store });
+  } catch {
+  }
+}
+async function resolveCurrentSession(store, preferNew = false) {
+  if (!preferNew) {
+    const current = store.sessions.find((s) => s.id === store.currentId);
+    if (current) return current;
+  }
+  const created = newSession("\u65B0\u5BF9\u8BDD");
+  store.sessions.unshift(created);
+  store.currentId = created.id;
+  while (store.sessions.length > MAX_SESSIONS) {
+    const oldestIdx = store.sessions.findIndex((s) => s.id !== store.currentId);
+    if (oldestIdx < 0) break;
+    store.sessions.splice(oldestIdx, 1);
+  }
+  return created;
+}
+function selectHistoryTurns(turns, budgetTokens = HISTORY_TOKEN_BUDGET) {
+  const history = turns.slice(0, -1);
+  const picked = [];
+  let used = 0;
+  let keptNewest = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const turn = history[i];
+    const cost = estimateTokens(turn.content);
+    const minimumNotMet = keptNewest < MIN_HISTORY_TURNS * 2;
+    if (minimumNotMet || used + cost <= budgetTokens) {
+      picked.unshift(turn);
+      used += cost;
+      keptNewest++;
+    } else {
+      break;
+    }
+  }
+  return picked;
+}
+function buildAskParts({ history, subtitleContext, question, images }) {
+  const turns = [];
+  for (const turn of history) {
+    turns.push({ role: turn.role, content: turn.content });
+  }
+  const questionText = [
+    subtitleContext ? `\u3010\u6700\u8FD1\u7684\u5B57\u5E55\u4E0A\u4E0B\u6587\u3011
+${subtitleContext}
+` : "",
+    question || "\u8BF7\u63CF\u8FF0\u8FD9\u5F20\u56FE\u7247\uFF0C\u5E76\u7ED3\u5408\u89C6\u9891\u4E0A\u4E0B\u6587\u89E3\u91CA\u3002"
+  ].filter(Boolean).join("\n");
+  turns.push({ role: "user", content: questionText, images: images.length ? images : void 0 });
+  const messages = turns.map((turn) => ({
+    role: turn.role,
+    content: turn.images?.length ? [
+      { type: "text", text: turn.content },
+      ...turn.images.map((url) => ({ type: "image_url", image_url: { url } }))
+    ] : turn.content
+  }));
+  return flattenMessages(messages);
+}
+async function recordExchange(store, session, userTurn, assistantTurn) {
+  session.turns.push(userTurn, assistantTurn);
+  if (session.turns.length > MAX_TURNS_PER_SESSION) {
+    session.turns = session.turns.slice(-MAX_TURNS_PER_SESSION);
+  }
+  if (session.title === "\u65B0\u5BF9\u8BDD" && userTurn.content) {
+    session.title = userTurn.content.slice(0, 24) || session.title;
+  }
+  session.updatedAt = Date.now();
+  await saveAgentStore(store);
+  return store;
+}
+function listSessions(store) {
+  return [...store.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map(({ id, title, updatedAt }) => ({ id, title, updatedAt }));
+}
+function switchSession(store, id) {
+  const target = store.sessions.find((s) => s.id === id);
+  if (!target) return null;
+  store.currentId = id;
+  return target;
+}
+async function deleteSession(store, id) {
+  store.sessions = store.sessions.filter((s) => s.id !== id);
+  if (store.currentId === id) store.currentId = store.sessions[0]?.id ?? null;
+  await saveAgentStore(store);
+}
+
 // src/ext/background/llm.ts
-async function askLLM({ question, images, context, config, sourceLang, targetLang }) {
+async function askLLM({ parts, config, sourceLang: _sourceLang, targetLang: _targetLang }) {
+  void _sourceLang;
+  void _targetLang;
   const route = config.routes.llm;
   const provider = config.providers.find((p) => p.id === route.providerId);
   if (!provider || !provider.apiKey) {
@@ -1234,22 +1547,6 @@ async function askLLM({ question, images, context, config, sourceLang, targetLan
     throw new Error("\u672A\u9009\u62E9 LLM \u6A21\u578B\uFF0C\u8BF7\u70B9\u51FB\u9875\u9762\u60AC\u6D6E\u680F\u7684 \u2699 \u914D\u7F6E");
   }
   const baseUrl = provider.baseUrl.replace(/\/+$/, "");
-  const parts = [{
-    type: "text",
-    text: [
-      "\u4F60\u662F\u4E00\u4E2A\u89C6\u9891\u4F34\u5B66\u52A9\u624B\u3002",
-      context ? `\u3010\u6700\u8FD1\u7684\u5B57\u5E55\u4E0A\u4E0B\u6587\u3011
-${context}
-` : "",
-      "\u8BF7\u57FA\u4E8E\u5B57\u5E55\u4E0A\u4E0B\u6587\u548C\u7528\u6237\u63D0\u4F9B\u7684\u5185\u5BB9\u56DE\u7B54\u3002\u7528\u7B80\u4F53\u4E2D\u6587\u56DE\u7B54\uFF0C\u4FDD\u6301\u7B80\u6D01\u51C6\u786E\u3002",
-      "",
-      `\u3010\u7528\u6237\u63D0\u95EE\u3011
-${question || "\u8BF7\u63CF\u8FF0\u8FD9\u5F20\u56FE\u7247\uFF0C\u5E76\u7ED3\u5408\u89C6\u9891\u4E0A\u4E0B\u6587\u89E3\u91CA\u3002"}`
-    ].filter(Boolean).join("\n")
-  }];
-  for (const img of images) {
-    parts.push({ type: "image_url", image_url: { url: img } });
-  }
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -1547,31 +1844,35 @@ var sessionHandlers = {
     const s = getOrCreateSession(tabId);
     const question = (message.question || "").trim();
     const images = Array.isArray(message.images) ? message.images.slice(0, 4) : [];
-    if (!question && images.length === 0) {
-      sendResponse({ ok: false, error: "\u95EE\u9898\u4E0D\u80FD\u4E3A\u7A7A" });
-      return false;
-    }
     if (question.length > 2e3) {
       sendResponse({ ok: false, error: "\u95EE\u9898\u8FC7\u957F\uFF08\u6700\u591A 2000 \u5B57\uFF09" });
       return false;
     }
     const requestId = message.requestId || `ask_${Date.now()}`;
     s.pendingAskRequestId = requestId;
+    if (!question && images.length === 0) {
+      s.pendingAskRequestId = null;
+      sendResponse({ ok: false, error: "\u95EE\u9898\u4E0D\u80FD\u4E3A\u7A7A" });
+      return false;
+    }
     const recentContext = s.subtitles.slice(-20).map((sub) => `[${sub.source}] \u2192 ${sub.target}`).join("\n");
     void (async () => {
       const config = s.configSnapshot || await loadConfig();
-      const answer = await askLLM({
-        question,
-        images,
-        context: recentContext,
-        config,
-        sourceLang: s.sourceLang,
-        targetLang: s.targetLang
-      });
+      const store = await loadAgentStore();
+      const session = await resolveCurrentSession(store, message.newSession === true);
+      const history = selectHistoryTurns([...session.turns, { role: "user", content: question, images, at: Date.now() }]);
+      const parts = buildAskParts({ history, subtitleContext: recentContext, question, images });
+      const answer = await askLLM({ parts, config, sourceLang: s.sourceLang, targetLang: s.targetLang });
       if (s.pendingAskRequestId !== requestId) return;
       s.pendingAskRequestId = null;
       s.messages.push({ role: "assistant", content: answer });
       pushSession(tabId);
+      await recordExchange(
+        store,
+        session,
+        { role: "user", content: question, images, at: Date.now() },
+        { role: "assistant", content: answer, at: Date.now() }
+      );
       sendResponse({ ok: true, answer, session: safeSession(s) });
     })().catch((err) => {
       if (s.pendingAskRequestId !== requestId) return;
@@ -1582,7 +1883,40 @@ var sessionHandlers = {
     pushSession(tabId);
     return true;
   },
-  /* ---------- Panel launching ---------- */
+  /* ---------- Agent conversation management ---------- */
+  AGENT_LIST_SESSIONS: (_message, { sendResponse }) => {
+    void loadAgentStore().then((store) => sendResponse({ ok: true, sessions: listSessions(store), currentId: store.currentId }));
+    return true;
+  },
+  AGENT_SWITCH_SESSION: (message, { sendResponse }) => {
+    void loadAgentStore().then(async (store) => {
+      const session = switchSession(store, String(message.id || ""));
+      if (!session) {
+        sendResponse({ ok: false, error: "\u4F1A\u8BDD\u4E0D\u5B58\u5728" });
+        return;
+      }
+      await saveAgentStore(store).catch(() => {
+      });
+      sendResponse({ ok: true, currentId: store.currentId });
+    });
+    return true;
+  },
+  AGENT_NEW_SESSION: (_message, { sendResponse }) => {
+    void loadAgentStore().then(async (store) => {
+      await resolveCurrentSession(store, true);
+      await saveAgentStore(store).catch(() => {
+      });
+      sendResponse({ ok: true, currentId: store.currentId });
+    });
+    return true;
+  },
+  AGENT_DELETE_SESSION: (message, { sendResponse }) => {
+    void loadAgentStore().then(async (store) => {
+      await deleteSession(store, String(message.id || ""));
+      sendResponse({ ok: true, currentId: store.currentId });
+    });
+    return true;
+  },
   OPEN_SETTINGS: (_message, { tabId, sendResponse }) => {
     chrome.sidePanel.open({ tabId }).then(() => {
       sendResponse({ ok: true });

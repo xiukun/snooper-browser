@@ -109,10 +109,10 @@ function reconcileSessionWithCapture(session, liveGeneration) {
 async function waitForCaptureRelease(isCaptureAlive, options = {}) {
   const maxAttempts = Math.max(1, options.maxAttempts ?? 8);
   const delayMs = Math.max(0, options.delayMs ?? 100);
-  const sleep2 = options.sleep ?? ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
+  const sleep = options.sleep ?? ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (!await isCaptureAlive()) return true;
-    if (attempt < maxAttempts - 1) await sleep2(delayMs);
+    if (attempt < maxAttempts - 1) await sleep(delayMs);
   }
   return false;
 }
@@ -1223,166 +1223,7 @@ var obsidianHandlers = {
   }
 };
 
-// src/lib/models.ts
-var MODEL_CATALOG = [
-  {
-    id: "moss-vl-1.0",
-    label: "MOSS VL 1.0",
-    kind: "chat",
-    blurb: "\u901A\u7528\u591A\u6A21\u6001\u7406\u89E3\uFF0C\u6587\u672C\u5BF9\u8BDD / \u7FFB\u8BD1 / OCR \u5168\u80FD",
-    badge: "\u63A8\u8350"
-  },
-  {
-    id: "moss-vl-realtime-1.0",
-    label: "MOSS VL Realtime",
-    kind: "vision",
-    blurb: "\u4F4E\u5EF6\u8FDF\u89C6\u9891\u5E27\u6D41\u5F0F\u7406\u89E3\uFF08WebSocket\uFF09"
-  },
-  {
-    id: "moss-transcribe-1.0",
-    label: "MOSS Transcribe",
-    kind: "audio",
-    blurb: "\u8BED\u97F3\u8F6C\u5199\uFF0C\u5B9E\u65F6\u5B57\u5E55\u7BA1\u7EBF\u6838\u5FC3"
-  },
-  {
-    id: "moss-transcribe-diarize-pro",
-    label: "Transcribe Diarize Pro",
-    kind: "audio",
-    blurb: "\u5E26\u8BF4\u8BDD\u4EBA\u5206\u79BB\u7684\u9AD8\u7CBE\u5EA6\u8F6C\u5199"
-  },
-  {
-    id: "moss-transcribe-diarize-flash-2026-09-02",
-    label: "Transcribe Diarize Flash",
-    kind: "audio",
-    blurb: "\u4F4E\u5EF6\u8FDF\u8BF4\u8BDD\u4EBA\u5206\u79BB\u8F6C\u5199"
-  },
-  {
-    id: "moss-tts-1.5-flash",
-    label: "MOSS TTS Flash",
-    kind: "speech",
-    blurb: "\u4F4E\u5EF6\u8FDF\u8BED\u97F3\u5408\u6210"
-  },
-  {
-    id: "moss-tts-1.0-pro",
-    label: "MOSS TTS Pro",
-    kind: "speech",
-    blurb: "\u9AD8\u81EA\u7136\u5EA6\u8BED\u97F3\u5408\u6210"
-  },
-  {
-    id: "moss-ttsd-1.0",
-    label: "MOSS TTSD",
-    kind: "speech",
-    blurb: "\u5BF9\u8BDD\u5F0F\u8BED\u97F3\u5408\u6210"
-  },
-  {
-    id: "moss-speech",
-    label: "MOSS Speech",
-    kind: "speech",
-    blurb: "\u8BED\u97F3\u7406\u89E3\u4E0E\u589E\u5F3A"
-  },
-  {
-    id: "moss-image-prompt-enhancer-1.0",
-    label: "Image Prompt Enhancer",
-    kind: "image",
-    blurb: "\u56FE\u50CF\u751F\u6210\u63D0\u793A\u8BCD\u589E\u5F3A"
-  },
-  {
-    id: "moss-image-sft-1.0",
-    label: "MOSS-Image SFT",
-    kind: "image",
-    blurb: "\u5B98\u65B9\u6587\u751F\u56FE\uFF0C\u4E2D\u82F1\u6587\u6587\u5B57\u6E32\u67D3/\u5E03\u5C40\u63A7\u5236\uFF0C\u9650\u65F6\u514D\u8D39",
-    badge: "\u514D\u8D39 \xB7 \u63A8\u8350"
-  },
-  {
-    id: "moss-image-base-1.0",
-    label: "MOSS-Image Base",
-    kind: "image",
-    blurb: "\u57FA\u7840\u6587\u751F\u56FE\u6A21\u578B\uFF0C\u9002\u5408\u98CE\u683C\u5316\u4E0E\u5FAE\u8C03\uFF0C\u9650\u65F6\u514D\u8D39",
-    badge: "\u514D\u8D39"
-  },
-  {
-    id: "moss-image-sft-1.0-2026-10-09",
-    label: "MOSS-Image SFT (\u5FEB\u7167)",
-    kind: "image",
-    blurb: "\u9501\u5B9A\u7248\u672C\u7684 SFT \u5FEB\u7167\uFF0C\u4FDD\u8BC1\u7ED3\u679C\u53EF\u590D\u73B0"
-  },
-  {
-    id: "moss-image-base-1.0-2026-10-09",
-    label: "MOSS-Image Base (\u5FEB\u7167)",
-    kind: "image",
-    blurb: "\u9501\u5B9A\u7248\u672C\u7684 Base \u5FEB\u7167\uFF0C\u4FDD\u8BC1\u7ED3\u679C\u53EF\u590D\u73B0"
-  },
-  {
-    id: "black-forest-labs/FLUX.1-schnell",
-    label: "FLUX.1-schnell",
-    kind: "image",
-    blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u6700\u5FEB\u5F00\u6E90\u751F\u56FE\uFF0C1-4\u6B65\u63A8\u7406\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
-  },
-  {
-    id: "stabilityai/stable-diffusion-3.5-medium",
-    label: "SD 3.5 Medium",
-    kind: "image",
-    blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u8D28\u91CF\u4E0E\u901F\u5EA6\u5747\u8861\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
-  },
-  {
-    id: "stabilityai/stable-diffusion-xl-base-1.0",
-    label: "SDXL 1.0",
-    kind: "image",
-    blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u9AD8\u5206\u8FA8\u7387\u751F\u6210\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
-  }
-];
-var SOURCE_LANGUAGES = [
-  { code: "auto", label: "\u81EA\u52A8\u68C0\u6D4B", short: "AUTO" },
-  { code: "zh", label: "\u7B80\u4F53\u4E2D\u6587", short: "ZH" },
-  { code: "en", label: "English", short: "EN" }
-];
-var TARGET_LANGUAGES = [
-  { code: "zh", label: "\u7B80\u4F53\u4E2D\u6587", short: "ZH" },
-  { code: "en", label: "English", short: "EN" },
-  { code: "ja", label: "\u65E5\u672C\u8A9E", short: "JA" },
-  { code: "ko", label: "\uD55C\uAD6D\uC5B4", short: "KO" },
-  { code: "fr", label: "Fran\xE7ais", short: "FR" },
-  { code: "de", label: "Deutsch", short: "DE" },
-  { code: "es", label: "Espa\xF1ol", short: "ES" },
-  { code: "ru", label: "\u0420\u0443\u0441\u0441\u043A\u0438\u0439", short: "RU" },
-  { code: "ar", label: "\u0627\u0644\u0639\u0631\u0628\u064A\u0629", short: "AR" },
-  { code: "pt", label: "Portugu\xEAs", short: "PT" }
-];
-var LANGUAGES = [...SOURCE_LANGUAGES, ...TARGET_LANGUAGES.filter(
-  (target) => !SOURCE_LANGUAGES.some((source) => source.code === target.code)
-)];
-
-// src/lib/brand.ts
-var STORAGE_KEYS = {
-  activeView: "snooper.active-view.v1",
-  providerConfig: "snooper.provider-config.v1",
-  providerConfigSession: "snooper.provider-config.session.v1"
-};
-
-// src/lib/providers.ts
-var MODEL_SUGGESTIONS = {
-  llm: MODEL_CATALOG.filter((model) => model.kind === "chat" || model.kind === "vision").map(
-    (model) => model.id
-  ),
-  audio: MODEL_CATALOG.filter((model) => model.kind === "audio").map((model) => model.id),
-  video: ["moss-vl-realtime-1.0", "moss-vl-1.0"],
-  image: [
-    "moss-image-sft-1.0",
-    "moss-image-base-1.0",
-    "moss-image-sft-1.0-2026-10-09",
-    "moss-image-base-1.0-2026-10-09",
-    "black-forest-labs/FLUX.1-schnell",
-    "stabilityai/stable-diffusion-3.5-medium",
-    "stabilityai/stable-diffusion-xl-base-1.0"
-  ]
-};
-var CONFIG_KEY2 = STORAGE_KEYS.providerConfig;
-var SESSION_CONFIG_KEY = STORAGE_KEYS.providerConfigSession;
-var env = import.meta.env;
-var envKey = (env.VITE_MOSS_API_KEY ?? "").trim();
-var envBaseUrl = (env.VITE_MOSS_BASE_URL ?? "https://api.mosi.cn/v1").trim();
-
-// src/lib/moss.ts
+// src/lib/moss-messages.ts
 function flattenMessages(messages) {
   const systemText = messages.filter((message) => message.role === "system").map((message) => contentToText(message.content)).filter(Boolean).join("\n\n");
   const turns = messages.filter((message) => message.role !== "system");

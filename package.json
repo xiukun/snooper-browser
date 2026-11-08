@@ -14,6 +14,7 @@
     "test:guards": "node scripts/test-audio-guards.mjs",
     "test:capture-generation": "node scripts/test-capture-generation.mjs",
     "test:keyed-task": "node scripts/test-keyed-task.mjs",
+    "test:export-assets": "node scripts/test-export-assets.mjs",
     "test:chat-state": "node scripts/test-chat-state.mjs",
     "test:image-material": "node scripts/test-image-material.mjs"
   },

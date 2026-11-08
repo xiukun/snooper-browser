@@ -6,6 +6,7 @@
  */
 
 import { sendToPageWithInjection } from '../action-flow'
+import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-assets'
 
 (() => {
   /* ===== Types ===== */
@@ -39,6 +40,26 @@ import { sendToPageWithInjection } from '../action-flow'
     apiPort: number
     apiKey: string
     noteFolder: string
+  }
+
+  interface HistorySubtitle {
+    at?: number
+    endedAt?: number | null
+    source: string
+    target: string
+    latency?: number
+  }
+
+  interface HistoryEntry {
+    id: string
+    pageTitle: string
+    url: string
+    startedAt: number
+    endedAt: number
+    sourceLang: string
+    targetLang: string
+    subtitleCount: number
+    subtitles?: HistorySubtitle[]
   }
 
   const DEFAULT_OBSIDIAN: ObsidianConfig = {
@@ -132,6 +153,7 @@ import { sendToPageWithInjection } from '../action-flow'
 
   let obsidianCfg: ObsidianConfig = { ...DEFAULT_OBSIDIAN }
   let notes: NoteDocument[] = []
+  let noteAssetNames = new Map<string, string>()
 
   /* ===== DOM refs ===== */
   const noticeBanner = document.getElementById('noticeBanner')!
@@ -298,8 +320,10 @@ import { sendToPageWithInjection } from '../action-flow'
 
       const delBtn = document.createElement('button')
       delBtn.type = 'button'
-      delBtn.className = 'btn btn-danger-ghost btn-xs'
-      delBtn.textContent = '删除'
+      delBtn.className = 'icon-btn icon-btn-danger'
+      delBtn.setAttribute('aria-label', `删除${note.title || '笔记'}`)
+      delBtn.title = '删除笔记'
+      delBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>'
       delBtn.addEventListener('click', async (e) => {
         e.stopPropagation()
         if (!confirm('确定删除这篇笔记？')) return
@@ -344,36 +368,68 @@ import { sendToPageWithInjection } from '../action-flow'
           lines.push('')
           break
         case 'screenshot':
-          lines.push(`### 截图 ${time}`)
-          lines.push(entry.text || '截图')
-          if (entry.imageUrl) lines.push(`![](${entry.imageUrl})`)
+        case 'image': {
+          const title = entry.type === 'screenshot' ? '截图' : '配图'
+          lines.push(`### ${title} ${time}`)
+          lines.push(entry.text || entry.source || title)
+          const assetName = noteAssetNames.get(`note:${note.id}:${entry.id}`)
+          if (assetName) lines.push(`![](assets/${assetName})`)
+          else lines.push(`> [图片：${entry.text || title} — 图片数据未能随导出携带]`)
           lines.push('')
           break
-        case 'image':
-          lines.push(`### 配图 ${time}`)
-          lines.push(entry.text || entry.source || '')
-          if (entry.imageUrl) lines.push(`![](${entry.imageUrl})`)
-          lines.push('')
-          break
-        case 'svg':
+        }
+        case 'svg': {
           lines.push(`### SVG ${time}`)
           lines.push(entry.text || entry.source || '')
-          if (entry.svg) lines.push('```svg\n' + entry.svg + '\n```')
+          const svgName = noteAssetNames.get(`note:${note.id}:${entry.id}`)
+          if (svgName) lines.push(`![](assets/${svgName})`)
+          else if (entry.svg) lines.push('```svg\n' + entry.svg + '\n```')
           lines.push('')
           break
+        }
       }
     }
 
     lines.push('', '---', '*由 snooper-browser 生成*')
+    const markdown = lines.join('\n')
 
-    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${note.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '_')}.md`
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 2000)
-    showNotice('笔记已导出')
+    // Images ship as real files in a ZIP (`note.md` + `assets/`); a raw
+    // data: URL inside the .md was unreadable in every editor.
+    const assets = collectAssets([note], []).map((asset) => ({
+      ...asset,
+      entryId: asset.entryId.replace(/^note:[^:]+:/, `note:${note.id}:`),
+    }))
+    const decoded: Array<{ name: string; bytes: Uint8Array }> = []
+    noteAssetNames = new Map()
+    for (const asset of assets) {
+      const result = decodeExportAsset(asset)
+      if (result) {
+        noteAssetNames.set(asset.entryId, asset.fileName)
+        decoded.push({ name: `assets/${asset.fileName}`, bytes: result.file.bytes })
+      }
+    }
+
+    if (decoded.length === 0) {
+      const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${note.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '_')}.md`
+      anchor.click()
+      setTimeout(() => URL.revokeObjectURL(url), 2000)
+      showNotice('笔记已导出')
+      return
+    }
+
+    decoded.unshift({ name: 'note.md', bytes: new TextEncoder().encode(markdown) })
+    const zipBlob = new Blob([buildZip(decoded) as unknown as BlobPart], { type: 'application/zip' })
+    const zipUrl = URL.createObjectURL(zipBlob)
+    const zipAnchor = document.createElement('a')
+    zipAnchor.href = zipUrl
+    zipAnchor.download = `${note.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '_')}.zip`
+    zipAnchor.click()
+    setTimeout(() => URL.revokeObjectURL(zipUrl), 2000)
+    showNotice(`笔记已导出（ZIP，${decoded.length} 个文件）`)
   }
 
   notesRefreshBtn.addEventListener('click', loadAndRenderNotes)
@@ -419,7 +475,7 @@ import { sendToPageWithInjection } from '../action-flow'
 
   async function loadAndRenderHistory() {
     const res: any = await chrome.runtime.sendMessage({ target: 'background', type: 'GET_HISTORY' })
-    const items: any[] = res?.history || []
+    const items: HistoryEntry[] = res?.history || []
     historyCount.textContent = String(items.length)
     historyList.textContent = ''
 
@@ -432,7 +488,7 @@ import { sendToPageWithInjection } from '../action-flow'
     historyList.style.display = 'flex'
     historyEmpty.style.display = 'none'
 
-    items.forEach((item: any) => {
+    items.forEach((item) => {
       const el = document.createElement('div')
       el.className = 'history-item'
 
@@ -446,18 +502,80 @@ import { sendToPageWithInjection } from '../action-flow'
 
       const main = document.createElement('div')
       main.className = 'history-item-main'
-      main.innerHTML = `
-        <div class="history-item-title" title="${escapeHtml(item.pageTitle || '')}">${escapeHtml(item.pageTitle || '未知页面')}</div>
-        <div class="history-item-meta">
-          <span>&#x1F550; ${formatTime(item.startedAt)}</span>
-          <span>&#x1F3AF; ${item.subtitleCount || 0} 条字幕</span>
-          <span>${escapeHtml(item.sourceLang || '')} → ${escapeHtml(item.targetLang || '')}</span>
-        </div>
-      `
+      const title = document.createElement('div')
+      title.className = 'history-item-title'
+      title.title = item.pageTitle || ''
+      title.textContent = item.pageTitle || '未知页面'
+      const meta = document.createElement('div')
+      meta.className = 'history-item-meta'
+      meta.textContent = `${formatTime(item.startedAt)} · ${item.subtitleCount || 0} 条字幕 · ${item.sourceLang || ''} → ${item.targetLang || ''}`
+      main.append(title, meta)
       el.appendChild(main)
+
+      const detail = document.createElement('div')
+      detail.className = 'history-item-detail'
+      detail.hidden = true
+      const rows = item.subtitles || []
+      if (rows.length === 0) {
+        detail.textContent = '这是旧版历史记录，只保存了条数，没有保存字幕正文。'
+      } else {
+        rows.forEach((subtitle) => {
+          const row = document.createElement('div')
+          row.className = 'history-subtitle-row'
+          const time = document.createElement('time')
+          time.textContent = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : '--:--:--'
+          const source = document.createElement('span')
+          source.className = 'history-source'
+          source.textContent = subtitle.source || '（无原文）'
+          const target = document.createElement('span')
+          target.className = 'history-target'
+          target.textContent = subtitle.target || '（无译文）'
+          row.append(time, source, target)
+          detail.appendChild(row)
+        })
+      }
+      el.appendChild(detail)
 
       const actions = document.createElement('div')
       actions.className = 'history-item-actions'
+      const toggle = document.createElement('button')
+      toggle.type = 'button'
+      toggle.className = 'btn btn-sm btn-secondary'
+      toggle.textContent = '查看内容'
+      toggle.addEventListener('click', () => {
+        detail.hidden = !detail.hidden
+        toggle.textContent = detail.hidden ? '查看内容' : '收起内容'
+      })
+      actions.appendChild(toggle)
+      const copy = document.createElement('button')
+      copy.type = 'button'
+      copy.className = 'btn btn-sm btn-secondary'
+      copy.textContent = '复制'
+      copy.addEventListener('click', async () => {
+        const rows = item.subtitles || []
+        if (rows.length === 0) {
+          showNotice('旧记录没有保存字幕正文，无法复制', true)
+          return
+        }
+        const text = rows.map((subtitle) => `${subtitle.source || ''}\n${subtitle.target || ''}`).join('\n\n')
+        const ok = await copyText(text)
+        showNotice(ok ? '已复制转写内容' : '复制失败，请在浏览器设置中允许剪贴板访问', !ok)
+      })
+      actions.appendChild(copy)
+      const exportButton = document.createElement('button')
+      exportButton.type = 'button'
+      exportButton.className = 'btn btn-sm btn-secondary'
+      exportButton.textContent = '导出 Markdown'
+      exportButton.addEventListener('click', () => {
+        const blob = new Blob([historyMarkdown(item)], { type: 'text/markdown;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = `snooper-history-${item.id}.md`
+        anchor.click()
+        setTimeout(() => URL.revokeObjectURL(url), 2000)
+      })
+      actions.appendChild(exportButton)
       const del = document.createElement('button')
       del.type = 'button'
       del.className = 'btn btn-sm btn-secondary'
@@ -498,10 +616,41 @@ import { sendToPageWithInjection } from '../action-flow'
       .then(() => loadAndRenderHistory())
   })
 
-  function escapeHtml(text: string): string {
-    const div = document.createElement('div')
-    div.textContent = text
-    return div.innerHTML
+  function historyMarkdown(item: HistoryEntry): string {
+    const lines = [
+      `# ${item.pageTitle || '转写历史'}`,
+      '',
+      `- **开始**：${formatTime(item.startedAt)}`,
+      `- **结束**：${formatTime(item.endedAt)}`,
+      `- **语言**：${item.sourceLang || 'auto'} → ${item.targetLang || 'zh'}`,
+      '',
+      '| 时间 | 原文 | 译文 |',
+      '| :--- | :--- | :--- |',
+    ]
+    for (const subtitle of item.subtitles || []) {
+      const time = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : ''
+      const source = (subtitle.source || '').replace(/\|/g, '\\|').replace(/\n/g, '<br>')
+      const target = (subtitle.target || '').replace(/\|/g, '\\|').replace(/\n/g, '<br>')
+      lines.push(`| ${time} | ${source} | ${target} |`)
+    }
+    if (!item.subtitles?.length) lines.push('|  | 旧记录未保存字幕正文 |  |')
+    return lines.join('\n')
+  }
+
+  async function copyText(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.cssText = 'position:fixed;left:-9999px;top:-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const ok = document.execCommand('copy')
+      textarea.remove()
+      return ok
+    }
   }
 
   /* ===== Obsidian ===== */

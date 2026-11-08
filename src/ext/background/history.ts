@@ -7,9 +7,12 @@
  */
 
 import { sessions } from './session-store'
+import type { SubtitleEntry } from './session-store'
 
 export const HISTORY_KEY = 'snooper.extension.history.v1'
 const MAX_HISTORY = 100
+/** Bounded per record so one marathon session cannot bloat storage writes. */
+const MAX_SUBTITLES_PER_RECORD = 500
 
 export interface HistoryEntry {
   id: string
@@ -20,6 +23,7 @@ export interface HistoryEntry {
   sourceLang: string
   targetLang: string
   subtitleCount: number
+  subtitles?: Array<Pick<SubtitleEntry, 'at' | 'endedAt' | 'source' | 'target' | 'latency'>>
 }
 
 export async function persistSessionHistory(tabId: number): Promise<void> {
@@ -36,6 +40,13 @@ export async function persistSessionHistory(tabId: number): Promise<void> {
       sourceLang: s.sourceLang || 'auto',
       targetLang: s.targetLang || 'zh',
       subtitleCount: s.subtitles.length,
+      subtitles: s.subtitles.slice(-MAX_SUBTITLES_PER_RECORD).map(({ at, endedAt, source, target, latency }) => ({
+        at,
+        endedAt,
+        source,
+        target,
+        latency,
+      })),
     }
     const got = await chrome.storage.local.get(HISTORY_KEY)
     const history: HistoryEntry[] = Array.isArray(got[HISTORY_KEY]) ? got[HISTORY_KEY] : []

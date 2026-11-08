@@ -6,6 +6,8 @@
  * the self-signed cert, so HTTP is the default.
  */
 
+import { decodeExportAsset } from '../../lib/export-assets'
+
 export interface ObsidianConfig {
   apiPort?: number | string
   apiProtocol?: string
@@ -95,30 +97,25 @@ export async function uploadObsidianAsset(message: any): Promise<ObsidianResult>
   try {
     let bytes: Uint8Array
     let mime = String(message.mimeType || 'image/png')
-    const dataUrl = String(message.dataUrl || '')
 
-    if (dataUrl.startsWith('data:')) {
-      const match = /^data:([^;,]+)?(?:;base64)?,(.*)$/s.exec(dataUrl)
-      if (!match) throw new Error('图片数据格式无法识别')
-      if (match[1]) mime = match[1]
-      const isBase64 = /;base64,/.test(dataUrl)
-      if (isBase64) {
-        const binary = atob(match[2] || '')
-        bytes = new Uint8Array(binary.length)
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-      } else {
-        bytes = new TextEncoder().encode(decodeURIComponent(match[2] || ''))
-      }
-    } else if (/^https?:\/\//i.test(dataUrl)) {
-      const r = await fetch(dataUrl)
+    // Shared decoder: data URLs, raw SVG markup, and remote HTTP(S) images
+    // all funnel through one code path with identical MIME rules.
+    const decoded = decodeExportAsset({
+      entryId: 'obsidian',
+      fileName,
+      mimeType: mime === 'image/svg+xml' ? 'image/svg+xml' : mime,
+      dataUrl: String(message.dataUrl || ''),
+      svgText: String(message.rawText || ''),
+    })
+    if (decoded) {
+      bytes = decoded.file.bytes
+      if (mime === 'image/svg+xml') mime = 'image/svg+xml'
+    } else if (/^https?:\/\//i.test(String(message.dataUrl || ''))) {
+      const r = await fetch(String(message.dataUrl))
       if (!r.ok) throw new Error(`下载图片失败 HTTP ${r.status}`)
       const buf = await r.arrayBuffer()
       bytes = new Uint8Array(buf)
       mime = r.headers.get('content-type') || mime
-    } else if (String(message.rawText || '')) {
-      // SVG entries are stored as markup, not as a URL.
-      bytes = new TextEncoder().encode(String(message.rawText))
-      mime = 'image/svg+xml'
     } else {
       throw new Error('没有可上传的图片数据')
     }

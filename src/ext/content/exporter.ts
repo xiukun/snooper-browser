@@ -100,7 +100,7 @@ export function getSubtitleMarkdown(
         const uploaded = assetNames?.get(`chat:${messageIndex}:${imageIndex}`)
         if (uploaded) lines.push(`![[${uploaded}]]`, '')
         else if (/^https?:\/\//i.test(image)) lines.push(`![伴学图片](${image})`, '')
-        else lines.push('> [伴学图片未能上传]', '')
+        else lines.push('> [伴学图片未能导出：图片数据仅保存在扩展存储中]', '')
       })
     })
   }
@@ -116,7 +116,7 @@ export function getSubtitleMarkdown(
         if (uploaded) lines.push(`![[${uploaded}]]`)
         else if (entry.imageUrl && /^https?:\/\//i.test(entry.imageUrl)) lines.push(`![${label}](${entry.imageUrl})`)
         else if (entry.svg) lines.push('```svg', entry.svg, '```')
-        else lines.push(`> [图片：${label} — 图片数据无法直接嵌入 Markdown]`)
+        else lines.push(`> [图片：${label} — 图片数据仅保存在扩展存储中，未随本次导出携带]`)
         if (entry.text) lines.push('', `*${entry.text}*`)
         lines.push('')
       } else if (entry.target) {

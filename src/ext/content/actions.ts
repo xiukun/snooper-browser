@@ -4,6 +4,7 @@
  */
 
 import type { NoteEntry } from '../../lib/types'
+import { buildZip, collectAssets, decodeExportAsset, formatBytes } from '../../lib/export-assets'
 import { downloadBlob, getSubtitleMarkdown, getSubtitleText } from './exporter'
 import type { SessionState } from './types'
 
@@ -49,6 +50,21 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+/** True when the session carries at least one decodable image asset. */
+function sessionHasAssets(session: SessionState): boolean {
+  return collectAssets(session.notes, session.messages).length > 0
+}
+
+function downloadZip(filename: string, files: Array<{ name: string; bytes: Uint8Array }>): void {
+  const blob = new Blob([buildZip(files) as unknown as BlobPart], { type: 'application/zip' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  setTimeout(() => URL.revokeObjectURL(url), 2000)
+}
+
 export function bindActions(deps: ActionDeps) {
   const r = deps.refs
 
@@ -72,12 +88,42 @@ export function bindActions(deps: ActionDeps) {
     deps.toast('TXT 已导出', 'ok')
   })
 
-  r.exportMd.addEventListener('click', () => {
-    const text = getSubtitleMarkdown(deps.getSession())
+  r.exportMd.addEventListener('click', async () => {
+    const session = deps.getSession()
+    const text = getSubtitleMarkdown(session)
     if (!text) { deps.toast('没有内容可导出', 'err'); return }
-    downloadBlob(`snooper-notes-${Date.now()}.md`, text)
     deps.flashChip(r.exportMd)
-    deps.toast('Markdown 已导出', 'ok')
+
+    if (!sessionHasAssets(session)) {
+      downloadBlob(`snooper-notes-${Date.now()}.md`, text)
+      deps.toast('Markdown 已导出', 'ok')
+      return
+    }
+
+    // With images: single-file Markdown cannot carry them readably, and raw
+    // Base64 in `.md` is what made old exports look like garbage. Package a
+    // ZIP with `record.md` + `assets/` instead.
+    const assets = collectAssets(session.notes, session.messages)
+    const names = new Map<string, string>()
+    const files: Array<{ name: string; bytes: Uint8Array }> = []
+    let failed = 0
+    for (const asset of assets) {
+      const decoded = decodeExportAsset(asset)
+      if (decoded) {
+        names.set(asset.entryId, `assets/${asset.fileName}`)
+        files.push({ name: `assets/${asset.fileName}`, bytes: decoded.file.bytes })
+      } else {
+        failed += 1
+      }
+    }
+    const markdown = getSubtitleMarkdown(
+      session,
+      new Map([...names].map(([entryId, name]) => [entryId, name])),
+    )
+    files.unshift({ name: 'record.md', bytes: new TextEncoder().encode(markdown) })
+    downloadZip(`snooper-notes-${Date.now()}.zip`, files)
+    const note = failed > 0 ? `，${failed} 张图片无法读取已用占位说明` : ''
+    deps.toast(`已导出 ZIP（${files.length} 个文件，${formatBytes(files.reduce((sum, file) => sum + file.bytes.length, 0))}）${note}`, failed > 0 ? 'err' : 'ok')
   })
 
   // Capture the current subtitle as a note.

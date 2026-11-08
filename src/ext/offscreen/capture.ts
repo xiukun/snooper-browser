@@ -8,6 +8,7 @@
 
 import type { AppConfig } from '../../lib/providers'
 import { classifyAudioFrames } from '../../lib/audio-noise-gate'
+import { classifyPcmSpectrum } from '../../lib/audio-spectrum-gate'
 import {
   isCurrentCaptureGeneration,
   requestCaptureGeneration,
@@ -558,6 +559,25 @@ async function finalizeSegment(tabId: number) {
       variation: Number(audioFeatures.variation.toFixed(3)),
     })
     return
+  }
+  // Spectrum-shape gate: catches rhythmic music (energy varies frame to
+  // frame, so the RMS gate above passes it) by where energy sits, not how it
+  // moves. Runs on trimmed PCM before ASR; logs the ratio for live tuning.
+  const spectrum = classifyPcmSpectrum(trimmedPcm, TARGET_SAMPLE_RATE)
+  if (!spectrum.accept) {
+    reportAudioState(session, true)
+    console.info('[RTTS] dropped music-like audio:', {
+      speechBandRatio: Number(spectrum.speechBandRatio.toFixed(3)),
+      windows: spectrum.windows,
+      durationMs: Math.round((trimmedPcm.length / TARGET_SAMPLE_RATE) * 1000),
+    })
+    return
+  }
+  if (spectrum.reason === 'ok') {
+    console.info('[RTTS] spectrum ok:', {
+      speechBandRatio: Number(spectrum.speechBandRatio.toFixed(3)),
+      windows: spectrum.windows,
+    })
   }
   reportAudioState(session, false)
 

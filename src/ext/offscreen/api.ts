@@ -119,7 +119,16 @@ function cleanTranslation(value: string): string {
 /**
  * Translate text via SSE streaming.
  * Calls onDelta for each text chunk as it arrives.
+ *
+ * Stream-capability probe (AGENTS.md §2.2.6 semantics): some gateways reject
+ * stream:true with 400 invalid_field_value ("stream must be false"). Probing
+ * on every segment cost one wasted round trip per subtitle line, so the
+ * verdict is cached per baseUrl+model and stream is never attempted again
+ * for that pair. Only the gateway's explicit stream complaint caches the
+ * verdict — a generic 400 stays a one-off retry.
  */
+const streamCapabilityCache = new Map<string, boolean>()
+
 export async function translateTextStream(
   text: string,
   options: TranslateOptions,
@@ -130,49 +139,72 @@ export async function translateTextStream(
   const { provider, route } = validateRoute(options.config, 'llm')
   const promptText = buildTranslatePrompt(options, text)
   const baseUrl = provider.baseUrl.replace(/\/+$/, '')
+  const probeKey = `${baseUrl}::${route.model}`
   let fullTranslation = ''
   let hasError = false
+  let streamRejected = false
 
-  await streamSSE(
-    `${baseUrl}/chat/completions`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${provider.apiKey}`,
-        'Content-Type': 'application/json',
+  const runStream = async (): Promise<void> => {
+    await streamSSE(
+      `${baseUrl}/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${provider.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: route.model,
+          messages: [
+            {
+              role: 'user',
+              content: [{ type: 'text', text: promptText }],
+            },
+          ],
+          temperature: 0.12,
+          max_tokens: 512,
+          stream: true,
+        }),
       },
-      body: JSON.stringify({
-        model: route.model,
-        messages: [
-          {
-            role: 'user',
-            content: [{ type: 'text', text: promptText }],
-          },
-        ],
-        temperature: 0.12,
-        max_tokens: 512,
-        stream: true,
-      }),
-    },
-    {
-      onDelta: (delta) => {
-        fullTranslation += delta
-        if (onDelta) onDelta(delta)
+      {
+        onDelta: (delta) => {
+          fullTranslation += delta
+          if (onDelta) onDelta(delta)
+        },
+        onDone: () => {},
+        onError: (err) => {
+          console.warn('[RTTS] Translation SSE failed, falling back:', err.message)
+          hasError = true
+          if (/stream must be false|invalid_field_value/i.test(err.message)) {
+            streamRejected = true
+          }
+        },
+        allowNonStreamingFallback: true,
       },
-      onDone: () => {},
-      onError: (err) => {
-        console.warn('[RTTS] Translation SSE failed, falling back:', err.message)
-        hasError = true
-      },
-      allowNonStreamingFallback: true,
-    },
-  )
+    )
+  }
 
-  if (hasError && !fullTranslation) {
-    fullTranslation = await translateTextSync(text, options)
-    if (onDelta && fullTranslation) {
-      onDelta(fullTranslation)
+  const runSync = async (): Promise<void> => {
+    const sync = await translateTextSync(text, options)
+    if (sync) {
+      fullTranslation = sync
+      if (onDelta) onDelta(sync)
     }
+  }
+
+  // Known non-streaming gateway: skip the doomed attempt entirely.
+  if (streamCapabilityCache.get(probeKey) === false) {
+    await runSync()
+    return cleanTranslation(fullTranslation)
+  }
+
+  await runStream()
+  if (streamRejected) {
+    streamCapabilityCache.set(probeKey, false)
+    console.info('[RTTS] gateway rejects stream; cached sync-only for', probeKey)
+  }
+  if (hasError && !fullTranslation) {
+    await runSync()
   }
 
   return cleanTranslation(fullTranslation)

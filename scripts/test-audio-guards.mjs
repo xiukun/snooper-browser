@@ -228,6 +228,29 @@ const AAC_FRAME_MS = (FRAME / SAMPLE_RATE) * 1000;
   check('speech with pauses kept', speech.accept, true);
 }
 
+/* ---------- 3b. Counting-sequence text filter ---------- */
+{
+  // The observed music hallucination: a comma/顿号 list marching upward.
+  const counter = '一、二、三、四、五、六、七、八、九、十、十一、十二、十三、十四、十五、十六、十七、十八、十九、二十';
+  check('zh counting list rejected', isLikelyAsrHallucination(counter), true);
+  check('zh long counting list rejected', isLikelyAsrHallucination(
+    '三、五十四、五十五、五十六、五十七、五十八、五十九、六十、六十一、六十二、六十三、六十四',
+  ), true);
+  check('arabic counting list rejected', isLikelyAsrHallucination(
+    '1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12',
+  ), true);
+
+  // Real sentences that merely contain numbers must pass.
+  check('sentence with a few numbers passes', isLikelyAsrHallucination(
+    '我们今天讲第三章，主要有五个要点，考试时间是四月二十六号',
+  ), false);
+  check('short number run passes', isLikelyAsrHallucination('一二三四五六七'), false);
+  check('phone-number-like line passes', isLikelyAsrHallucination(
+    '可以拨打 139 1099 8888 找张经理咨询',
+  ), false);
+  check('empty passes through other checks', isLikelyAsrHallucination(''), true);
+}
+
 const silenceFrame = () => new Int16Array(FRAME);
 const speechFrame = () => {
   const frame = new Int16Array(FRAME);

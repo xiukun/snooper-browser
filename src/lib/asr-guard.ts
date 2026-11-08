@@ -57,6 +57,28 @@ const NO_CONTENT = /^(?:[0-9\s.,，、:：;；!！?？'"“”‘’()（）\-�
 const DEGENERATE_RUN = /(.)\1{7,}/u;
 
 /**
+ * Whisper counting hallucination (observed: "一、二、三…一百六十二、一百" over
+ * music, openai/whisper#1873 "123456789" is the ASCII cousin). The signature
+ * is not a fixed phrase — it is *density of number tokens* inside one
+ * segment. A real sentence can mention several numbers; it does not chain
+ * dozens of comma-separated counting units as a single subtitle line.
+ */
+function isCountingSequence(text: string): boolean {
+  const t = normalize(text);
+  if (!t) return false;
+  // Split on list separators; count tokens that are purely a number.
+  const tokens = t.split(/[、,，\s.。;；!！?？…]+/).filter(Boolean);
+  if (tokens.length < 8) return false;
+  let numeric = 0;
+  for (const token of tokens) {
+    if (/^[0-9〇零一二两三四五六七八九十百千万]+$/.test(token)) numeric += 1;
+  }
+  // 8+ tokens of which ≥ 85% are bare numbers: nobody speaks a pure list of
+  // 8 numbers as one subtitle segment; a counter does.
+  return numeric >= 8 && numeric / tokens.length >= 0.85;
+}
+
+/**
  * whisper-guard L4: a short unit looped several times is a decoder loop, not
  * speech. The unit is 2–4 characters ("加油加油加油", "xyzxyzxyzxyz"); a
  * single repeated char is already covered by DEGENERATE_RUN. All punctuation
@@ -130,6 +152,7 @@ export function isLikelyAsrHallucination(text: string): boolean {
   if (STOCK_LINES.some((re) => re.test(bare))) return true;
   if (DEGENERATE_RUN.test(t)) return true;
   if (isCharacterLoop(t)) return true;
+  if (isCountingSequence(t)) return true;
 
   return false;
 }

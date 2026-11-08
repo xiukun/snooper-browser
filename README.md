@@ -113,6 +113,36 @@ Both are **development conveniences only**. Regular users add providers in the a
 
 > Keys are written to `localStorage` and requests go straight from your browser to the provider you configured. If you deploy this publicly and need to hide the key, put a proxy in front of it.
 
+### Get a free MOSS API key
+
+The built-in MOSS protocol works with a key from the official platform:
+
+1. Open <https://platform.moss.cn/> and register or sign in.
+2. Create an API key in the console and copy it.
+3. Keep the key private. snooper stores it only in the current browser profile.
+
+### Initial setup
+
+![Provider settings: base URL, API key, protocol, and capability routes](./docs/screenshots/config-key.png)
+
+1. Open snooper: click the extension icon on a normal web page, or run the app.
+2. Click **开始配置** in the side panel, or the gear button in the page toolbar.
+3. Add a provider:
+   - **Name**: `MOSS`
+   - **Base URL**: `https://api.mosi.cn/v1`
+   - **Protocol**: `MOSS native`
+   - **API key**: paste the key from <https://platform.moss.cn/>
+4. Click **拉取模型** to call `GET /models`. If the endpoint does not expose it,
+   type the model ids manually.
+5. Assign capability routes:
+   - **LLM**: chat, vision, and subtitle translation.
+   - **Audio**: speech recognition (the listening half of the subtitle pipeline).
+   - **Video / Image**: optional low-latency frame understanding and image
+     generation.
+6. Click **保存**. Then start transcription on a page that is playing audio.
+7. If no key is configured, snooper refuses to start and shows
+   `尚未配置 API Key`; open the settings and fill the key first.
+
 ## Browser extension
 
 The Manifest V3 extension adds an in-page toolbar and a side panel to Chrome and Edge 116+.
@@ -150,6 +180,62 @@ The ZIP is intentionally readable and contains no encrypted or remotely loaded c
 4. Start microphone or tab-audio transcription. Grant the browser capture permission when prompted.
 5. Use the in-page toolbar to pause, stop, save notes, export subtitles, or ask the configured model about the current page.
 6. Open the side panel to review notes and transcription history, export Markdown, delete records, or configure optional Obsidian sync.
+
+### Screenshots, notes, and citations
+
+The page toolbar keeps screenshot and note actions in its **…** menu:
+
+1. **Take a screenshot**: click **页面截图**. The current tab frame is saved as
+   a note entry, including while recording. The preview can be downloaded or
+   inserted.
+2. **Save a subtitle line**: click **记入笔记** to append the current subtitle to
+   the active note.
+3. **Review notes**: open the extension side panel and switch to **笔记历史**.
+   Each card shows the title, entry count, a short preview, and the export and
+   delete actions.
+4. **Cite a note image in chat**: open the companion drawer, click **引用**, pick
+   a screenshot from the picker (up to 4 images), then ask the question. The
+   image is sent only when you press send.
+5. **Export**: **导出 Markdown** in the page toolbar exports the transcript and
+   notes. When the session contains images the export is a ZIP containing
+   `record.md` plus an `assets/` folder with the decoded image files — Markdown
+   references them by relative path, so the archive reads correctly in Obsidian
+   and any editor. Without images you get a plain `.md`. Each note card in the
+   side panel exports the same way.
+
+### Transcription history
+
+Every finished capture is stored locally with its full subtitle list (original,
+translation, timestamps; up to 500 lines per record, 100 records). Open the
+side panel → **历史** to expand a record, read the transcript, copy it, export
+it as Markdown, or delete it. Records saved by older versions only contain
+counts and are marked accordingly.
+
+### Obsidian sync (optional)
+
+snooper writes Markdown through the **Local REST API** community plugin. The
+plugin runs inside Obsidian and exposes the vault on localhost; it is not a
+snooper-specific plugin.
+
+1. Install Obsidian desktop and open the vault you want to write to.
+2. Open **Settings → Community plugins**, turn off **Restricted mode**, click
+   **Browse**, install **Local REST API**, then enable it.
+3. Open the plugin settings and copy the **API key**.
+4. In snooper, open the side panel → **Obsidian** and fill in:
+   - **启用 Obsidian 同步**: checked
+   - **协议**: `HTTP` (recommended; Chrome rejects the plugin's self-signed
+     HTTPS certificate on port 27124)
+   - **端口**: `27123`
+   - **笔记目录**: `snooper-notes`, or any folder that already exists in the vault
+   - **API Key**: paste the plugin token; the `Bearer ` prefix is optional
+5. Click **测试连接**. A green `连接成功（HTTP 27123）` means the vault is
+   reachable.
+6. Click **保存设置**.
+7. In the page toolbar, open **… → 发送到 Obsidian**. Screenshots in the note are
+   first uploaded as real image files in the vault, then the Markdown document is
+   written to the configured folder.
+8. If the test fails, confirm Obsidian is running, the plugin is enabled, the
+   port matches, and no firewall blocks localhost.
 
 ### Permissions and data flow
 

@@ -50,11 +50,9 @@ export const PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
     #rtts-pane-notes { padding: 12px; gap: 10px; }
     #rtts-notes-list {
       flex: 1; overflow-y: auto;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.1) transparent;
     }
     #rtts-notes-list::-webkit-scrollbar { width: 4px; }
-    #rtts-notes-list::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.15); }
+    #rtts-notes-list::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background: rgba(255,255,255,0.15); }
     #rtts-notes-empty {
       font-size: 12px; color: rgba(255,255,255,0.35);
       text-align: center; padding: 28px 8px;
@@ -147,13 +145,11 @@ export const PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
       color: #fff; font-size: 13px; line-height: 1.5;
       white-space: pre-wrap; word-break: break-word;
       outline: none;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.14) transparent;
     }
     #rtts-chat-editor::-webkit-scrollbar,
     #rtts-notes-editor::-webkit-scrollbar { width: 4px; }
     #rtts-chat-editor::-webkit-scrollbar-thumb,
-    #rtts-notes-editor::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.16); }
+    #rtts-notes-editor::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background: rgba(255,255,255,0.16); }
     #rtts-chat-editor:empty::before,
     #rtts-notes-editor:empty::before {
       content: attr(data-placeholder);
@@ -193,8 +189,6 @@ export const PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
       border-radius: 12px;
       box-shadow: 0 18px 44px rgba(0,0,0,0.6);
       z-index: 2147483646;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.16) transparent;
     }
     .rtts-cite-popover[hidden] { display: none; }
     .rtts-cite-head {
@@ -293,8 +287,6 @@ export const PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
     .rtts-history-head button:hover { color: #fff; }
     .rtts-history-list {
       overflow-y: auto; padding: 6px;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.16) transparent;
     }
     .rtts-history-item {
       display: flex; align-items: stretch; gap: 4px;

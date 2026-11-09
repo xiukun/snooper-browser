@@ -50,11 +50,9 @@
     #rtts-pane-notes { padding: 12px; gap: 10px; }
     #rtts-notes-list {
       flex: 1; overflow-y: auto;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.1) transparent;
     }
     #rtts-notes-list::-webkit-scrollbar { width: 4px; }
-    #rtts-notes-list::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.15); }
+    #rtts-notes-list::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background: rgba(255,255,255,0.15); }
     #rtts-notes-empty {
       font-size: 12px; color: rgba(255,255,255,0.35);
       text-align: center; padding: 28px 8px;
@@ -147,13 +145,11 @@
       color: #fff; font-size: 13px; line-height: 1.5;
       white-space: pre-wrap; word-break: break-word;
       outline: none;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.14) transparent;
     }
     #rtts-chat-editor::-webkit-scrollbar,
     #rtts-notes-editor::-webkit-scrollbar { width: 4px; }
     #rtts-chat-editor::-webkit-scrollbar-thumb,
-    #rtts-notes-editor::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.16); }
+    #rtts-notes-editor::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background: rgba(255,255,255,0.16); }
     #rtts-chat-editor:empty::before,
     #rtts-notes-editor:empty::before {
       content: attr(data-placeholder);
@@ -193,8 +189,6 @@
       border-radius: 12px;
       box-shadow: 0 18px 44px rgba(0,0,0,0.6);
       z-index: 2147483646;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.16) transparent;
     }
     .rtts-cite-popover[hidden] { display: none; }
     .rtts-cite-head {
@@ -293,8 +287,6 @@
     .rtts-history-head button:hover { color: #fff; }
     .rtts-history-list {
       overflow-y: auto; padding: 6px;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.16) transparent;
     }
     .rtts-history-item {
       display: flex; align-items: stretch; gap: 4px;
@@ -694,6 +686,24 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     :host { all: initial; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Segoe UI", Roboto, sans-serif; color: #f0f2f5; z-index: 2147483647; }
 
+    /* Scrollbars live inside the closed shadow root, so the host page's CSS
+       cannot theme them. Without these rules the UA paints the page's light
+       scrollbar through the dark drawer. Keep WebKit pseudo-elements only:
+       scrollbar-width/scrollbar-color take precedence on Chrome 121+ and
+       would replace the 8px rail with the platform "thin" width. */
+    *::-webkit-scrollbar { width: 8px; height: 8px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    *::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.14);
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    *::-webkit-scrollbar-thumb:hover {
+      background: rgba(255,255,255,0.24);
+      background-clip: padding-box;
+    }
+
     /* === Draggable Horizontal Toolbar === */
     #rtts-bar {
       position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
@@ -894,12 +904,10 @@
       z-index: 2147483642;
       opacity: 0; visibility: hidden; transform: translateY(-6px) scale(0.98);
       transition: opacity 0.14s ease, transform 0.14s ease, visibility 0.14s;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.14) transparent;
     }
     #rtts-menu.open { opacity: 1; visibility: visible; transform: none; }
     #rtts-menu::-webkit-scrollbar { width: 4px; }
-    #rtts-menu::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.16); }
+    #rtts-menu::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background: rgba(255,255,255,0.16); }
 
     .rtts-menu-head {
       padding: 7px 9px 4px;
@@ -1010,13 +1018,11 @@
     #rtts-sub-scroll {
       overflow-y: auto; flex: 1;
       pointer-events: auto;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.1) transparent;
       padding: 4px 0;
       min-height: 0;
     }
     #rtts-sub-scroll::-webkit-scrollbar { width: 4px; }
-    #rtts-sub-scroll::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.15); }
+    #rtts-sub-scroll::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background: rgba(255,255,255,0.15); }
     #rtts-sub-resize {
       position: absolute; right: 2px; bottom: 2px;
       width: 18px; height: 18px; z-index: 2;
@@ -2643,11 +2649,45 @@
     });
   }
 
+  // src/ext/content/host-scrollbar.ts
+  var STYLE_ID = "rtts-host-scrollbar";
+  function setHostScrollbarTheme(active) {
+    const existing = document.getElementById(STYLE_ID);
+    if (!active) {
+      existing?.remove();
+      return;
+    }
+    if (existing) return;
+    const gutter = window.innerWidth - document.documentElement.clientWidth;
+    if (gutter <= 0) return;
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = `
+    html::-webkit-scrollbar { background: rgba(10,10,16,0.9); }
+    html::-webkit-scrollbar-track { background: rgba(10,10,16,0.9); }
+    /* The thumb stays invisible so the strip reads as part of the drawer
+       instead of a second scrollbar directly beside the drawer's own rail.
+       Hovering the strip still reveals it, so dragging keeps working. */
+    html::-webkit-scrollbar-thumb {
+      background: transparent;
+      border: 2px solid transparent;
+      border-radius: 999px;
+      background-clip: padding-box;
+    }
+    html::-webkit-scrollbar-thumb:hover {
+      background: rgba(255,255,255,0.22);
+      background-clip: padding-box;
+    }
+  `;
+    (document.head ?? document.documentElement).appendChild(style);
+  }
+
   // src/ext/content/drawer.ts
   function createDrawer(deps) {
     const r = deps.refs;
     let isOpen = false;
     let tab = "chat";
+    setHostScrollbarTheme(false);
     function syncButtons() {
       r.chatButton.classList.toggle("active", isOpen && tab === "chat");
       r.notesButton.classList.toggle("active", isOpen && tab === "notes");
@@ -2669,6 +2709,7 @@
     function open(next) {
       isOpen = true;
       r.drawer.classList.add("open");
+      setHostScrollbarTheme(true);
       setTab(next);
       if (next === "notes") r.notesEditor.focus();
       else r.chatEditor.focus();
@@ -2676,6 +2717,7 @@
     function close() {
       isOpen = false;
       r.drawer.classList.remove("open");
+      setHostScrollbarTheme(false);
       deps.setCiteOpen(false);
       syncButtons();
     }

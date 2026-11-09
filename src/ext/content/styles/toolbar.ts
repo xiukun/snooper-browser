@@ -4,6 +4,24 @@ export const TOOLBAR_CSS = `
     * { box-sizing: border-box; margin: 0; padding: 0; }
     :host { all: initial; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Segoe UI", Roboto, sans-serif; color: #f0f2f5; z-index: 2147483647; }
 
+    /* Scrollbars live inside the closed shadow root, so the host page's CSS
+       cannot theme them. Without these rules the UA paints the page's light
+       scrollbar through the dark drawer. Keep WebKit pseudo-elements only:
+       scrollbar-width/scrollbar-color take precedence on Chrome 121+ and
+       would replace the 8px rail with the platform "thin" width. */
+    *::-webkit-scrollbar { width: 8px; height: 8px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    *::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.14);
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    *::-webkit-scrollbar-thumb:hover {
+      background: rgba(255,255,255,0.24);
+      background-clip: padding-box;
+    }
+
     /* === Draggable Horizontal Toolbar === */
     #rtts-bar {
       position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
@@ -204,12 +222,10 @@ export const TOOLBAR_CSS = `
       z-index: 2147483642;
       opacity: 0; visibility: hidden; transform: translateY(-6px) scale(0.98);
       transition: opacity 0.14s ease, transform 0.14s ease, visibility 0.14s;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.14) transparent;
     }
     #rtts-menu.open { opacity: 1; visibility: visible; transform: none; }
     #rtts-menu::-webkit-scrollbar { width: 4px; }
-    #rtts-menu::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.16); }
+    #rtts-menu::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background: rgba(255,255,255,0.16); }
 
     .rtts-menu-head {
       padding: 7px 9px 4px;
@@ -320,13 +336,11 @@ export const TOOLBAR_CSS = `
     #rtts-sub-scroll {
       overflow-y: auto; flex: 1;
       pointer-events: auto;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.1) transparent;
       padding: 4px 0;
       min-height: 0;
     }
     #rtts-sub-scroll::-webkit-scrollbar { width: 4px; }
-    #rtts-sub-scroll::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(255,255,255,0.15); }
+    #rtts-sub-scroll::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background: rgba(255,255,255,0.15); }
     #rtts-sub-resize {
       position: absolute; right: 2px; bottom: 2px;
       width: 18px; height: 18px; z-index: 2;

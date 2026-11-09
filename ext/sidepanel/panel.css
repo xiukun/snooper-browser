@@ -37,6 +37,28 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Same scrollbar language as the app shell: 8px, transparent track, subtle
+   thumb. WebKit pseudo-elements only — scrollbar-width/scrollbar-color take
+   precedence on Chrome 121+ and would override the 8px rail with the
+   platform "thin" width. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  background-clip: padding-box;
+}
+
 .panel-container {
   display: flex;
   flex-direction: column;

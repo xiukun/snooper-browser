@@ -2,6 +2,8 @@
  * Unified side drawer: chat and notes tabs share one panel.
  */
 
+import { setHostScrollbarTheme } from './host-scrollbar'
+
 export type DrawerTab = 'chat' | 'notes'
 
 export interface DrawerRefs {
@@ -28,6 +30,9 @@ export function createDrawer(deps: DrawerDeps) {
   let isOpen = false
   let tab: DrawerTab = 'chat'
 
+  // Drop a scrollbar skin left behind by a previous content-script instance.
+  setHostScrollbarTheme(false)
+
   function syncButtons() {
     r.chatButton.classList.toggle('active', isOpen && tab === 'chat')
     r.notesButton.classList.toggle('active', isOpen && tab === 'notes')
@@ -51,6 +56,7 @@ export function createDrawer(deps: DrawerDeps) {
   function open(next: DrawerTab) {
     isOpen = true
     r.drawer.classList.add('open')
+    setHostScrollbarTheme(true)
     setTab(next)
     if (next === 'notes') r.notesEditor.focus()
     else r.chatEditor.focus()
@@ -59,6 +65,7 @@ export function createDrawer(deps: DrawerDeps) {
   function close() {
     isOpen = false
     r.drawer.classList.remove('open')
+    setHostScrollbarTheme(false)
     deps.setCiteOpen(false)
     syncButtons()
   }

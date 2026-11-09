@@ -1199,6 +1199,25 @@
     }
     #rtts-sub-status.hidden { display: none; }
 
+    /* === ADR-040: listening affordance during audio accumulation === */
+    #rtts-sub-listening {
+      max-width: 760px; margin: 2px auto 0;
+      font-size: 11px; letter-spacing: 0.02em;
+      color: rgba(255,255,255,0.4);
+      text-shadow: 0 1px 6px rgba(0,0,0,0.7);
+      text-align: center;
+      animation: listening-pulse 2.2s ease-in-out infinite;
+    }
+    #rtts-sub-listening.hidden { display: none; }
+    #rtts-sub-listening .listening-dots { letter-spacing: 0.15em; }
+    @keyframes listening-pulse {
+      0%, 100% { opacity: 0.35; }
+      50% { opacity: 0.8; }
+    }
+    /* Compact/auto-idle collapse shows at most the current line. */
+    #rtts-sub-box.compact #rtts-sub-listening,
+    #rtts-sub-box.auto-idle #rtts-sub-listening { display: none; }
+
     `;
 
   // src/ext/content/styles/index.ts
@@ -1329,6 +1348,9 @@
           <span class="stream-cursor"></span>
           <span class="stream-label" id="rtts-streaming-label">\u7FFB\u8BD1\u4E2D</span>
         </div>
+        <!-- ADR-040: shown while audio accumulates and the panel already has
+             content; the empty-panel case is covered by subPlaceholder. -->
+        <div id="rtts-sub-listening" class="hidden" aria-live="off">\u8046\u542C\u4E2D<span class="listening-dots">\u2026</span></div>
       </div>
       <div id="rtts-sub-placeholder">\u70B9\u51FB\u300C\u5F55\u97F3\u300D\u5F00\u59CB\u5B9E\u65F6\u8F6C\u5199</div>
       <div id="rtts-sub-status" class="hidden" aria-live="polite">\u89C6\u9891\u5DF2\u6682\u505C\u6216\u9759\u97F3 \xB7 \u7B49\u5F85\u97F3\u9891</div>
@@ -2586,6 +2608,8 @@
         r.subStatus.classList.toggle("hidden", !silent);
         r.subPlaceholder.style.display = hasContent || silent ? "none" : "";
         r.subPlaceholder.textContent = session.isDemoMode ? "\u6F14\u793A\u6A21\u5F0F\u542F\u52A8\u4E2D\u2026" : "\u6B63\u5728\u8046\u542C\u2026";
+        const listening = s === "running" && !session.isDemoMode && !silent && hasContent && !streaming;
+        r.subListening.classList.toggle("hidden", !listening);
         if (s !== "running" && s !== "starting") {
           markSubtitleActivity();
         }
@@ -2651,6 +2675,7 @@
         r.subPlaceholder.textContent = "\u70B9\u51FB\u300C\u5F55\u97F3\u300D\u5F00\u59CB\u5B9E\u65F6\u8F6C\u5199";
         r.subRows.textContent = "";
         clearStreaming();
+        r.subListening.classList.add("hidden");
         r.subBox.classList.add("hidden");
         r.subBox.classList.remove("auto-idle");
       }
@@ -4717,6 +4742,7 @@ ${context}`;
       subRows: shadow.getElementById("rtts-sub-rows"),
       subPlaceholder: shadow.getElementById("rtts-sub-placeholder"),
       subStatus: shadow.getElementById("rtts-sub-status"),
+      subListening: shadow.getElementById("rtts-sub-listening"),
       copyBtn: shadow.getElementById("rtts-copy-btn"),
       exportTxtBtn: shadow.getElementById("rtts-export-txt-btn"),
       exportMdBtn: shadow.getElementById("rtts-export-md-btn"),

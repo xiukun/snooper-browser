@@ -517,4 +517,23 @@ export const TOOLBAR_CSS = `
     }
     #rtts-sub-status.hidden { display: none; }
 
+    /* === ADR-040: listening affordance during audio accumulation === */
+    #rtts-sub-listening {
+      max-width: 760px; margin: 2px auto 0;
+      font-size: 11px; letter-spacing: 0.02em;
+      color: rgba(255,255,255,0.4);
+      text-shadow: 0 1px 6px rgba(0,0,0,0.7);
+      text-align: center;
+      animation: listening-pulse 2.2s ease-in-out infinite;
+    }
+    #rtts-sub-listening.hidden { display: none; }
+    #rtts-sub-listening .listening-dots { letter-spacing: 0.15em; }
+    @keyframes listening-pulse {
+      0%, 100% { opacity: 0.35; }
+      50% { opacity: 0.8; }
+    }
+    /* Compact/auto-idle collapse shows at most the current line. */
+    #rtts-sub-box.compact #rtts-sub-listening,
+    #rtts-sub-box.auto-idle #rtts-sub-listening { display: none; }
+
     `;

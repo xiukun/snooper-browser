@@ -124,6 +124,9 @@ export const CONTENT_HTML = `
           <span class="stream-cursor"></span>
           <span class="stream-label" id="rtts-streaming-label">翻译中</span>
         </div>
+        <!-- ADR-040: shown while audio accumulates and the panel already has
+             content; the empty-panel case is covered by subPlaceholder. -->
+        <div id="rtts-sub-listening" class="hidden" aria-live="off">聆听中<span class="listening-dots">…</span></div>
       </div>
       <div id="rtts-sub-placeholder">点击「录音」开始实时转写</div>
       <div id="rtts-sub-status" class="hidden" aria-live="polite">视频已暂停或静音 · 等待音频</div>

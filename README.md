@@ -38,6 +38,9 @@ video is paused or silent.
   Switching applies to the next line.
 - Non-streaming transcription requests (`response_format=json`,
   `temperature=0`) verified against the MOSS gateway; translation streams via SSE.
+- Segments finalize on short silence (350 ms after at least 600 ms of audio),
+  so lines land close to the speech; while audio accumulates the panel shows
+  a quiet listening row instead of going blank.
 - Built-in demo stream, so the subtitle animation can be reviewed without any key.
 
 ### Chat

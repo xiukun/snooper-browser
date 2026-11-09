@@ -364,7 +364,10 @@ export const TOOLBAR_CSS = `
     #rtts-sub-box.compact .sub-row.current,
     #rtts-sub-box.compact #rtts-streaming-row,
     #rtts-sub-box.auto-idle .sub-row.current,
-    #rtts-sub-box.auto-idle #rtts-streaming-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #rtts-sub-box.auto-idle #rtts-streaming-row { white-space: nowrap; overflow: hidden; }
+    /* text-overflow must live on the grid item, not the grid container. */
+    #rtts-sub-box.compact .sub-row.current .sub-trans,
+    #rtts-sub-box.auto-idle .sub-row.current .sub-trans { overflow: hidden; text-overflow: ellipsis; }
     #rtts-sub-box.compact .sub-source,
     #rtts-sub-box.compact .stream-label,
     #rtts-sub-box.auto-idle .sub-source,
@@ -375,47 +378,78 @@ export const TOOLBAR_CSS = `
     .sub-row {
       transition: opacity 0.25s, font-size 0.25s;
     }
+    /* ADR-038: the panel can be dragged arbitrarily wide; the reading column
+       stays capped and centered instead of stretching into a three-column
+       table. */
+    #rtts-sub-rows { max-width: 760px; margin: 0 auto; }
+    #rtts-streaming-row { max-width: 760px; margin: 0 auto; }
+
+    .sub-row.history {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr);
+      column-gap: 8px;
+      align-items: start;
+      font-size: 13px; font-weight: 400; color: rgba(255,255,255,0.8); line-height: 1.4;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+      padding: 3px 8px;
+      border-radius: 8px;
+      transition: background 0.15s ease;
+    }
+    .sub-row.history:not(.has-time) { grid-template-columns: minmax(0, 1fr); }
+    .sub-row.history:hover { background: rgba(255,255,255,0.04); }
+    .sub-row.history .sub-trans {
+      grid-column: 2;
+      width: 100%; max-width: 66ch; min-width: 0;
+      margin: 0 auto; text-align: center;
+    }
+    .sub-row.history:not(.has-time) .sub-trans { grid-column: 1; }
+    .sub-row.history .sub-source {
+      grid-column: 2;
+      display: block; width: 100%; max-width: 66ch;
+      margin: 2px auto 0; text-align: center;
+      font-size: 11.5px; color: rgba(255,255,255,0.52);
+      line-height: 1.35;
+    }
+    .sub-row.history:not(.has-time) .sub-source { grid-column: 1; }
+
     .sub-row.current {
       font-size: 16px; font-weight: 500; color: rgba(255,255,255,0.97); line-height: 1.5;
       text-shadow: 0 1px 3px rgba(0,0,0,0.85);
-      padding: 3px 0;
+      padding: 4px 8px;
     }
     .sub-row.current .sub-source {
       font-size: 13px; font-weight: 400; color: rgba(255,255,255,0.74); display: block;
       margin-top: 3px; line-height: 1.45;
     }
-    .sub-row.history {
-      font-size: 13px; font-weight: 400; color: rgba(255,255,255,0.8); line-height: 1.4;
-      text-shadow: 0 1px 2px rgba(0,0,0,0.8);
-      padding: 2px 0;
-    }
-    .sub-row.history .sub-source {
-      display: block; font-size: 11.5px; color: rgba(255,255,255,0.52);
-      margin-top: 1px; line-height: 1.35;
-    }
 
-    /* === Seek chip (ADR-034): click a video time to jump there === */
-    .sub-row.history { display: flex; align-items: flex-start; gap: 8px; }
-    .sub-row.history .sub-trans { flex: 1; min-width: 0; }
+    /* === Seek time gutter (ADR-034, restyled by ADR-038) === */
     .sub-time-chip {
-      flex-shrink: 0;
-      font: inherit; font-size: 11px; line-height: 1.2;
+      grid-column: 1;
+      justify-self: end;
+      align-self: start;
+      appearance: none;
+      font: inherit; font-size: 10.5px; line-height: 1.6;
       font-variant-numeric: tabular-nums;
-      color: rgba(255,255,255,0.62);
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.14);
-      border-radius: 6px;
-      padding: 1px 6px;
-      margin-top: 1px;
+      color: rgba(255,255,255,0.38);
+      background: none;
+      border: 0;
+      border-radius: 4px;
+      padding: 0 2px;
+      margin: 0;
       cursor: pointer;
       user-select: none;
       -webkit-user-select: none;
-      transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+      transition: color 0.15s ease;
     }
-    .sub-time-chip:hover { color: #fff; background: rgba(124,92,255,0.28); border-color: rgba(124,92,255,0.5); }
-    .sub-time-chip:focus-visible { outline: 1px solid rgba(124,92,255,0.7); outline-offset: 1px; }
-    .sub-row.seek-ok .sub-time-chip { color: #9ff5ea; background: rgba(62,230,213,0.16); border-color: rgba(62,230,213,0.4); }
-    .sub-row.seek-fail .sub-time-chip { color: #ffb3ad; background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.4); }
+    .sub-row:hover .sub-time-chip { color: rgba(255,255,255,0.78); }
+    .sub-row.current .sub-time-chip { color: rgba(255,255,255,0.6); }
+    .sub-time-chip:focus-visible { color: #fff; outline: 1px solid rgba(124,92,255,0.7); outline-offset: 2px; }
+    .sub-row.seek-ok .sub-time-chip { color: #9ff5ea; }
+    .sub-row.seek-fail .sub-time-chip { color: #ffb3ad; }
+
+    /* ADR-039: fillers stay in the record but stop competing with content. */
+    .sub-row.filler .sub-trans { color: rgba(255,255,255,0.5); }
+    .sub-row.filler .sub-source { color: rgba(255,255,255,0.34); }
 
     /* === ADR-036: [mm:ss] evidence stamps inside chat answers === */
     .chat-time-ref {

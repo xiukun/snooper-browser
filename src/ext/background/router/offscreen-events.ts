@@ -21,6 +21,7 @@ import {
   finalizeSessionTranscript,
 } from '../transcript-store'
 import { resolveVideoTimeAt } from '../video-clock'
+import { insertByStart } from '../../../lib/subtitle-order'
 
 /**
  * The last line of an explicit stop arrives after the background has already
@@ -159,7 +160,9 @@ export function registerOffscreenEventRouter(): void {
           target: message.target || '',
           latency: message.latency || 0,
         }
-        s.subtitles.push(entry)
+        // ADR-038: in-flight segments may complete out of order. Insert by
+        // segment start so the overlay and export read chronologically.
+        insertByStart(s.subtitles, entry)
 
         // Keep the live window bounded for rendering. The full session is
         // appended to transcript-store and is never truncated.

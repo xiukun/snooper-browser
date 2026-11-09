@@ -25,7 +25,14 @@ const bundle = (entry, name) => {
   return out;
 };
 
-const { isLikelyAsrHallucination, isLikelyAsrHallucinationSequence, isLikelyAsrRepeatLoop } = await import(
+const {
+  isLikelyAsrHallucination,
+  isLikelyAsrHallucinationSequence,
+  isLikelyAsrRepeatLoop,
+  isLikelyShortRepeatLoop,
+  isLikelyAsrLanguageMismatch,
+  isFillerOnly,
+} = await import(
   pathToFileURL(bundle('src/lib/asr-guard.ts', 'asr-guard.mjs')).href
 );
 const {
@@ -187,16 +194,55 @@ for (const text of realLines) {
   check('longer real phrase with repetition passes', isLikelyAsrHallucination('我们一起加油，一起努力'), false);
 }
 
-// Exact-repeat loop: the repeat rule is restricted to the generic stock
-// lines — arbitrary short repeats ("你好吗" twice) are real echo/chant
-// dialogue and must pass.
+// Exact-repeat loop: the stock list is a starting point, not the definition.
+// ADR-039: any short line that repeats within the last few segments is a
+// decoder loop — the reported screenshot looped "Speak up." with no stock
+// phrase involved at all.
 {
   const h1 = [];
-  check('echo dialogue: 你好吗 twice passes', isLikelyAsrHallucinationSequence(h1, '你好吗'), false);
-  check('echo dialogue: repeated 你好吗 not a loop', isLikelyAsrRepeatLoop(['你好吗'], '你好吗。'), false);
+  check('echo dialogue: 你好吗 twice drops (ADR-039)', isLikelyAsrRepeatLoop(['你好吗'], '你好吗。'), true);
+  check('echo dialogue: 你好吗 alone passes', isLikelyAsrRepeatLoop([], '你好吗'), false);
   check('echo dialogue: long line passes alone', isLikelyAsrHallucinationSequence([], '今天我们要讲的内容是关于浏览器扩展开发的一些基本概念和最佳实践'), false);
   check('exact repeat: thank you loop confirmed', isLikelyAsrRepeatLoop(['Thank you.'], 'Thank you!'), true);
   check('exact repeat: zh 谢谢 loop confirmed', isLikelyAsrRepeatLoop(['谢谢。'], '谢谢！'), true);
+
+  // The reported red box: "Speak up." → "Keep it up." → "Speak up." with no
+  // blacklisted phrase. The window contains only the last three segments.
+  check('reported loop: first Speak up accepted', isLikelyAsrRepeatLoop([], 'Speak up.'), false);
+  check('reported loop: Speak up after Ah/Hmm/Keep it up drops', isLikelyAsrRepeatLoop(['Ah.', 'Hmm.', 'Speak up.', 'Keep it up.'], 'Speak up.'), true);
+  check('reported loop: long real line evicts the loop', isLikelyAsrRepeatLoop(['Speak up.', '今天我们先看第一个例子', '这句话比较长，讲的是整件事情的来龙去脉', '然后继续往下看', '最后再总结一下'], 'Speak up.'), false);
+
+  // The source fragments differ ("你快" / "快快") but the translator emits the
+  // same short English line. The generic short-repeat rule is reused on the
+  // translated side, where equality is visible.
+  check('translation repeat: collapsed fragments', isLikelyShortRepeatLoop(['Speak up.'], 'Speak up!'), true);
+  check('translation repeat: distinct short lines', isLikelyShortRepeatLoop(['Speak up.'], '加油。'), false);
+  check('translation repeat: long distinct line', isLikelyShortRepeatLoop(['Speak up.'], 'I will take the hit for you.'), false);
+  check('translation repeat: empty window', isLikelyShortRepeatLoop([], 'Speak up.'), false);
+}
+
+// Language/script mismatch: a gateway that ignores `language` returns another
+// script. Explicit languages only; `auto` never guesses.
+{
+  check('lang mismatch: zh session + English sentence', isLikelyAsrLanguageMismatch('Speak up, please.', 'zh'), true);
+  check('lang mismatch: zh session + Chinese line', isLikelyAsrLanguageMismatch('你快说话呀', 'zh'), false);
+  check('lang mismatch: zh session + single name', isLikelyAsrLanguageMismatch('Jiang.', 'zh'), false);
+  check('lang mismatch: auto never drops', isLikelyAsrLanguageMismatch('Speak up, please.', 'auto'), false);
+  check('lang mismatch: en session + Chinese line', isLikelyAsrLanguageMismatch('你快说话呀', 'en'), true);
+  check('lang mismatch: en session + English line', isLikelyAsrLanguageMismatch('Speak up, please.', 'en'), false);
+  check('lang mismatch: ja session + English sentence', isLikelyAsrLanguageMismatch('I will be there soon.', 'ja'), true);
+  check('lang mismatch: ko session + English sentence', isLikelyAsrLanguageMismatch('I will be there soon.', 'ko'), true);
+}
+
+// Filler-only lines stay in the transcript but are dimmed in the overlay.
+{
+  check('filler: Ah.', isFillerOnly('Ah.'), true);
+  check('filler: Hmm.', isFillerOnly('Hmm.'), true);
+  check('filler: 嗯。', isFillerOnly('嗯。'), true);
+  check('filler: 谢谢！', isFillerOnly('谢谢！'), true);
+  check('filler: Ah, I see.', isFillerOnly('Ah, I see.'), false);
+  check('filler: 好的，我们开始', isFillerOnly('好的，我们开始'), false);
+  check('filler: empty', isFillerOnly(''), false);
 }
 
 /* ---------- 2. Energy gate + trimming ---------- */

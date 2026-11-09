@@ -10,6 +10,8 @@
  * module is the single source of truth for history, copy, and export.
  */
 
+import { sortByStart } from '../../lib/subtitle-order'
+
 export const TRANSCRIPT_INDEX_KEY = 'snooper.extension.transcripts.v1'
 export const TRANSCRIPT_CHUNK_PREFIX = 'snooper.extension.transcript.v1.'
 export const LEGACY_HISTORY_KEY = 'snooper.extension.history.v1'
@@ -653,7 +655,9 @@ export async function readTranscript(id: string): Promise<TranscriptLine[]> {
       if (line) lines.push(line)
     }
   }
-  return lines
+  // ADR-038: chunks are append-only, so two in-flight segments can be stored
+  // out of order. Readers (history, copy, export) need speech order.
+  return sortByStart(lines)
 }
 
 export async function readTranscriptForTab(tabId: number): Promise<TranscriptLine[]> {

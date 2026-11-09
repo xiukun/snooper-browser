@@ -218,7 +218,11 @@ final line is appended to the local transcript immediately. Each line also
 carries the video's playback position when the page exposes a `<video>`, so
 history and Markdown exports show where in the video a sentence was spoken
 instead of only when it was recorded — and clicking that timestamp seeks the
-video to the moment (both in the in-page overlay and the side panel). A session has no
+video to the moment (both in the in-page overlay and the side panel). Exported
+Markdown and 「记入笔记」 entries carry the anchor too: on Bilibili and YouTube
+pages the timestamp is a `?t=` deep link, so clicking it inside Obsidian opens
+the video at that moment. History record titles are clickable and return to the
+original video page. A session has no
 per-record row cap; the page renders the most recent 200 lines, while history,
 copy, and export read the complete transcript on demand. At most 100 completed
 records are kept. Closing the panel, navigating away, or a browser crash still
@@ -226,6 +230,14 @@ leaves the lines that were already written. Open the side panel → **历史** t
 expand a record, read the transcript, copy it, export it as Markdown, or delete
 it. A record that is still recording cannot be deleted. Records saved by older
 versions only contain counts and are marked accordingly.
+
+### Session summary
+
+「更多工具 → 生成纪要」 sends the same deduplicated subtitle evidence the
+companion reasons over to your own model and writes a Chinese Markdown summary
+with `[mm:ss]` anchors into the active note (labelled 摘要). The stamps are
+clickable, and the summary exports with the note. `[mm:ss]` citations inside
+companion answers are clickable as well and seek straight back to the moment.
 
 ### Obsidian sync (optional)
 

@@ -1076,6 +1076,29 @@
       margin-top: 1px; line-height: 1.35;
     }
 
+    /* === Seek chip (ADR-034): click a video time to jump there === */
+    .sub-row.history { display: flex; align-items: flex-start; gap: 8px; }
+    .sub-row.history .sub-trans { flex: 1; min-width: 0; }
+    .sub-time-chip {
+      flex-shrink: 0;
+      font: inherit; font-size: 11px; line-height: 1.2;
+      font-variant-numeric: tabular-nums;
+      color: rgba(255,255,255,0.62);
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 6px;
+      padding: 1px 6px;
+      margin-top: 1px;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+    }
+    .sub-time-chip:hover { color: #fff; background: rgba(124,92,255,0.28); border-color: rgba(124,92,255,0.5); }
+    .sub-time-chip:focus-visible { outline: 1px solid rgba(124,92,255,0.7); outline-offset: 1px; }
+    .sub-row.seek-ok .sub-time-chip { color: #9ff5ea; background: rgba(62,230,213,0.16); border-color: rgba(62,230,213,0.4); }
+    .sub-row.seek-fail .sub-time-chip { color: #ffb3ad; background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.4); }
+
     /* === Streaming Subtitle (live, in-progress) === */
     #rtts-streaming-row {
       font-size: 16px; font-weight: 500; color: rgba(255,255,255,0.97); line-height: 1.45;
@@ -2175,6 +2198,214 @@
     ]));
   }
 
+  // src/lib/video-clock.ts
+  function formatVideoTime(seconds) {
+    const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor(total % 3600 / 60);
+    const secs = total % 60;
+    const mmss = `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+    return hours > 0 ? `${hours}:${mmss}` : mmss;
+  }
+
+  // src/ext/screenshot.ts
+  function loadImageElement(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("\u622A\u56FE\u89E3\u7801\u5931\u8D25"));
+      img.src = src;
+    });
+  }
+  function collectVideos(root, out, depth) {
+    if (depth > 3) return;
+    root.querySelectorAll("video").forEach((video) => out.push(video));
+    root.querySelectorAll("iframe").forEach((frame) => {
+      try {
+        const doc = frame.contentDocument;
+        if (doc) collectVideos(doc, out, depth + 1);
+      } catch {
+      }
+    });
+    root.querySelectorAll("*").forEach((el) => {
+      const shadowRoot = el.shadowRoot;
+      if (shadowRoot) collectVideos(shadowRoot, out, depth + 1);
+    });
+  }
+  function getFrameGeometry(win) {
+    const frames = [];
+    let current = win;
+    for (let depth = 0; current && current !== window && depth < 5; depth++) {
+      let frame = null;
+      try {
+        frame = current.frameElement;
+      } catch {
+        break;
+      }
+      if (!frame) break;
+      frames.unshift(frame);
+      current = frame.ownerDocument.defaultView;
+    }
+    let x = 0;
+    let y = 0;
+    let clip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    for (const frame of frames) {
+      const rect = frame.getBoundingClientRect();
+      const left = x + rect.left;
+      const top = y + rect.top;
+      clip = {
+        left: Math.max(clip.left, left),
+        top: Math.max(clip.top, top),
+        right: Math.min(clip.right, left + rect.width),
+        bottom: Math.min(clip.bottom, top + rect.height)
+      };
+      x = left;
+      y = top;
+    }
+    return { x, y, clip };
+  }
+  function getVideoContentRect(video) {
+    if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
+    const win = video.ownerDocument.defaultView;
+    if (!win) return null;
+    const style = win.getComputedStyle(video);
+    if (style.display === "none" || style.visibility === "hidden") return null;
+    if (Number(style.opacity) < 0.05) return null;
+    const r = video.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const frame = getFrameGeometry(win);
+    let x = r.left + frame.x;
+    let y = r.top + frame.y;
+    let w = r.width;
+    let h = r.height;
+    const fit = style.objectFit || "contain";
+    if (fit === "contain" || fit === "scale-down") {
+      const videoAspect = video.videoWidth / video.videoHeight;
+      const boxAspect = w / h;
+      if (videoAspect > boxAspect) {
+        const nh = w / videoAspect;
+        y += (h - nh) / 2;
+        h = nh;
+      } else {
+        const nw = h * videoAspect;
+        x += (w - nw) / 2;
+        w = nw;
+      }
+    }
+    const left = Math.max(frame.clip.left, x);
+    const top = Math.max(frame.clip.top, y);
+    const right = Math.min(frame.clip.right, x + w);
+    const bottom = Math.min(frame.clip.bottom, y + h);
+    if (right - left < 64 || bottom - top < 64) return null;
+    return { x: left, y: top, w: right - left, h: bottom - top };
+  }
+  function findBestVideoCandidate() {
+    const videos = [];
+    collectVideos(document, videos, 0);
+    let best = null;
+    for (const video of videos) {
+      const rect = getVideoContentRect(video);
+      if (!rect) continue;
+      const score = rect.w * rect.h * (video.paused ? 0.6 : 1);
+      if (!best || score > best.score) best = { video, rect, score };
+    }
+    return best ? { video: best.video, rect: best.rect, count: videos.length } : null;
+  }
+  function createScreenshotCapturer(deps) {
+    const maxWidth = deps.maxWidth ?? 1600;
+    const quality = deps.jpegQuality ?? 0.9;
+    const hideDelayMs = deps.hideDelayMs ?? 120;
+    async function render(dataUrl, rect) {
+      const img = await loadImageElement(dataUrl);
+      const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
+      const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
+      let sx = 0;
+      let sy = 0;
+      let sw = img.naturalWidth;
+      let sh = img.naturalHeight;
+      if (rect) {
+        sx = Math.min(img.naturalWidth - 1, Math.max(0, Math.round(rect.x * scaleX)));
+        sy = Math.min(img.naturalHeight - 1, Math.max(0, Math.round(rect.y * scaleY)));
+        sw = Math.min(img.naturalWidth - sx, Math.max(1, Math.round(rect.w * scaleX)));
+        sh = Math.min(img.naturalHeight - sy, Math.max(1, Math.round(rect.h * scaleY)));
+        if (sw < 32 || sh < 32) throw new Error("\u89C6\u9891\u88C1\u526A\u533A\u57DF\u8FC7\u5C0F");
+      }
+      let outW = sw;
+      let outH = sh;
+      if (outW > maxWidth) {
+        outH = Math.round(outH * maxWidth / outW);
+        outW = maxWidth;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("\u65E0\u6CD5\u521B\u5EFA\u753B\u5E03");
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+      return canvas.toDataURL("image/jpeg", quality);
+    }
+    async function captureVideoFrame() {
+      const candidate = findBestVideoCandidate();
+      console.log("[RTTS] screenshot candidates", {
+        count: candidate?.count ?? 0,
+        chosen: candidate ? { width: candidate.video.videoWidth, height: candidate.video.videoHeight, area: Math.round(candidate.rect.w * candidate.rect.h) } : null
+      });
+      deps.host.style.display = "none";
+      try {
+        await new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        await new Promise((resolve) => setTimeout(resolve, hideDelayMs));
+        const res = await deps.capture();
+        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u6D4F\u89C8\u5668\u622A\u56FE\u5931\u8D25");
+        let dataUrl = res.dataUrl;
+        let cropped = false;
+        if (candidate) {
+          try {
+            dataUrl = await render(res.dataUrl, candidate.rect);
+            cropped = true;
+          } catch (err) {
+            console.warn("[RTTS] screenshot crop failed, using the full frame:", err);
+          }
+        }
+        if (!cropped) dataUrl = await render(res.dataUrl, null);
+        console.log("[RTTS] screenshot", {
+          path: res.path || "unknown",
+          cropped,
+          bytes: dataUrl.length
+        });
+        return { dataUrl, cropped };
+      } finally {
+        deps.host.style.display = "";
+      }
+    }
+    return { captureVideoFrame, findBestVideoCandidate };
+  }
+
+  // src/ext/content/video-seek.ts
+  var SEEK_LEAD_SECONDS = 0.25;
+  function seekTo(seconds) {
+    let video = null;
+    try {
+      video = findBestVideoCandidate()?.video ?? null;
+    } catch {
+      video = null;
+    }
+    if (!video) return { ok: false, reason: "no-video" };
+    const target = Math.max(0, (Number.isFinite(seconds) ? seconds : 0) - SEEK_LEAD_SECONDS);
+    const before = video.currentTime;
+    try {
+      video.currentTime = target;
+    } catch {
+      return { ok: false, reason: "no-progress" };
+    }
+    if (Math.abs(video.currentTime - before) < 1e-6 && Math.abs(target - before) > 1e-6) {
+      return { ok: false, reason: "no-progress" };
+    }
+    video.pause();
+    return { ok: true, time: video.currentTime };
+  }
+
   // src/ext/content/subtitle-view.ts
   var SUB_BOX_SIZE_KEY = "snooper.subtitle-box-size.v1";
   var SUB_BOX_COMPACT_KEY = "snooper.subtitle-box-compact.v1";
@@ -2220,6 +2451,32 @@
         subs.forEach((sub) => {
           const row = document.createElement("div");
           row.className = "sub-row history";
+          const anchored = typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) && sub.videoTime >= 0;
+          if (anchored) {
+            const chip = document.createElement("button");
+            chip.type = "button";
+            chip.className = "sub-time-chip";
+            chip.textContent = formatVideoTime(sub.videoTime);
+            chip.setAttribute("aria-label", `\u8DF3\u8F6C\u5230 ${formatVideoTime(sub.videoTime)}`);
+            chip.title = "\u70B9\u51FB\u8DF3\u8F6C\u5230\u89C6\u9891\u5BF9\u5E94\u4F4D\u7F6E";
+            const activate = () => {
+              const result = seekTo(sub.videoTime);
+              row.classList.remove("seek-ok", "seek-fail");
+              void row.offsetWidth;
+              row.classList.add(result.ok ? "seek-ok" : "seek-fail");
+            };
+            chip.addEventListener("click", (event) => {
+              event.stopPropagation();
+              activate();
+            });
+            chip.addEventListener("keydown", (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                activate();
+              }
+            });
+            row.appendChild(chip);
+          }
           const trans = document.createElement("div");
           trans.className = "sub-trans";
           trans.textContent = sub.target || "...";
@@ -3320,180 +3577,6 @@
     return (stripped || title).slice(0, 120);
   }
 
-  // src/ext/screenshot.ts
-  function loadImageElement(src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error("\u622A\u56FE\u89E3\u7801\u5931\u8D25"));
-      img.src = src;
-    });
-  }
-  function collectVideos(root, out, depth) {
-    if (depth > 3) return;
-    root.querySelectorAll("video").forEach((video) => out.push(video));
-    root.querySelectorAll("iframe").forEach((frame) => {
-      try {
-        const doc = frame.contentDocument;
-        if (doc) collectVideos(doc, out, depth + 1);
-      } catch {
-      }
-    });
-    root.querySelectorAll("*").forEach((el) => {
-      const shadowRoot = el.shadowRoot;
-      if (shadowRoot) collectVideos(shadowRoot, out, depth + 1);
-    });
-  }
-  function getFrameGeometry(win) {
-    const frames = [];
-    let current = win;
-    for (let depth = 0; current && current !== window && depth < 5; depth++) {
-      let frame = null;
-      try {
-        frame = current.frameElement;
-      } catch {
-        break;
-      }
-      if (!frame) break;
-      frames.unshift(frame);
-      current = frame.ownerDocument.defaultView;
-    }
-    let x = 0;
-    let y = 0;
-    let clip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
-    for (const frame of frames) {
-      const rect = frame.getBoundingClientRect();
-      const left = x + rect.left;
-      const top = y + rect.top;
-      clip = {
-        left: Math.max(clip.left, left),
-        top: Math.max(clip.top, top),
-        right: Math.min(clip.right, left + rect.width),
-        bottom: Math.min(clip.bottom, top + rect.height)
-      };
-      x = left;
-      y = top;
-    }
-    return { x, y, clip };
-  }
-  function getVideoContentRect(video) {
-    if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
-    const win = video.ownerDocument.defaultView;
-    if (!win) return null;
-    const style = win.getComputedStyle(video);
-    if (style.display === "none" || style.visibility === "hidden") return null;
-    if (Number(style.opacity) < 0.05) return null;
-    const r = video.getBoundingClientRect();
-    if (!r.width || !r.height) return null;
-    const frame = getFrameGeometry(win);
-    let x = r.left + frame.x;
-    let y = r.top + frame.y;
-    let w = r.width;
-    let h = r.height;
-    const fit = style.objectFit || "contain";
-    if (fit === "contain" || fit === "scale-down") {
-      const videoAspect = video.videoWidth / video.videoHeight;
-      const boxAspect = w / h;
-      if (videoAspect > boxAspect) {
-        const nh = w / videoAspect;
-        y += (h - nh) / 2;
-        h = nh;
-      } else {
-        const nw = h * videoAspect;
-        x += (w - nw) / 2;
-        w = nw;
-      }
-    }
-    const left = Math.max(frame.clip.left, x);
-    const top = Math.max(frame.clip.top, y);
-    const right = Math.min(frame.clip.right, x + w);
-    const bottom = Math.min(frame.clip.bottom, y + h);
-    if (right - left < 64 || bottom - top < 64) return null;
-    return { x: left, y: top, w: right - left, h: bottom - top };
-  }
-  function findBestVideoCandidate() {
-    const videos = [];
-    collectVideos(document, videos, 0);
-    let best = null;
-    for (const video of videos) {
-      const rect = getVideoContentRect(video);
-      if (!rect) continue;
-      const score = rect.w * rect.h * (video.paused ? 0.6 : 1);
-      if (!best || score > best.score) best = { video, rect, score };
-    }
-    return best ? { video: best.video, rect: best.rect, count: videos.length } : null;
-  }
-  function createScreenshotCapturer(deps) {
-    const maxWidth = deps.maxWidth ?? 1600;
-    const quality = deps.jpegQuality ?? 0.9;
-    const hideDelayMs = deps.hideDelayMs ?? 120;
-    async function render(dataUrl, rect) {
-      const img = await loadImageElement(dataUrl);
-      const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
-      const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
-      let sx = 0;
-      let sy = 0;
-      let sw = img.naturalWidth;
-      let sh = img.naturalHeight;
-      if (rect) {
-        sx = Math.min(img.naturalWidth - 1, Math.max(0, Math.round(rect.x * scaleX)));
-        sy = Math.min(img.naturalHeight - 1, Math.max(0, Math.round(rect.y * scaleY)));
-        sw = Math.min(img.naturalWidth - sx, Math.max(1, Math.round(rect.w * scaleX)));
-        sh = Math.min(img.naturalHeight - sy, Math.max(1, Math.round(rect.h * scaleY)));
-        if (sw < 32 || sh < 32) throw new Error("\u89C6\u9891\u88C1\u526A\u533A\u57DF\u8FC7\u5C0F");
-      }
-      let outW = sw;
-      let outH = sh;
-      if (outW > maxWidth) {
-        outH = Math.round(outH * maxWidth / outW);
-        outW = maxWidth;
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = outW;
-      canvas.height = outH;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("\u65E0\u6CD5\u521B\u5EFA\u753B\u5E03");
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
-      return canvas.toDataURL("image/jpeg", quality);
-    }
-    async function captureVideoFrame() {
-      const candidate = findBestVideoCandidate();
-      console.log("[RTTS] screenshot candidates", {
-        count: candidate?.count ?? 0,
-        chosen: candidate ? { width: candidate.video.videoWidth, height: candidate.video.videoHeight, area: Math.round(candidate.rect.w * candidate.rect.h) } : null
-      });
-      deps.host.style.display = "none";
-      try {
-        await new Promise((resolve) => {
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-        });
-        await new Promise((resolve) => setTimeout(resolve, hideDelayMs));
-        const res = await deps.capture();
-        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u6D4F\u89C8\u5668\u622A\u56FE\u5931\u8D25");
-        let dataUrl = res.dataUrl;
-        let cropped = false;
-        if (candidate) {
-          try {
-            dataUrl = await render(res.dataUrl, candidate.rect);
-            cropped = true;
-          } catch (err) {
-            console.warn("[RTTS] screenshot crop failed, using the full frame:", err);
-          }
-        }
-        if (!cropped) dataUrl = await render(res.dataUrl, null);
-        console.log("[RTTS] screenshot", {
-          path: res.path || "unknown",
-          cropped,
-          bytes: dataUrl.length
-        });
-        return { dataUrl, cropped };
-      } finally {
-        deps.host.style.display = "";
-      }
-    }
-    return { captureVideoFrame, findBestVideoCandidate };
-  }
-
   // src/ext/content/video-context.ts
   function readVideoContext() {
     const videoUrl = location.href;
@@ -3796,16 +3879,6 @@
     if (total >= 1024 * 1024) return `${(total / (1024 * 1024)).toFixed(1)} MB`;
     if (total >= 1024) return `${Math.round(total / 1024)} KB`;
     return `${total} B`;
-  }
-
-  // src/lib/video-clock.ts
-  function formatVideoTime(seconds) {
-    const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
-    const hours = Math.floor(total / 3600);
-    const minutes = Math.floor(total % 3600 / 60);
-    const secs = total % 60;
-    const mmss = `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-    return hours > 0 ? `${hours}:${mmss}` : mmss;
   }
 
   // src/ext/content/exporter.ts
@@ -5249,6 +5322,11 @@ ${context}`;
       }
       if (msg && msg.type === "OPEN_PAGE_SETTINGS") {
         openSettings();
+        return;
+      }
+      if (msg && msg.type === "SEEK_VIDEO") {
+        const result = seekTo(msg.seconds);
+        sendResponse?.({ ok: true, ...result });
         return;
       }
       if (msg && msg.type === "STREAMING_UPDATE") {

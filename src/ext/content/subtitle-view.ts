@@ -5,6 +5,8 @@
 
 import { chatRenderSignature } from '../chat-state'
 import { renderMarkdownLite } from './markdown'
+import { formatVideoTime } from '../../lib/video-clock'
+import { seekTo } from './video-seek'
 import type { StreamingSubtitle } from './types'
 
 const SUB_BOX_SIZE_KEY = 'snooper.subtitle-box-size.v1'
@@ -31,7 +33,7 @@ export interface SubtitleViewRefs {
 export interface SubtitleViewSession {
   state: string
   isDemoMode: boolean
-  subtitles: Array<{ target?: string; source?: string; id?: string }>
+  subtitles: Array<{ target?: string; source?: string; id?: string; videoTime?: number | null }>
   messages?: Array<{ role: string; content: string; images?: string[] }>
   streamingSubtitle?: StreamingSubtitle | null
   audioSilent?: boolean
@@ -110,6 +112,36 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
       subs.forEach((sub) => {
         const row = document.createElement('div')
         row.className = 'sub-row history'
+
+        const anchored = typeof sub.videoTime === 'number' && Number.isFinite(sub.videoTime) && sub.videoTime >= 0
+        if (anchored) {
+          // The chip is the seek affordance (ADR-034); the text stays
+          // selectable, so only the chip handles clicks.
+          const chip = document.createElement('button')
+          chip.type = 'button'
+          chip.className = 'sub-time-chip'
+          chip.textContent = formatVideoTime(sub.videoTime!)
+          chip.setAttribute('aria-label', `跳转到 ${formatVideoTime(sub.videoTime!)}`)
+          chip.title = '点击跳转到视频对应位置'
+          const activate = () => {
+            const result = seekTo(sub.videoTime!)
+            row.classList.remove('seek-ok', 'seek-fail')
+            // Force a reflow so the flash restarts on rapid re-clicks.
+            void row.offsetWidth
+            row.classList.add(result.ok ? 'seek-ok' : 'seek-fail')
+          }
+          chip.addEventListener('click', (event) => {
+            event.stopPropagation()
+            activate()
+          })
+          chip.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              activate()
+            }
+          })
+          row.appendChild(chip)
+        }
 
         const trans = document.createElement('div')
         trans.className = 'sub-trans'

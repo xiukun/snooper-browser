@@ -394,6 +394,29 @@ export const TOOLBAR_CSS = `
       margin-top: 1px; line-height: 1.35;
     }
 
+    /* === Seek chip (ADR-034): click a video time to jump there === */
+    .sub-row.history { display: flex; align-items: flex-start; gap: 8px; }
+    .sub-row.history .sub-trans { flex: 1; min-width: 0; }
+    .sub-time-chip {
+      flex-shrink: 0;
+      font: inherit; font-size: 11px; line-height: 1.2;
+      font-variant-numeric: tabular-nums;
+      color: rgba(255,255,255,0.62);
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 6px;
+      padding: 1px 6px;
+      margin-top: 1px;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+    }
+    .sub-time-chip:hover { color: #fff; background: rgba(124,92,255,0.28); border-color: rgba(124,92,255,0.5); }
+    .sub-time-chip:focus-visible { outline: 1px solid rgba(124,92,255,0.7); outline-offset: 1px; }
+    .sub-row.seek-ok .sub-time-chip { color: #9ff5ea; background: rgba(62,230,213,0.16); border-color: rgba(62,230,213,0.4); }
+    .sub-row.seek-fail .sub-time-chip { color: #ffb3ad; background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.4); }
+
     /* === Streaming Subtitle (live, in-progress) === */
     #rtts-streaming-row {
       font-size: 16px; font-weight: 500; color: rgba(255,255,255,0.97); line-height: 1.45;

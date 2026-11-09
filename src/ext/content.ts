@@ -29,6 +29,7 @@ import { createAsk } from './content/ask'
 import { createCompanionSessions } from './content/history'
 import { readVideoContext } from './content/video-context'
 import { createVideoClock } from './content/video-clock'
+import { seekTo } from './content/video-seek'
 import { createToolsMenu } from './content/tools-menu'
 import { bindActions } from './content/actions'
 import { bindObsidianExport } from './content/obsidian-export'
@@ -799,6 +800,13 @@ import { createScreenshotCapturer } from './screenshot'
 
     if (msg && msg.type === 'OPEN_PAGE_SETTINGS') {
       openSettings();
+      return;
+    }
+
+    if (msg && msg.type === 'SEEK_VIDEO') {
+      // ADR-034: side-panel rows seek through the page, which owns the video.
+      const result = seekTo(msg.seconds);
+      sendResponse?.({ ok: true, ...result });
       return;
     }
 

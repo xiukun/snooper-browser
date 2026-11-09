@@ -530,7 +530,37 @@ body {
   padding: 6px 0;
   border-bottom: 1px solid rgba(255,255,255,0.05);
 }
-.history-subtitle-row time { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.history-subtitle-row time {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+/* ADR-034: anchored rows turn the time into a seek chip. */
+.history-time-chip {
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 6px;
+  padding: 1px 6px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.history-time-chip:hover {
+  color: #fff;
+  background: rgba(124, 92, 255, 0.24);
+  border-color: rgba(124, 92, 255, 0.5);
+}
+.history-time-chip:focus-visible { outline: 1px solid rgba(124, 92, 255, 0.7); outline-offset: 1px; }
+.history-time-chip.seek-ok {
+  color: #9ff5ea;
+  background: rgba(62, 230, 213, 0.14);
+  border-color: rgba(62, 230, 213, 0.4);
+}
+.history-time-chip.seek-fail {
+  color: #ffb3ad;
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.4);
+}
 .history-source, .history-target { min-width: 0; overflow-wrap: anywhere; }
 .history-target { color: var(--text-main); }
 .btn-danger {

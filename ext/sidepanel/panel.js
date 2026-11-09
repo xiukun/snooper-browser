@@ -571,6 +571,25 @@
       });
       return res?.ok && Array.isArray(res.subtitles) ? res.subtitles : [];
     }
+    const seekFailureNotice = "\u9875\u9762\u91CC\u6CA1\u6709\u53EF\u5B9A\u4F4D\u7684\u89C6\u9891\uFF0C\u6216\u89C6\u9891\u62D2\u7EDD\u4E86\u8DF3\u8F6C";
+    async function seekVideoInPage(seconds) {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) return false;
+        const res = await sendToPageWithInjection(tab.id, { type: "SEEK_VIDEO", seconds }, tab.url, {
+          sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
+          injectContentScript: async (tabId) => {
+            await chrome.scripting.executeScript({
+              target: { tabId },
+              files: ["content.js"]
+            });
+          }
+        });
+        return res?.seek?.ok === true;
+      } catch {
+        return false;
+      }
+    }
     function appendHistoryRows(container, subtitles, from, to) {
       for (let index = from; index < to && index < subtitles.length; index += 1) {
         const subtitle = subtitles[index];
@@ -581,6 +600,26 @@
         const wall = subtitle.at ? new Date(subtitle.at).toLocaleTimeString("zh-CN") : "";
         time.textContent = anchored ? formatVideoTime(subtitle.videoTime) : wall || "--:--:--";
         if (anchored && wall) time.title = `\u5F55\u5236\u65F6\u95F4 ${wall}`;
+        if (anchored) {
+          time.classList.add("history-time-chip");
+          time.setAttribute("role", "button");
+          time.tabIndex = 0;
+          time.title = `\u70B9\u51FB\u8DF3\u8F6C\u5230\u89C6\u9891 ${formatVideoTime(subtitle.videoTime)}`;
+          const activate = async () => {
+            time.classList.remove("seek-ok", "seek-fail");
+            void time.offsetWidth;
+            const result = await seekVideoInPage(subtitle.videoTime);
+            time.classList.add(result ? "seek-ok" : "seek-fail");
+            if (!result) showNotice(seekFailureNotice, true);
+          };
+          time.addEventListener("click", activate);
+          time.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              void activate();
+            }
+          });
+        }
         const source = document.createElement("span");
         source.className = "history-source";
         source.textContent = subtitle.source || "\uFF08\u65E0\u539F\u6587\uFF09";

@@ -491,6 +491,28 @@ import { formatVideoTime } from '../../lib/video-clock'
     return res?.ok && Array.isArray(res.subtitles) ? res.subtitles : []
   }
 
+  const seekFailureNotice = '页面里没有可定位的视频，或视频拒绝了跳转'
+
+  /** ADR-034: forward a seek to the active tab's content script. */
+  async function seekVideoInPage(seconds: number): Promise<boolean> {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (!tab?.id) return false
+      const res: any = await sendToPageWithInjection(tab.id, { type: 'SEEK_VIDEO', seconds }, tab.url, {
+        sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
+        injectContentScript: async (tabId) => {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['content.js'],
+          })
+        },
+      })
+      return res?.seek?.ok === true
+    } catch {
+      return false
+    }
+  }
+
   function appendHistoryRows(
     container: HTMLElement,
     subtitles: HistorySubtitle[],
@@ -506,6 +528,28 @@ import { formatVideoTime } from '../../lib/video-clock'
       const wall = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : ''
       time.textContent = anchored ? formatVideoTime(subtitle.videoTime!) : (wall || '--:--:--')
       if (anchored && wall) time.title = `录制时间 ${wall}`
+      if (anchored) {
+        // Same affordance as the in-page overlay (ADR-034): the chip seeks
+        // through the page's content script, which owns the video element.
+        time.classList.add('history-time-chip')
+        time.setAttribute('role', 'button')
+        time.tabIndex = 0
+        time.title = `点击跳转到视频 ${formatVideoTime(subtitle.videoTime!)}`
+        const activate = async () => {
+          time.classList.remove('seek-ok', 'seek-fail')
+          void time.offsetWidth
+          const result = await seekVideoInPage(subtitle.videoTime!)
+          time.classList.add(result ? 'seek-ok' : 'seek-fail')
+          if (!result) showNotice(seekFailureNotice, true)
+        }
+        time.addEventListener('click', activate)
+        time.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            void activate()
+          }
+        })
+      }
       const source = document.createElement('span')
       source.className = 'history-source'
       source.textContent = subtitle.source || '（无原文）'

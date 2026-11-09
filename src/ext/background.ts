@@ -13,7 +13,7 @@
  *   config.ts        — DEFAULT_CONFIG, load/save + validation
  *   offscreen.ts     — document lifecycle and orphan recovery
  *   session-store.ts — per-tab state, recovery snapshot, pushes
- *   history.ts       — bounded session history
+ *   transcript-store.ts — durable chunked transcripts (ADR-031)
  *   llm.ts           — chat + vision Q&A
  *   obsidian.ts      — vault export/upload/test
  *   recovery.ts      — service-worker restart hydration

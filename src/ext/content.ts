@@ -26,6 +26,8 @@ import { createNotes } from './content/notes'
 import { createShotPreview } from './content/shot'
 import { createCitePicker } from './content/cite-picker'
 import { createAsk } from './content/ask'
+import { createCompanionSessions } from './content/history'
+import { readVideoContext } from './content/video-context'
 import { createToolsMenu } from './content/tools-menu'
 import { bindActions } from './content/actions'
 import { bindObsidianExport } from './content/obsidian-export'
@@ -56,6 +58,7 @@ import { createScreenshotCapturer } from './screenshot'
     targetLang: 'zh',
     subtitles: [],
     messages: [],
+    agentSessionId: null,
     notes: [],
     activeNoteId: null,
     isDemoMode: false,
@@ -162,6 +165,7 @@ import { createScreenshotCapturer } from './screenshot'
     citeBtn, citePopover, citeList, citeEmpty, citeClose,
     notesEditor, notesPreview, notesPreviewBtn,
     drawerTabChat, drawerTabNotes, paneChat, paneNotes,
+    chatNewTopic, chatHistoryBtn, chatHistoryPopover, chatHistoryList, chatHistoryEmpty, chatHistoryClose,
     chatBtn, chatAttachBtn, chatFile, chatAttachments, sendBtn,
     fsWarn, hideBtn, showBtn,
     noteBtn, imageBtn, screenshotBtn,
@@ -221,6 +225,7 @@ import { createScreenshotCapturer } from './screenshot'
       notes: session.notes,
       activeNoteId: session.activeNoteId,
       isDemoMode: session.isDemoMode,
+      agentSessionId: incoming.agentSessionId ?? null,
     };
     if (!Array.isArray(session.messages)) session.messages = [];
     render();
@@ -508,9 +513,41 @@ import { createScreenshotCapturer } from './screenshot'
       clearChatEditor();
       chatAttachmentsCtrl.clear();
     },
+    getVideoContext: readVideoContext,
   });
   const submitQuestion = ask.submitQuestion;
   const sendQuestion = ask.sendQuestion;
+
+  /* ===== Companion sessions: new topic + per-video history ===== */
+  const companionSessions = createCompanionSessions({
+    refs: {
+      newTopic: chatNewTopic,
+      historyButton: chatHistoryBtn,
+      popover: chatHistoryPopover,
+      list: chatHistoryList,
+      empty: chatHistoryEmpty,
+      close: chatHistoryClose,
+    },
+    getSession: () => session,
+    getVideoContext: readVideoContext,
+    bg,
+    toast,
+    updateChat,
+    clearComposer: () => {
+      setCiteOpen(false);
+      clearChatEditor();
+      chatAttachmentsCtrl.clear();
+    },
+    focusComposer: () => {
+      chatEditor.focus();
+    },
+    isBusy: ask.isBusy,
+  });
+  // The drawer's own close paths are internal; dismissing it must also dismiss
+  // the history popover so reopening never shows a stale overlay.
+  drawer.addEventListener('transitionend', () => {
+    if (!drawer.classList.contains('open')) companionSessions.close();
+  });
 
   /* ===== Tools menu ===== */
   const toolsMenuCtrl = createToolsMenu({ button: moreBtn, menu: toolsMenu, shadow });
@@ -658,6 +695,10 @@ import { createScreenshotCapturer } from './screenshot'
       screenshot: screenshotBtn,
     },
     getSession: () => session,
+    getTranscript: async () => {
+      const res = await bg('GET_TRANSCRIPT')
+      return Array.isArray(res?.subtitles) ? res.subtitles : []
+    },
     toast,
     flashChip,
     addNoteEntry,
@@ -671,7 +712,13 @@ import { createScreenshotCapturer } from './screenshot'
     if (e.key !== 'Escape') return
     setMenuOpen(false)
     if (!citePopover.hidden) { setCiteOpen(false); return }
+    if (companionSessions.isOpen()) { companionSessions.close(); return }
     if (drawerCtrl.isOpen()) closeDrawer()
+  })
+
+  // History belongs to the chat pane; hide it when the notes tab takes over.
+  shadow.getElementById('rtts-tab-notes')!.addEventListener('click', () => {
+    companionSessions.close()
   })
 
   // Add a Markdown note

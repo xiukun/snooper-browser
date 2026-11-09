@@ -1,25 +1,39 @@
 /**
  * Tab lifecycle, action click, and install handling.
  *
- * Registration order matters: the first onRemoved listener deletes the
- * session before the second one can persist history, which is the shipped
- * behavior. Keep these listeners together so that interaction stays explicit.
+ * Every path that destroys a capture finalizes the durable transcript
+ * (ADR-031) before dropping the in-memory session. Finalization is
+ * idempotent, so navigation racing a tab close is harmless.
+ *
+ * Explicit stop also waits (bounded) for the segment already in ASR so the
+ * last line of a session is not dropped. That drain is only available on the
+ * explicit STOP path, because a destroyed document cannot wait for itself.
  */
 
 import { openToolbarForTab } from '../action-flow'
 import { DEFAULT_CONFIG, loadConfig, saveConfig } from './config'
-import { persistSessionHistory } from './history'
 import { sendToOffscreen } from './offscreen'
 import {
   maybeCloseOffscreen,
+  nextGeneration,
   persistSessions,
   pushSession,
   reconcileSessionState,
   sessions,
 } from './session-store'
+import { finalizeSessionTranscript } from './transcript-store'
 
 const CONTENT_SCRIPT_FILE = 'content.js'
 const FS_BRIDGE_FILE = 'fullscreen-bridge.js'
+
+/**
+ * Close an offscreen document only after its STOP finished. Closing first
+ * could abort the teardown and leave Chrome's native tab stream behind,
+ * which makes the next START fail with `active stream`.
+ */
+function closeOffscreenAfterStop(stop: Promise<unknown>): void {
+  void stop.catch(() => {}).then(() => maybeCloseOffscreen())
+}
 
 async function injectContentScript(tabId: number): Promise<void> {
   await chrome.scripting.executeScript({
@@ -29,30 +43,46 @@ async function injectContentScript(tabId: number): Promise<void> {
 }
 
 function removeSession(tabId: number): void {
+  const s = sessions.get(tabId)
   sessions.delete(tabId)
-  // Also tell offscreen to clean up
-  sendToOffscreen({ type: 'STOP_CAPTURE', tabId }).catch(() => {})
-  maybeCloseOffscreen()
+  if (s) {
+    const stop = sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {})
+    // Each subtitle is already on disk; finalization closes the record and
+    // keeps the prefix readable. Recovery repeats this if the worker dies.
+    closeOffscreenAfterStop(stop)
+    void finalizeSessionTranscript(s).catch(() => {})
+  } else {
+    closeOffscreenAfterStop(sendToOffscreen({ type: 'STOP_CAPTURE', tabId }).catch(() => {}))
+  }
+  persistSessions()
 }
 
 function stopSessionForTab(tabId: number): void {
   const s = sessions.get(tabId)
   if (!s || (s.state !== 'running' && s.state !== 'starting')) return
-  if (s.subtitles.length > 0) persistSessionHistory(tabId)
-  sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {})
+  const stop = sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {})
   s.state = 'idle'
+  s.generation = nextGeneration()
+  s.stoppedGeneration = undefined
   s.streamId = ''
   s.configSnapshot = null
-  s.subtitles = []
   s.streamingSubtitle = null
   s.audioSilent = false
   // Keep messages across navigation
   pushSession(tabId)
-  maybeCloseOffscreen()
+  void finalizeSessionTranscript(s).finally(() => {
+    // The next document is a different page: copy/export must not read the
+    // previous page's transcript through the new tab session.
+    s.transcriptId = null
+    s.subtitles = []
+    pushSession(tabId)
+  })
+  closeOffscreenAfterStop(stop)
 }
 
 export function registerLifecycleListeners(): void {
-  // Clean up on tab close
+  // Clean up on tab close. One listener only: an earlier revision registered
+  // two, and the first deleted the session before the second could persist it.
   chrome.tabs.onRemoved.addListener((tabId: number) => {
     removeSession(tabId)
   })
@@ -66,16 +96,6 @@ export function registerLifecycleListeners(): void {
     if (changeInfo.status === 'loading') {
       stopSessionForTab(tabId)
     }
-  })
-
-  chrome.tabs.onRemoved.addListener((tabId: number) => {
-    const s = sessions.get(tabId)
-    if (!s) return
-    if (s.subtitles.length > 0) persistSessionHistory(tabId)
-    sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {})
-    sessions.delete(tabId)
-    persistSessions()
-    maybeCloseOffscreen()
   })
 
   chrome.tabs.onActivated.addListener(async (activeInfo: any) => {

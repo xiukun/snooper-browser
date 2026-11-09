@@ -2,9 +2,12 @@
 
 import { describeCaptureSuspects } from '../../capture-recovery'
 import type { AppConfig } from '../../../lib/providers'
+import { messagesFromTurns } from '../../chat-state'
 import {
   buildAskParts,
+  buildSubtitleDigest,
   deleteSession as agentDeleteSession,
+  getAgentPersistError,
   listSessions as agentListSessions,
   loadAgentStore,
   recordExchange,
@@ -12,10 +15,16 @@ import {
   saveAgentStore,
   selectHistoryTurns,
   switchSession as agentSwitchSession,
+  type AgentSession,
+  type AgentVideo,
 } from '../agent'
 import { loadConfig } from '../config'
-import { persistSessionHistory } from '../history'
 import { askLLM } from '../llm'
+import {
+  beginTranscript,
+  finalizeSessionTranscript,
+  finalizeTranscript,
+} from '../transcript-store'
 import {
   forceResetOffscreenCapture,
   offscreenHasCapture,
@@ -51,6 +60,29 @@ interface StartAttempt {
 const startAttempts = new Map<number, StartAttempt>()
 const startCancelVersions = new Map<number, number>()
 const stopAttempts = new Map<number, Promise<void>>()
+
+function videoFromMessage(message: any): AgentVideo {
+  const rawKey = typeof message.videoKey === 'string' ? message.videoKey.trim() : ''
+  return {
+    videoKey: rawKey || 'page:unknown',
+    videoTitle: typeof message.videoTitle === 'string' ? message.videoTitle : '',
+    videoUrl: typeof message.videoUrl === 'string' ? message.videoUrl : '',
+  }
+}
+
+function videoKeyFromMessage(message: any): string | undefined {
+  return typeof message.videoKey === 'string' && message.videoKey.trim()
+    ? message.videoKey.trim()
+    : undefined
+}
+
+/** Project a stored session into the per-tab bubble list. */
+function showSessionInTab(tabId: number, session: AgentSession | null): void {
+  const s = getOrCreateSession(tabId)
+  s.agentSessionId = session?.id ?? null
+  s.messages = session ? messagesFromTurns(session.turns) : []
+  pushSession(tabId)
+}
 
 function currentStartVersion(tabId: number): number {
   return startCancelVersions.get(tabId) || 0
@@ -131,7 +163,9 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
   s.sourceLang = message.sourceLang || 'auto'
   s.targetLang = message.targetLang || 'zh'
   s.generation = nextGeneration()
+  s.stoppedGeneration = undefined
   s.subtitles = []
+  s.transcriptId = null
   s.streamingSubtitle = null
   s.audioSilent = false
   s.configSnapshot = JSON.parse(JSON.stringify(config))
@@ -145,6 +179,33 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     s.generation === generation
 
   try {
+    // Open the durable record before capture starts so the first segment is
+    // never lost. A storage failure must not block live translation: the
+    // lazy ensureTranscript path in offscreen-events retries later.
+    try {
+      const tab = await chrome.tabs.get(tabId).catch(() => null)
+      const record = await beginTranscript({
+        tabId,
+        generation,
+        pageTitle: typeof message.pageTitle === 'string' && message.pageTitle
+          ? message.pageTitle
+          : (tab?.title || ''),
+        url: typeof message.pageUrl === 'string' && message.pageUrl
+          ? message.pageUrl
+          : (tab?.url || ''),
+        sourceLang: s.sourceLang,
+        targetLang: s.targetLang,
+      })
+      if (!isCurrent()) {
+        void finalizeTranscript(record.id)
+        return { ok: true, cancelled: true }
+      }
+      s.transcriptId = record.id
+      pushSession(tabId)
+    } catch (err) {
+      console.warn('[RTTS] transcript begin failed:', err)
+    }
+
     console.log('[RTTS] START:', tabId, 'gen:', generation, 'lang:', s.sourceLang, '→', s.targetLang)
 
     // Clear an orphaned capture left behind by a restarted service
@@ -207,14 +268,19 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
   } catch (err: any) {
     if (!isCurrent()) {
       console.info('[RTTS] START cancelled during startup')
+      // A STOP may have raced the record creation; finalize whatever exists.
+      try { await finalizeSessionTranscript(s) } catch { /* ignore */ }
       return { ok: true, cancelled: true }
     }
 
     console.warn('[RTTS] START failed:', err.message)
     s.state = 'idle'
+    s.stoppedGeneration = undefined
     s.configSnapshot = null
     s.streamId = ''
     s.streamingSubtitle = null
+    // An empty record is removed by finalization; a partial one is kept.
+    try { await finalizeSessionTranscript(s) } catch { /* ignore */ }
     pushSession(tabId)
     const msg = (err && err.message) || String(err)
     let friendly = msg
@@ -349,25 +415,35 @@ export const sessionHandlers: MessageHandlerMap = {
 
     // Invalidate in-flight ASR/translation results immediately. Late
     // responses from the stopped segment carry the old generation and are
-    // dropped, so nothing new appears after the user hits stop.
+    // dropped, so nothing new appears after the user hits stop — except the
+    // final line of a rename that was already segmenting, which the router
+    // still accepts for `stoppedGeneration` while `stopping`.
     const stoppedGeneration = s.generation
+    s.stoppedGeneration = stoppedGeneration
     s.generation = nextGeneration()
 
     const stop = sendToOffscreen({
       type: 'STOP_CAPTURE',
       tabId,
       generation: stoppedGeneration,
+      // Bounded drain: let the in-flight segment finish so the last subtitle
+      // of the session reaches the transcript before it is finalized.
+      drain: true,
     }).catch(() => {
       // Offscreen may already be closed
-    }).finally(() => {
+    }).finally(async () => {
       s.state = 'idle'
+      s.stoppedGeneration = undefined
       s.streamId = ''
       s.configSnapshot = null
       s.streamingSubtitle = null
       s.audioSilent = false
-      // Save to session history
-      if (s.subtitles && s.subtitles.length > 0) {
-        persistSessionHistory(tabId)
+      // Flush the final chunk and close the record. Keeping transcriptId
+      // lets copy/export read the full session after stop (ADR-031).
+      try {
+        await finalizeSessionTranscript(s)
+      } catch (err) {
+        console.warn('[RTTS] transcript finalize failed:', err)
       }
       pushSession(tabId)
       maybeCloseOffscreen()
@@ -403,19 +479,43 @@ export const sessionHandlers: MessageHandlerMap = {
       return false
     }
 
-    // Multi-turn memory: replay recent turns through the agent, attach the
-    // subtitle context to the current question only.
-    const recentContext = s.subtitles
-      .slice(-20)
-      .map((sub) => `[${sub.source}] → ${sub.target}`)
-      .join('\n')
+    const video = videoFromMessage(message)
+    const videoTime = typeof message.videoTime === 'number' && Number.isFinite(message.videoTime)
+      ? message.videoTime
+      : 0
+    // Snapshot the digest now so subtitles arriving during the request cannot
+    // change the evidence under the answer.
+    const subtitleContext = buildSubtitleDigest(s.subtitles)
 
     void (async () => {
       const config = s.configSnapshot || await loadConfig()
       const store = await loadAgentStore()
-      const session = await resolveCurrentSession(store, message.newSession === true)
-      const history = selectHistoryTurns([...session.turns, { role: 'user', content: question, images, at: Date.now() }])
-      const parts = buildAskParts({ history, subtitleContext: recentContext, question, images })
+      const session = await resolveCurrentSession(store, video, message.newSession === true)
+
+      // The tab may still be showing an older session (another tab switched,
+      // or this page just reloaded). Replace the projection before answering
+      // so the UI and the replayed memory describe the same conversation.
+      if (s.agentSessionId !== session.id) {
+        s.agentSessionId = session.id
+        s.messages = [
+          ...messagesFromTurns(session.turns),
+          { role: 'user', content: question || '（图片）', images: images.length ? images : undefined },
+        ]
+        pushSession(tabId)
+      }
+
+      const history = selectHistoryTurns([
+        ...session.turns,
+        { role: 'user', content: question, images, at: Date.now() },
+      ])
+      const parts = buildAskParts({
+        history,
+        subtitleContext,
+        question,
+        images,
+        videoTitle: session.videoTitle || video.videoTitle,
+        videoTime,
+      })
       const answer = await askLLM({ parts, config, sourceLang: s.sourceLang, targetLang: s.targetLang })
       if (s.pendingAskRequestId !== requestId) return
       s.pendingAskRequestId = null
@@ -427,7 +527,12 @@ export const sessionHandlers: MessageHandlerMap = {
         { role: 'user', content: question, images, at: Date.now() },
         { role: 'assistant', content: answer, at: Date.now() },
       )
-      sendResponse({ ok: true, answer, session: safeSession(s) })
+      sendResponse({
+        ok: true,
+        answer,
+        session: safeSession(s),
+        persistWarning: getAgentPersistError() || undefined,
+      })
     })().catch((err: any) => {
       if (s.pendingAskRequestId !== requestId) return
       s.pendingAskRequestId = null
@@ -443,37 +548,74 @@ export const sessionHandlers: MessageHandlerMap = {
 
   /* ---------- Agent conversation management ---------- */
 
-  AGENT_LIST_SESSIONS: (_message, { sendResponse }) => {
-    void loadAgentStore().then((store) => sendResponse({ ok: true, sessions: agentListSessions(store), currentId: store.currentId }))
+  AGENT_LIST_SESSIONS: (message, { sendResponse }) => {
+    const videoKey = videoKeyFromMessage(message)
+    void loadAgentStore().then((store) => {
+      sendResponse({
+        ok: true,
+        sessions: agentListSessions(store, videoKey),
+        currentId: videoKey ? store.activeByVideo[videoKey] ?? null : null,
+      })
+    })
     return true
   },
 
-  AGENT_SWITCH_SESSION: (message, { sendResponse }) => {
+  AGENT_SWITCH_SESSION: (message, { tabId, sendResponse }) => {
     void loadAgentStore().then(async (store) => {
-      const session = agentSwitchSession(store, String(message.id || ''))
+      const session = agentSwitchSession(
+        store,
+        String(message.id || ''),
+        videoKeyFromMessage(message),
+      )
       if (!session) {
-        sendResponse({ ok: false, error: '会话不存在' })
+        sendResponse({ ok: false, error: '会话不存在或属于其他视频' })
         return
       }
       await saveAgentStore(store).catch(() => {})
-      sendResponse({ ok: true, currentId: store.currentId })
+      showSessionInTab(tabId, session)
+      sendResponse({
+        ok: true,
+        currentId: session.id,
+        turns: session.turns,
+        session: safeSession(getOrCreateSession(tabId)),
+      })
     })
     return true
   },
 
-  AGENT_NEW_SESSION: (_message, { sendResponse }) => {
+  AGENT_NEW_SESSION: (message, { tabId, sendResponse }) => {
     void loadAgentStore().then(async (store) => {
-      await resolveCurrentSession(store, true)
+      const session = await resolveCurrentSession(store, videoFromMessage(message), true)
       await saveAgentStore(store).catch(() => {})
-      sendResponse({ ok: true, currentId: store.currentId })
+      showSessionInTab(tabId, session)
+      sendResponse({
+        ok: true,
+        currentId: session.id,
+        turns: session.turns,
+        session: safeSession(getOrCreateSession(tabId)),
+      })
     })
     return true
   },
 
-  AGENT_DELETE_SESSION: (message, { sendResponse }) => {
+  AGENT_DELETE_SESSION: (message, { tabId, sendResponse }) => {
+    const videoKey = videoKeyFromMessage(message)
     void loadAgentStore().then(async (store) => {
       await agentDeleteSession(store, String(message.id || ''))
-      sendResponse({ ok: true, currentId: store.currentId })
+
+      // Re-read the video's active pointer: deleting the current session
+      // promotes the newest remaining one, or clears the pane.
+      const activeId = videoKey ? store.activeByVideo[videoKey] : undefined
+      const active = activeId
+        ? store.sessions.find((session) => session.id === activeId) ?? null
+        : null
+      showSessionInTab(tabId, active)
+      sendResponse({
+        ok: true,
+        currentId: active?.id ?? null,
+        turns: active?.turns ?? [],
+        session: safeSession(getOrCreateSession(tabId)),
+      })
     })
     return true
   },

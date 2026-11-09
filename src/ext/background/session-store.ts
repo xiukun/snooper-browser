@@ -11,6 +11,12 @@ import { closeOffscreenDocument, getLiveCaptureGeneration } from './offscreen'
 
 export const SESSION_RECOVERY_KEY = 'snooper.extension.sessions.v1'
 
+/**
+ * The live subtitle array is a display window, not a storage boundary.
+ * The full session lives in transcript-store (ADR-031).
+ */
+export const LIVE_SUBTITLE_WINDOW = 200
+
 export interface SubtitleEntry {
   id: string
   at: number
@@ -39,12 +45,21 @@ export interface SessionState {
   sourceLang: string
   targetLang: string
   generation: number
+  /**
+   * Generation that is being torn down. A final subtitle for it is still
+   * accepted while `state === 'stopping'` (ADR-031 tail drain).
+   */
+  stoppedGeneration?: number
   createdAt: number
   configSnapshot: AppConfig | null
   subtitles: SubtitleEntry[]
   messages: MessageEntry[]
   streamId: string
   pendingAskRequestId: string | null
+  /** Active companion session for this tab's video (ADR-030). */
+  agentSessionId: string | null
+  /** Full transcript record for this capture (ADR-031). */
+  transcriptId: string | null
   streamingSubtitle: StreamingSubtitle | null
   /** True when the capture is alive but no audio above the gate is arriving. */
   audioSilent: boolean
@@ -56,6 +71,8 @@ export interface SafeSession {
   targetLang: string
   subtitles: SubtitleEntry[]
   messages: MessageEntry[]
+  agentSessionId: string | null
+  transcriptId: string | null
   streamingSubtitle: StreamingSubtitle | null
   audioSilent: boolean
 }
@@ -92,6 +109,8 @@ export function createSession(tabId: number): SessionState {
     messages: [],
     streamId: '',
     pendingAskRequestId: null,
+    agentSessionId: null,
+    transcriptId: null,
     streamingSubtitle: null,
     audioSilent: false,
   }
@@ -126,6 +145,8 @@ export function safeSession(s: SessionState): SafeSession {
     targetLang: s.targetLang,
     subtitles: s.subtitles,
     messages: s.messages,
+    agentSessionId: s.agentSessionId ?? null,
+    transcriptId: s.transcriptId ?? null,
     streamingSubtitle: s.streamingSubtitle,
     audioSilent: s.audioSilent,
   }
@@ -133,7 +154,9 @@ export function safeSession(s: SessionState): SafeSession {
 
 export function hasActiveSession(): boolean {
   for (const s of sessions.values()) {
-    if (s.state === 'running' || s.state === 'starting') return true
+    // `stopping` still owns the offscreen document: closing it mid-teardown
+    // can abort the tail drain and leave the native tab stream behind.
+    if (s.state === 'running' || s.state === 'starting' || s.state === 'stopping') return true
   }
   return false
 }
@@ -201,6 +224,8 @@ export function persistSessions(): void {
       generation: s.generation,
       subtitles: s.subtitles,
       messages: s.messages,
+      agentSessionId: s.agentSessionId ?? null,
+      transcriptId: s.transcriptId ?? null,
       audioSilent: false,
     }
   }

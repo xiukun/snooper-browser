@@ -4,6 +4,7 @@
  */
 
 import type { NoteEntry } from '../../lib/types'
+import type { SubtitleLine } from '../../lib/types'
 import { buildZip, collectAssets, decodeExportAsset, formatBytes } from '../../lib/export-assets'
 import { downloadBlob, getSubtitleMarkdown, getSubtitleText } from './exporter'
 import type { SessionState } from './types'
@@ -20,6 +21,8 @@ export interface ActionRefs {
 export interface ActionDeps {
   refs: ActionRefs
   getSession: () => SessionState
+  /** Full-session rows from transcript-store; the visible window is only a preview. */
+  getTranscript: () => Promise<Array<Partial<SubtitleLine>>>
   toast: (message: string, tone?: 'info' | 'ok' | 'err') => void
   flashChip: (button: HTMLElement, ms?: number) => void
   addNoteEntry: (entry: NoteEntry) => void
@@ -55,6 +58,21 @@ function sessionHasAssets(session: SessionState): boolean {
   return collectAssets(session.notes, session.messages).length > 0
 }
 
+/**
+ * Prefer the durable transcript. If the background has no record (storage
+ * failure or a session created before the record existed), fall back to the
+ * visible window so copy/export still returns what the user can see.
+ */
+async function resolveSubtitles(deps: ActionDeps): Promise<Array<Partial<SubtitleLine>>> {
+  try {
+    const rows = await deps.getTranscript()
+    if (Array.isArray(rows) && rows.length > 0) return rows
+  } catch {
+    // Fall through to the window.
+  }
+  return deps.getSession().subtitles
+}
+
 function downloadZip(filename: string, files: Array<{ name: string; bytes: Uint8Array }>): void {
   const blob = new Blob([buildZip(files) as unknown as BlobPart], { type: 'application/zip' })
   const url = URL.createObjectURL(blob)
@@ -69,7 +87,7 @@ export function bindActions(deps: ActionDeps) {
   const r = deps.refs
 
   r.copy.addEventListener('click', async () => {
-    const text = getSubtitleText(deps.getSession().subtitles)
+    const text = getSubtitleText(await resolveSubtitles(deps))
     if (!text) { deps.toast('没有字幕可复制', 'err'); return }
     const ok = await copyText(text)
     if (ok) {
@@ -80,8 +98,8 @@ export function bindActions(deps: ActionDeps) {
     }
   })
 
-  r.exportTxt.addEventListener('click', () => {
-    const text = getSubtitleText(deps.getSession().subtitles)
+  r.exportTxt.addEventListener('click', async () => {
+    const text = getSubtitleText(await resolveSubtitles(deps))
     if (!text) { deps.toast('没有字幕可导出', 'err'); return }
     downloadBlob(`snooper-subtitles-${Date.now()}.txt`, text)
     deps.flashChip(r.exportTxt)
@@ -90,7 +108,8 @@ export function bindActions(deps: ActionDeps) {
 
   r.exportMd.addEventListener('click', async () => {
     const session = deps.getSession()
-    const text = getSubtitleMarkdown(session)
+    const subtitles = await resolveSubtitles(deps)
+    const text = getSubtitleMarkdown({ ...session, subtitles })
     if (!text) { deps.toast('没有内容可导出', 'err'); return }
     deps.flashChip(r.exportMd)
 

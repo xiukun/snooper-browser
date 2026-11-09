@@ -6,14 +6,32 @@
  * listeners keep their original sender validation and ordering.
  */
 
-import { persistSessionHistory } from '../history'
 import { OFFSCREEN_PATH } from '../offscreen'
 import {
+  LIVE_SUBTITLE_WINDOW,
   maybeCloseOffscreen,
   pushSession,
   pushStreamingUpdate,
   sessions,
+  type SubtitleEntry,
 } from '../session-store'
+import {
+  appendTranscriptLine,
+  ensureTranscript,
+  finalizeSessionTranscript,
+} from '../transcript-store'
+
+/**
+ * The last line of an explicit stop arrives after the background has already
+ * moved on to the next generation. It belongs to this session only while the
+ * teardown is in progress.
+ */
+function isStoppingGeneration(
+  s: { state: string; stoppedGeneration?: number },
+  generation: number,
+): boolean {
+  return s.state === 'stopping' && s.stoppedGeneration === generation
+}
 
 export function registerOffscreenEventRouter(): void {
   chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: any) => {
@@ -64,7 +82,11 @@ export function registerOffscreenEventRouter(): void {
           s.configSnapshot = null
           s.streamingSubtitle = null
           s.audioSilent = false
-          if (s.subtitles.length > 0) persistSessionHistory(message.tabId)
+          // The track ended outside the STOP path. Finalize the full record
+          // so a crashed or externally-ended capture still reaches history.
+          if (s.transcriptId || s.subtitles.length > 0) {
+            void finalizeSessionTranscript(s)
+          }
           pushSession(message.tabId)
           maybeCloseOffscreen()
         }
@@ -109,10 +131,12 @@ export function registerOffscreenEventRouter(): void {
 
       case 'CAPTURE_SUBTITLE': {
         const s = sessions.get(message.tabId)
-        if (!s || s.generation !== message.generation) {
-          // Stale result – ignore
+        if (!s || (s.generation !== message.generation && !isStoppingGeneration(s, message.generation))) {
+          // Stale result – ignore unless it is the final line of the capture
+          // the user just stopped (ADR-031 tail drain).
           return false
         }
+        const tail = s.generation !== message.generation
 
         // Clear streaming state only if the final subtitle belongs to the
         // currently streaming segment. If a NEWER segment is already streaming
@@ -122,21 +146,36 @@ export function registerOffscreenEventRouter(): void {
           s.streamingSubtitle = null
         }
 
-        s.subtitles.push({
+        const entry: SubtitleEntry = {
           id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
           at: message.at || Date.now(),
           endedAt: message.endedAt || null,
           source: message.source || '',
           target: message.target || '',
           latency: message.latency || 0,
-        })
+        }
+        s.subtitles.push(entry)
 
-        // Keep subtitle history bounded
-        if (s.subtitles.length > 200) {
-          s.subtitles = s.subtitles.slice(-150)
+        // Keep the live window bounded for rendering. The full session is
+        // appended to transcript-store and is never truncated.
+        if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
+          s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW)
         }
 
-        pushSession(message.tabId)
+        if (s.transcriptId) {
+          void appendTranscriptLine(s.transcriptId, entry)
+        } else if (!tail) {
+          // Only the live generation may open a record lazily. A tail line
+          // without a record means the begin failed; finalization falls back
+          // to the visible window.
+          void ensureTranscript(s).then((id) => {
+            if (id) void appendTranscriptLine(id, entry)
+          })
+        }
+
+        // A tail line is not pushed: the panel already shows the stopped
+        // state and must not flash back to "recording" for its last row.
+        if (!tail) pushSession(message.tabId)
         return false
       }
 
@@ -146,6 +185,10 @@ export function registerOffscreenEventRouter(): void {
 
         s.state = 'error'
         s.streamingSubtitle = null
+        // The capture is over; keep whatever was recorded before the error.
+        if (s.transcriptId || s.subtitles.length > 0) {
+          void finalizeSessionTranscript(s)
+        }
         pushStreamingUpdate(message.tabId)
         pushSession(message.tabId)
         return false

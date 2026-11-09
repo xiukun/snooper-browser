@@ -14,6 +14,7 @@ declare namespace chrome {
   }
   namespace tabs {
     function sendMessage(tabId: number, message: any): Promise<any>
+    function get(tabId: number): Promise<any>
     function query(queryInfo: any): Promise<any[]>
     namespace onRemoved {
       function addListener(callback: (tabId: number) => void): void
@@ -34,6 +35,7 @@ declare namespace chrome {
     namespace local {
       function get(keys: string | string[] | Record<string, any>): Promise<Record<string, any>>
       function set(items: Record<string, any>): Promise<void>
+      function remove(keys: string | string[]): Promise<void>
     }
     namespace session {
       function get(keys: string | string[] | Record<string, any>): Promise<Record<string, any>>

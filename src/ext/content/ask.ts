@@ -5,6 +5,7 @@
 
 import { hasAssistantTail, isLatestAssistantReply } from '../chat-state'
 import type { SessionState } from './types'
+import type { VideoContext } from './video-context'
 
 export interface AskRefs {
   editor: HTMLElement
@@ -22,6 +23,8 @@ export interface AskDeps {
   getText: () => string
   getImages: () => string[]
   clearComposer: () => void
+  /** Video identity + playback position attached to every question. */
+  getVideoContext: () => VideoContext
 }
 
 export function createAsk(deps: AskDeps) {
@@ -47,7 +50,16 @@ export function createAsk(deps: AskDeps) {
     deps.updateChat()
 
     const requestId = 'q_' + Date.now()
-    const res = await deps.bg('ASK', { question, images, requestId })
+    const video = deps.getVideoContext()
+    const res = await deps.bg('ASK', {
+      question,
+      images,
+      requestId,
+      videoKey: video.videoKey,
+      videoTitle: video.videoTitle,
+      videoUrl: video.videoUrl,
+      videoTime: video.videoTime,
+    })
     const current = deps.getSession()
 
     // The background pushes the assistant answer through SESSION_UPDATE, and
@@ -77,6 +89,9 @@ export function createAsk(deps: AskDeps) {
         content: '请求失败：' + (res.error || '未知错误'),
       })
     }
+    if (res.persistWarning) {
+      deps.toast('回答已生成，但对话历史写入失败：' + res.persistWarning, 'err')
+    }
     busy = false
     deps.refs.editor.setAttribute('contenteditable', 'plaintext-only')
     deps.refs.sendButton.disabled = false
@@ -105,5 +120,5 @@ export function createAsk(deps: AskDeps) {
     }
   })
 
-  return { submitQuestion, sendQuestion }
+  return { submitQuestion, sendQuestion, isBusy: () => busy }
 }

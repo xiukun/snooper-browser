@@ -175,17 +175,17 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
       w.textContent = '你好，我是视频伴学助手，可以问我关于当前视频内容的问题。'
       r.chatEl.appendChild(w)
     } else {
-      msgs.forEach((m: { role: string; content: string; images?: string[] }) => {
+      msgs.forEach((m: { role: string; content: string; images?: string[]; hasImages?: boolean }) => {
         const b = document.createElement('div')
         b.className = `rtts-msg ${m.role === 'user' ? 'user' : 'assistant'}`
         const contentEl = document.createElement('div')
         contentEl.innerHTML = renderMarkdownLite(m.content || '')
         b.appendChild(contentEl)
         // Render attached images
-        if (Array.isArray((m as any).images) && (m as any).images.length > 0) {
+        if (Array.isArray(m.images) && m.images.length > 0) {
           const imgGrid = document.createElement('div')
           imgGrid.className = 'rtts-msg-images'
-          for (const url of (m as any).images) {
+          for (const url of m.images) {
             const thumb = document.createElement('img')
             thumb.src = url
             thumb.alt = '图片'
@@ -193,6 +193,13 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
             imgGrid.appendChild(thumb)
           }
           b.appendChild(imgGrid)
+        } else if (m.hasImages) {
+          // The image itself is not persisted with history (ADR-030); keep the
+          // fact visible so a later answer cannot silently contradict it.
+          const note = document.createElement('div')
+          note.className = 'rtts-msg-image-note'
+          note.textContent = '含图片 · 历史记录不保留图片'
+          b.appendChild(note)
         }
         r.chatEl.appendChild(b)
       })

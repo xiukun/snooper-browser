@@ -21,7 +21,7 @@ execSync(
   { stdio: 'inherit' },
 );
 
-const { hasAssistantTail, isLatestAssistantReply, chatRenderSignature } = await import(
+const { hasAssistantTail, isLatestAssistantReply, chatRenderSignature, messagesFromTurns } = await import(
   pathToFileURL(out).href
 );
 
@@ -110,7 +110,45 @@ check(
   false,
 );
 
-/* ---------- 3. ASK response / SESSION_UPDATE race ---------- */
+/* ---------- 3. History projection (ADR-030) ---------- */
+
+check('an empty turn list projects to an empty pane', messagesFromTurns([]), []);
+check(
+  'stored turns project to role/content bubbles',
+  messagesFromTurns([
+    { role: 'user', content: '问题' },
+    { role: 'assistant', content: '回答' },
+  ]),
+  [
+    { role: 'user', content: '问题' },
+    { role: 'assistant', content: '回答' },
+  ],
+);
+check(
+  'an image-bearing turn keeps only the marker',
+  messagesFromTurns([{ role: 'user', content: '看图', hasImages: true }]),
+  [{ role: 'user', content: '看图', hasImages: true }],
+);
+check(
+  'image data URLs never enter the projection',
+  JSON.stringify(messagesFromTurns([
+    { role: 'user', content: '看图', hasImages: true, images: ['data:image/png;base64,AA'] },
+  ])).includes('data:image'),
+  false,
+);
+check(
+  'unknown roles fall back to user bubbles',
+  messagesFromTurns([{ role: 'system', content: '规则' }])[0].role,
+  'user',
+);
+check(
+  'the image marker participates in the render signature',
+  chatRenderSignature([{ role: 'user', content: '看图' }]) ===
+    chatRenderSignature([{ role: 'user', content: '看图', hasImages: true }]),
+  false,
+);
+
+/* ---------- 4. ASK response / SESSION_UPDATE race ---------- */
 
 // Mirrors the reconciliation branch in submitQuestion().
 const reconcileAskAnswer = (current, answer, backgroundMessages) => {

@@ -22,10 +22,12 @@ export const PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
     }
     .rtts-drawer-tab:hover { color: rgba(255,255,255,0.8); }
     .rtts-drawer-tab.active { background: rgba(124,92,255,0.3); color: #fff; }
-    /* New-topic: a quiet action on the far side of the tab strip; loud only on hover. */
+    /* Drawer actions: history and new-topic sit next to the close button. */
+    #rtts-drawer-actions {
+      display: flex; align-items: center; gap: 2px; margin-left: auto;
+    }
     .rtts-drawer-newtopic {
       display: flex; align-items: center; gap: 4px;
-      margin-left: auto;
       border: none; background: none; color: rgba(255,255,255,0.5);
       font-size: 11px; font-weight: 500;
       padding: 4px 8px; border-radius: 7px; cursor: pointer;
@@ -258,9 +260,68 @@ export const PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
     #rtts-drawer-header {
       padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.06);
       display: flex; align-items: center; justify-content: space-between;
+      gap: 8px;
     }
     #rtts-drawer-header h3 { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
     #rtts-drawer-close { background: none; border: none; color: rgba(255,255,255,0.5); cursor: pointer; font-size: 18px; padding: 4px; }
+    #rtts-pane-chat { position: relative; }
+
+    /* === History popover: per-video companion sessions === */
+    .rtts-history-popover {
+      position: absolute; left: 12px; right: 12px; top: 10px;
+      max-height: min(320px, 56vh);
+      display: flex; flex-direction: column;
+      background: rgba(18,18,28,0.98);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      box-shadow: 0 18px 44px rgba(0,0,0,0.6);
+      z-index: 2147483646;
+      overflow: hidden;
+    }
+    .rtts-history-popover[hidden] { display: none; }
+    .rtts-history-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 12px 8px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      color: rgba(255,255,255,0.55);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .rtts-history-head button {
+      border: none; background: none; color: rgba(255,255,255,0.4);
+      font-size: 12px; cursor: pointer; padding: 2px 4px;
+    }
+    .rtts-history-head button:hover { color: #fff; }
+    .rtts-history-list {
+      overflow-y: auto; padding: 6px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.16) transparent;
+    }
+    .rtts-history-item {
+      display: flex; align-items: stretch; gap: 4px;
+      border-radius: 8px;
+    }
+    .rtts-history-item:hover { background: rgba(255,255,255,0.05); }
+    .rtts-history-item.active { background: rgba(124,92,255,0.18); }
+    .rtts-history-main {
+      flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+      text-align: left; border: none; background: none; color: inherit;
+      padding: 8px; border-radius: 8px; cursor: pointer;
+    }
+    .rtts-history-title {
+      font-size: 12px; color: rgba(255,255,255,0.86);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .rtts-history-meta { font-size: 10px; color: rgba(255,255,255,0.42); }
+    .rtts-history-del {
+      flex-shrink: 0; width: 28px; border: none; background: none;
+      color: rgba(255,255,255,0.3); cursor: pointer; font-size: 11px;
+      border-radius: 8px;
+    }
+    .rtts-history-del:hover { background: rgba(239,68,68,0.16); color: #fca5a5; }
+    .rtts-history-empty {
+      padding: 22px 12px; text-align: center;
+      font-size: 12px; color: rgba(255,255,255,0.35);
+    }
     #rtts-chat {
       flex: 1; overflow-y: auto; padding: 12px 16px;
       display: flex; flex-direction: column; gap: 10px;
@@ -278,6 +339,10 @@ export const PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
     .rtts-msg .rtts-msg-images img {
       width: 72px; height: 72px; object-fit: cover; border-radius: 7px;
       border: 1px solid rgba(255,255,255,0.14); cursor: zoom-in; display: block;
+    }
+    .rtts-msg-image-note {
+      margin-top: 6px; font-size: 10px;
+      color: rgba(255,255,255,0.35);
     }
     #rtts-chat-composer {
       position: relative;

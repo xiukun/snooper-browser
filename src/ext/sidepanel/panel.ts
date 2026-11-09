@@ -55,11 +55,12 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
     pageTitle: string
     url: string
     startedAt: number
-    endedAt: number
+    endedAt: number | null
     sourceLang: string
     targetLang: string
     subtitleCount: number
-    subtitles?: HistorySubtitle[]
+    status: 'recording' | 'completed'
+    lastAt: number
   }
 
   const DEFAULT_OBSIDIAN: ObsidianConfig = {
@@ -453,6 +454,8 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
 
   /* ===== History ===== */
 
+  const HISTORY_PAGE_SIZE = 300
+
   function formatTime(ts: number): string {
     return new Date(ts).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
   }
@@ -465,19 +468,95 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
 
   function updateHistorySelection() {
     const all = Array.from(historyList.querySelectorAll<HTMLInputElement>('input.history-check'))
-    const selected = all.filter((el) => el.checked)
+    const selectable = all.filter((el) => !el.disabled)
+    const selected = selectable.filter((el) => el.checked)
     historyDeleteSelected.disabled = selected.length === 0
     historyDeleteSelected.textContent = selected.length > 0
       ? `删除所选 (${selected.length})`
       : '删除所选'
-    historySelectAll.checked = all.length > 0 && selected.length === all.length
-    historySelectAll.indeterminate = selected.length > 0 && selected.length < all.length
-    historySelectAll.disabled = all.length === 0
+    historySelectAll.checked = selectable.length > 0 && selected.length === selectable.length
+    historySelectAll.indeterminate = selected.length > 0 && selected.length < selectable.length
+    historySelectAll.disabled = selectable.length === 0
+  }
+
+  async function fetchHistoryTranscript(id: string): Promise<HistorySubtitle[]> {
+    const res: any = await chrome.runtime.sendMessage({
+      target: 'background',
+      type: 'GET_HISTORY_TRANSCRIPT',
+      id,
+    })
+    return res?.ok && Array.isArray(res.subtitles) ? res.subtitles : []
+  }
+
+  function appendHistoryRows(
+    container: HTMLElement,
+    subtitles: HistorySubtitle[],
+    from: number,
+    to: number,
+  ) {
+    for (let index = from; index < to && index < subtitles.length; index += 1) {
+      const subtitle = subtitles[index]!
+      const row = document.createElement('div')
+      row.className = 'history-subtitle-row'
+      const time = document.createElement('time')
+      time.textContent = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : '--:--:--'
+      const source = document.createElement('span')
+      source.className = 'history-source'
+      source.textContent = subtitle.source || '（无原文）'
+      const target = document.createElement('span')
+      target.className = 'history-target'
+      target.textContent = subtitle.target || '（无译文）'
+      row.append(time, source, target)
+      container.appendChild(row)
+    }
+  }
+
+  /**
+   * Detail is loaded on demand: GET_HISTORY only returns summaries, and a
+   * two-hour transcript can hold thousands of rows (ADR-031).
+   */
+  function mountHistoryDetail(detail: HTMLElement, item: HistoryEntry) {
+    let loaded = false
+    let rows: HistorySubtitle[] = []
+    let shown = 0
+
+    const list = document.createElement('div')
+    list.className = 'history-subtitle-list'
+    const more = document.createElement('button')
+    more.type = 'button'
+    more.className = 'btn btn-sm btn-secondary history-more'
+    more.hidden = true
+    detail.append(list, more)
+
+    function paintNextBatch() {
+      const next = Math.min(rows.length, shown + HISTORY_PAGE_SIZE)
+      appendHistoryRows(list, rows, shown, next)
+      shown = next
+      const remaining = rows.length - shown
+      more.hidden = remaining <= 0
+      more.textContent = `显示更多（剩余 ${remaining} 条）`
+    }
+
+    more.addEventListener('click', paintNextBatch)
+
+    return async function ensureLoaded(): Promise<void> {
+      if (loaded) return
+      detail.textContent = '正在读取…'
+      rows = await fetchHistoryTranscript(item.id)
+      detail.textContent = ''
+      detail.append(list, more)
+      loaded = true
+      if (rows.length === 0) {
+        detail.textContent = '这条记录没有保存字幕正文。'
+        return
+      }
+      paintNextBatch()
+    }
   }
 
   async function loadAndRenderHistory() {
     const res: any = await chrome.runtime.sendMessage({ target: 'background', type: 'GET_HISTORY' })
-    const items: HistoryEntry[] = res?.history || []
+    const items: HistoryEntry[] = Array.isArray(res?.history) ? res.history : []
     historyCount.textContent = String(items.length)
     historyList.textContent = ''
 
@@ -491,6 +570,7 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
     historyEmpty.style.display = 'none'
 
     items.forEach((item) => {
+      const recording = item.status === 'recording'
       const el = document.createElement('div')
       el.className = 'history-item'
 
@@ -498,6 +578,8 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
       check.type = 'checkbox'
       check.className = 'history-check'
       check.dataset.id = item.id
+      check.disabled = recording
+      check.title = recording ? '正在录制的记录不能删除' : ''
       check.setAttribute('aria-label', `选择 ${item.pageTitle || '记录'}`)
       check.addEventListener('change', updateHistorySelection)
       el.appendChild(check)
@@ -510,82 +592,108 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
       title.textContent = item.pageTitle || '未知页面'
       const meta = document.createElement('div')
       meta.className = 'history-item-meta'
-      meta.textContent = `${formatTime(item.startedAt)} · ${item.subtitleCount || 0} 条字幕 · ${item.sourceLang || ''} → ${item.targetLang || ''}`
+      const parts = [
+        formatTime(item.startedAt),
+        `${item.subtitleCount || 0} 条字幕`,
+        `${item.sourceLang || 'auto'} → ${item.targetLang || 'zh'}`,
+      ]
+      if (recording) parts.push('录制中')
+      meta.textContent = parts.join(' · ')
       main.append(title, meta)
       el.appendChild(main)
 
       const detail = document.createElement('div')
       detail.className = 'history-item-detail'
       detail.hidden = true
-      const rows = item.subtitles || []
-      if (rows.length === 0) {
-        detail.textContent = '这是旧版历史记录，只保存了条数，没有保存字幕正文。'
-      } else {
-        rows.forEach((subtitle) => {
-          const row = document.createElement('div')
-          row.className = 'history-subtitle-row'
-          const time = document.createElement('time')
-          time.textContent = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : '--:--:--'
-          const source = document.createElement('span')
-          source.className = 'history-source'
-          source.textContent = subtitle.source || '（无原文）'
-          const target = document.createElement('span')
-          target.className = 'history-target'
-          target.textContent = subtitle.target || '（无译文）'
-          row.append(time, source, target)
-          detail.appendChild(row)
-        })
-      }
       el.appendChild(detail)
 
       const actions = document.createElement('div')
       actions.className = 'history-item-actions'
+
+      let ensureDetail: (() => Promise<void>) | null = null
       const toggle = document.createElement('button')
       toggle.type = 'button'
       toggle.className = 'btn btn-sm btn-secondary'
       toggle.textContent = '查看内容'
-      toggle.addEventListener('click', () => {
-        detail.hidden = !detail.hidden
-        toggle.textContent = detail.hidden ? '查看内容' : '收起内容'
+      toggle.addEventListener('click', async () => {
+        if (!detail.hidden) {
+          detail.hidden = true
+          toggle.textContent = '查看内容'
+          return
+        }
+        detail.hidden = false
+        toggle.textContent = '收起内容'
+        if (!ensureDetail) ensureDetail = mountHistoryDetail(detail, item)
+        toggle.disabled = true
+        try {
+          await ensureDetail()
+        } finally {
+          toggle.disabled = false
+        }
       })
       actions.appendChild(toggle)
+
       const copy = document.createElement('button')
       copy.type = 'button'
       copy.className = 'btn btn-sm btn-secondary'
       copy.textContent = '复制'
       copy.addEventListener('click', async () => {
-        const rows = item.subtitles || []
-        if (rows.length === 0) {
-          showNotice('旧记录没有保存字幕正文，无法复制', true)
-          return
+        copy.disabled = true
+        try {
+          const rows = await fetchHistoryTranscript(item.id)
+          if (rows.length === 0) {
+            showNotice('这条记录没有保存字幕正文，无法复制', true)
+            return
+          }
+          const text = rows.map((subtitle) => `${subtitle.source || ''}\n${subtitle.target || ''}`).join('\n\n')
+          const ok = await copyText(text)
+          showNotice(ok ? '已复制完整转写内容' : '复制失败，请在浏览器设置中允许剪贴板访问', !ok)
+        } finally {
+          copy.disabled = false
         }
-        const text = rows.map((subtitle) => `${subtitle.source || ''}\n${subtitle.target || ''}`).join('\n\n')
-        const ok = await copyText(text)
-        showNotice(ok ? '已复制转写内容' : '复制失败，请在浏览器设置中允许剪贴板访问', !ok)
       })
       actions.appendChild(copy)
+
       const exportButton = document.createElement('button')
       exportButton.type = 'button'
       exportButton.className = 'btn btn-sm btn-secondary'
       exportButton.textContent = '导出 Markdown'
-      exportButton.addEventListener('click', () => {
-        const blob = new Blob([historyMarkdown(item)], { type: 'text/markdown;charset=utf-8' })
-        const url = URL.createObjectURL(blob)
-        const anchor = document.createElement('a')
-        anchor.href = url
-        anchor.download = `snooper-history-${item.id}.md`
-        anchor.click()
-        setTimeout(() => URL.revokeObjectURL(url), 2000)
+      exportButton.addEventListener('click', async () => {
+        exportButton.disabled = true
+        try {
+          const rows = await fetchHistoryTranscript(item.id)
+          if (rows.length === 0) {
+            showNotice('这条记录没有保存字幕正文，无法导出', true)
+            return
+          }
+          const blob = new Blob([historyMarkdown(item, rows)], { type: 'text/markdown;charset=utf-8' })
+          const url = URL.createObjectURL(blob)
+          const anchor = document.createElement('a')
+          anchor.href = url
+          anchor.download = `snooper-history-${item.id}.md`
+          anchor.click()
+          setTimeout(() => URL.revokeObjectURL(url), 2000)
+        } finally {
+          exportButton.disabled = false
+        }
       })
       actions.appendChild(exportButton)
+
       const del = document.createElement('button')
       del.type = 'button'
       del.className = 'btn btn-sm btn-secondary'
       del.textContent = '删除'
-      del.addEventListener('click', () => {
+      del.disabled = recording
+      del.title = recording ? '正在录制的记录不能删除' : ''
+      del.addEventListener('click', async () => {
         if (!confirm(`确定删除「${item.pageTitle || '这条记录'}」？`)) return
-        chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_HISTORY', id: item.id })
-          .then(() => loadAndRenderHistory())
+        const res: any = await chrome.runtime.sendMessage({
+          target: 'background',
+          type: 'DELETE_HISTORY',
+          id: item.id,
+        })
+        if (res?.skipped) showNotice('正在录制的记录已跳过', true)
+        await loadAndRenderHistory()
       })
       actions.appendChild(del)
       el.appendChild(actions)
@@ -598,44 +706,46 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
 
   historySelectAll.addEventListener('change', () => {
     const checked = historySelectAll.checked
-    historyList.querySelectorAll<HTMLInputElement>('input.history-check').forEach((el) => {
+    historyList.querySelectorAll<HTMLInputElement>('input.history-check:not(:disabled)').forEach((el) => {
       el.checked = checked
     })
     updateHistorySelection()
   })
 
-  historyDeleteSelected.addEventListener('click', () => {
+  historyDeleteSelected.addEventListener('click', async () => {
     const ids = getSelectedHistoryIds()
     if (ids.length === 0) return
     if (!confirm(`确定删除选中的 ${ids.length} 条历史记录？此操作不可恢复。`)) return
-    chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_HISTORY', ids })
-      .then(() => loadAndRenderHistory())
+    const res: any = await chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_HISTORY', ids })
+    if (res?.skipped) showNotice('正在录制的记录已跳过', true)
+    await loadAndRenderHistory()
   })
 
-  historyClear.addEventListener('click', () => {
+  historyClear.addEventListener('click', async () => {
     if (!confirm('确定清空全部历史记录？此操作不可恢复。')) return
-    chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_ALL_HISTORY' })
-      .then(() => loadAndRenderHistory())
+    const res: any = await chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_ALL_HISTORY' })
+    if (res?.skipped) showNotice('正在录制的记录已跳过', true)
+    await loadAndRenderHistory()
   })
 
-  function historyMarkdown(item: HistoryEntry): string {
+  function historyMarkdown(item: HistoryEntry, subtitles: HistorySubtitle[]): string {
     const lines = [
       `# ${item.pageTitle || '转写历史'}`,
       '',
       `- **开始**：${formatTime(item.startedAt)}`,
-      `- **结束**：${formatTime(item.endedAt)}`,
+      `- **结束**：${formatTime(item.endedAt ?? item.lastAt)}`,
       `- **语言**：${item.sourceLang || 'auto'} → ${item.targetLang || 'zh'}`,
+      `- **字幕条目**：${subtitles.length} 条`,
       '',
       '| 时间 | 原文 | 译文 |',
       '| :--- | :--- | :--- |',
     ]
-    for (const subtitle of item.subtitles || []) {
+    for (const subtitle of subtitles) {
       const time = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : ''
       const source = (subtitle.source || '').replace(/\|/g, '\\|').replace(/\n/g, '<br>')
       const target = (subtitle.target || '').replace(/\|/g, '\\|').replace(/\n/g, '<br>')
       lines.push(`| ${time} | ${source} | ${target} |`)
     }
-    if (!item.subtitles?.length) lines.push('|  | 旧记录未保存字幕正文 |  |')
     return lines.join('\n')
   }
 

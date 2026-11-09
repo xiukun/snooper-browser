@@ -42,6 +42,13 @@ import { transcribeAudio, translateTextStream } from './api'
 
 const WORKLET_PATH = chrome.runtime.getURL('audio-worklet.js')
 
+/**
+ * Explicit STOP keeps the offscreen document alive this long so a segment
+ * already in ASR/translation can still emit its final line (ADR-031). The
+ * bound keeps the stop response from hanging on a stalled provider.
+ */
+const STOP_DRAIN_MS = 4000
+
 export interface CaptureSession {
   tabId: number
   generation: number
@@ -60,6 +67,13 @@ export interface CaptureSession {
   pendingTranscriptions: number
   currentAskController: AbortController | null
   aborted: boolean
+  /** Teardown started: no new audio may be segmented. */
+  captureStopped: boolean
+  /**
+   * Explicit stop is waiting (bounded) for in-flight ASR/translation so the
+   * final line still reaches the transcript (ADR-031).
+   */
+  draining: boolean
   videoEl: HTMLVideoElement | null
   /** Per-frame RMS, aligned with pcmBuffer, used to trim edges. */
   frameRms: number[]
@@ -203,6 +217,8 @@ async function startTabCaptureNow({ tabId, streamId, sourceLang, targetLang, con
     pendingTranscriptions: 0,
     currentAskController: null,
     aborted: false,
+    captureStopped: false,
+    draining: false,
     videoEl: null,
     frameRms: [],
     frameLens: [],
@@ -341,7 +357,7 @@ async function startTabCaptureNow({ tabId, streamId, sourceLang, targetLang, con
   }
 }
 
-export async function stopTabCapture(tabId: number, generation?: number): Promise<void> {
+export async function stopTabCapture(tabId: number, generation?: number, drain = false): Promise<void> {
   const session = captureSessions.get(tabId)
   const result = stopCaptureGeneration(
     generationState(tabId),
@@ -353,17 +369,20 @@ export async function stopTabCapture(tabId: number, generation?: number): Promis
     startLocks,
     tabId,
     'queue',
-    () => stopCurrentCapture(tabId, session),
+    () => stopCurrentCapture(tabId, session, drain),
   )
 }
 
-async function stopCurrentCapture(tabId: number, expectedSession?: CaptureSession): Promise<void> {
+async function stopCurrentCapture(tabId: number, expectedSession?: CaptureSession, drain = false): Promise<void> {
   const session = captureSessions.get(tabId)
   if (!session || (expectedSession && session !== expectedSession)) return
 
-  // Mark first: in-flight finalizeSegment calls check this after every await
-  // and must not emit subtitles once the user has stopped.
-  session.aborted = true
+  // From here on no new audio is segmented. An explicit stop keeps `aborted`
+  // false for a bounded drain so ASR/translation already in flight can still
+  // emit its final line; every other teardown (restart, tab close) aborts now.
+  session.captureStopped = true
+  session.draining = drain
+  if (!drain) session.aborted = true
 
   if (session.currentAskController) {
     session.currentAskController.abort()
@@ -399,15 +418,32 @@ async function stopCurrentCapture(tabId: number, expectedSession?: CaptureSessio
       : Promise.resolve(),
   ])
 
+  // Give an in-flight segment a short window to finish before the document is
+  // allowed to close. Without this the last line of the session is dropped.
+  if (drain) await waitForPendingTranscriptions(session, STOP_DRAIN_MS)
+  session.aborted = true
+  session.draining = false
+
   if (captureSessions.get(tabId) === session) captureSessions.delete(tabId)
   stopKeepAliveIfIdle()
+}
+
+/**
+ * Bounded wait for in-flight ASR/translation. Polling is sufficient: the
+ * window is short and only this document owns the timer.
+ */
+async function waitForPendingTranscriptions(session: CaptureSession, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (session.pendingTranscriptions > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
 }
 
 /* ===== PCM pipeline ===== */
 
 function onPcmChunk(tabId: number, msg: any) {
   const session = captureSessions.get(tabId)
-  if (!session || session.aborted) return
+  if (!session || session.aborted || session.captureStopped) return
 
   const pcmData = new Int16Array(msg.buffer)
   session.pcmBuffer.push(pcmData)
@@ -464,7 +500,7 @@ function reportAudioState(session: CaptureSession, silent: boolean) {
 
 export function checkSegment(tabId: number) {
   const session = captureSessions.get(tabId)
-  if (!session || session.aborted) return
+  if (!session || session.aborted || session.captureStopped) return
 
   // Backpressure: never let the buffer grow past one segment's worth while a
   // slow ASR request is still in flight.
@@ -517,6 +553,25 @@ function concatPcm(buffers: Int16Array[]): Int16Array {
 }
 
 /* ===== Segment finalization ===== */
+
+/**
+ * Final subtitles are awaited during an explicit stop so the STOP response
+ * cannot finalize the transcript before the last line is delivered. Normal
+ * operation stays fire-and-forget.
+ */
+async function emitFinalSubtitle(session: CaptureSession, payload: Record<string, unknown>): Promise<void> {
+  const message = {
+    type: 'CAPTURE_SUBTITLE',
+    tabId: session.tabId,
+    generation: session.generation,
+    ...payload,
+  }
+  if (session.draining) {
+    await chrome.runtime.sendMessage(message).catch(() => {})
+    return
+  }
+  chrome.runtime.sendMessage(message).catch(() => {})
+}
 
 async function finalizeSegment(tabId: number) {
   const session = captureSessions.get(tabId)
@@ -663,17 +718,12 @@ async function finalizeSegment(tabId: number) {
         passthrough: true,
         asrMs,
       })
-      chrome.runtime.sendMessage({
-        type: 'CAPTURE_SUBTITLE',
-        tabId,
-        generation: session.generation,
+      await emitFinalSubtitle(session, {
         at: segmentStartTime,
         endedAt: Date.now(),
         source: transcription,
         target: transcription,
         latency: passthroughLatency,
-      }).catch(() => {
-        // Background may be busy; the subtitle will appear on the next state sync.
       })
       return
     }
@@ -701,7 +751,7 @@ async function finalizeSegment(tabId: number) {
       config: session.config,
       context: contextSummary,
       onDelta: (delta) => {
-        if (session.aborted) return
+        if (session.aborted || session.draining) return
         fullTranslation += delta
         const currentLatency = Math.round(
           performance.now() - t0 + (Date.now() - segmentStartTime),
@@ -738,10 +788,7 @@ async function finalizeSegment(tabId: number) {
       asrMs,
       llmMs,
     })
-    chrome.runtime.sendMessage({
-      type: 'CAPTURE_SUBTITLE',
-      tabId,
-      generation: session.generation,
+    await emitFinalSubtitle(session, {
       at: segmentStartTime,
       endedAt: Date.now(),
       source: transcription,

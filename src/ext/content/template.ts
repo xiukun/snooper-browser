@@ -138,16 +138,32 @@ export const CONTENT_HTML = `
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
             笔记 <span id="rtts-notes-count">0</span>
           </button>
-          <button id="rtts-chat-new-topic" class="rtts-drawer-newtopic" type="button" title="开始新话题（清空当前对话上下文）" aria-label="开始新话题">
+        </div>
+        <div id="rtts-drawer-actions">
+          <button id="rtts-chat-history" class="rtts-drawer-newtopic" type="button" title="查看这个视频的历史会话" aria-label="查看历史会话" aria-haspopup="dialog" aria-expanded="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+            历史
+          </button>
+          <button id="rtts-chat-new-topic" class="rtts-drawer-newtopic" type="button" title="开始新话题（新建空白会话）" aria-label="开始新话题">
             <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             新话题
           </button>
+          <button id="rtts-drawer-close" aria-label="关闭"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         </div>
-        <button id="rtts-drawer-close" aria-label="关闭"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
 
       <div id="rtts-pane-chat" class="rtts-pane active" role="tabpanel" aria-label="AI 伴学">
         <div id="rtts-chat"></div>
+
+        <div id="rtts-history-popover" class="rtts-history-popover" hidden role="dialog" aria-label="历史会话">
+          <div class="rtts-history-head">
+            <span>历史会话</span>
+            <button id="rtts-history-close" type="button" aria-label="关闭">✕</button>
+          </div>
+          <div id="rtts-history-list" class="rtts-history-list"></div>
+          <div id="rtts-history-empty" class="rtts-history-empty" hidden>这个视频还没有历史会话</div>
+        </div>
+
         <div id="rtts-chat-composer">
           <div id="rtts-chat-attachments" aria-live="polite"></div>
 

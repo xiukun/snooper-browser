@@ -17,10 +17,15 @@
     "test:keyed-task": "node scripts/test-keyed-task.mjs",
     "test:export-assets": "node scripts/test-export-assets.mjs",
     "test:chat-state": "node scripts/test-chat-state.mjs",
+    "test:transcript": "node scripts/test-transcript-store.mjs",
+    "test:session-state": "node scripts/test-session-state.mjs",
     "test:image-material": "node scripts/test-image-material.mjs",
     "test:ext-globals": "node scripts/check-ext-no-vite-globals.mjs"
   },
   "dependencies": {
     "docx": "^9.15.2"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

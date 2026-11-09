@@ -499,6 +499,8 @@ body {
   font-size: 12px;
   line-height: 1.5;
 }
+.history-subtitle-list { display: flex; flex-direction: column; }
+.history-more { margin-top: 8px; }
 .history-subtitle-row {
   display: grid;
   grid-template-columns: 62px minmax(0, 1fr) minmax(0, 1fr);

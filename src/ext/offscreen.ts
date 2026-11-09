@@ -41,7 +41,7 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
 
     case 'STOP_CAPTURE': {
       const tabId = message.tabId
-      stopTabCapture(tabId, message.generation).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }))
+      stopTabCapture(tabId, message.generation, message.drain === true).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }))
       return true
     }
 

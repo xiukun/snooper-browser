@@ -238,5 +238,113 @@ export function isLikelyAsrRepeatLoop(fullWindow: string[], text: string): boole
   if (GENERIC_BURST_LINES_ZH.has(currentZh)) {
     return fullWindow.some((candidate) => bareText(candidate) === currentZh);
   }
-  return false;
+  return isLikelyShortRepeatLoop(fullWindow, text);
+}
+
+/**
+ * ADR-039: the stock lists above only cover the phrases that were reported
+ * before. A decoder loop can emit any short line ("Speak up." in the reported
+ * screenshot). Any short line that repeats exactly within the last four
+ * segments is a loop, not speech.
+ *
+ * Exported separately because the same rule runs on the translated line:
+ * similar source fragments ("你快" / "快快") can collapse into the same English
+ * translation ("Speak up.") even when the ASR text differs.
+ */
+export function isLikelyShortRepeatLoop(fullWindow: string[], text: string): boolean {
+  if (!isShortLine(text)) return false;
+  const key = repeatKey(text);
+  if (!key) return false;
+  return fullWindow.slice(-4).some((candidate) => repeatKey(candidate) === key);
+}
+
+/* ===== ADR-039: short repeats, language mismatch, fillers ===== */
+
+/** CJK ideographs, kana and hangul — the scripts the capture app supports. */
+function countCjk(text: string): number {
+  const matches = text.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/g);
+  return matches ? matches.length : 0;
+}
+
+const SHORT_LINE_MAX_CJK = 12;
+const SHORT_LINE_MAX_WORDS = 4;
+
+/**
+ * A line short enough that an exact repeat is a decoder loop rather than a
+ * deliberate callback. Long lines can repeat in real speech (a refrain), but a
+ * four-word phrase repeated across adjacent segments is the observed failure.
+ */
+function isShortLine(text: string): boolean {
+  const bare = bareText(text);
+  if (!bare) return false;
+  const cjk = countCjk(bare);
+  if (cjk > 0) return cjk <= SHORT_LINE_MAX_CJK;
+  const words = normalizeEnglish(bare).split(' ').filter(Boolean);
+  return words.length > 0 && words.length <= SHORT_LINE_MAX_WORDS;
+}
+
+/** Comparable form for repeat detection: punctuation-insensitive per script. */
+function repeatKey(text: string): string {
+  return countCjk(text) > 0 ? bareText(text) : normalizeEnglish(text);
+}
+
+/**
+ * Configured source language vs. the script actually returned. Whisper-family
+ * gateways occasionally ignore the `language` field and return English (or
+ * Chinese) regardless of the audio; translating that output hides the failure
+ * and produces confident nonsense.
+ *
+ * Deliberately only fires for explicit languages and for lines that look like
+ * a sentence in the other script — a single romanized name must survive.
+ */
+export function isLikelyAsrLanguageMismatch(text: string, sourceLang: string): boolean {
+  const lang = String(sourceLang || '').trim().toLowerCase();
+  if (!lang || lang === 'auto') return false;
+  const t = normalize(text);
+  if (!t) return false;
+
+  const cjk = countCjk(t);
+  const latinWords = t.match(/[A-Za-z][A-Za-z'’-]*/g) || [];
+  const latinLetters = latinWords.reduce(
+    (sum, word) => sum + word.replace(/[^A-Za-z]/g, '').length,
+    0,
+  );
+  const latinLooksLikeSentence = latinWords.length >= 2 && latinLetters >= 8;
+
+  switch (lang) {
+    case 'zh':
+    case 'ja':
+      return cjk === 0 && latinLooksLikeSentence;
+    case 'ko':
+      return !/[\uac00-\ud7af]/.test(t) && latinLooksLikeSentence;
+    case 'en':
+      return latinWords.length === 0 && cjk > 0;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Backchannels and fillers. They are real speech and stay in the transcript,
+ * but the overlay dims them so "Ah. / Hmm. / 嗯。" does not compete with the
+ * lecture. Matching is whole-line only: "Ah, I see." is content.
+ */
+const FILLER_ONLY = new RegExp(
+  '^(?:' +
+    [
+      'ah+', 'oh+', 'uh+', 'um+', 'hmm+', 'mm+', 'eh+', 'hey', 'hi', 'hello',
+      'well', 'okay', 'ok', 'yeah', 'yep', 'yes', 'no', 'right', 'alright',
+      'wow', 'ouch', 'huh+', 'aha+', 'ha+', 'bye', 'thanks?', 'sorry', 'please',
+      '嗯+', '啊+', '哦+', '噢+', '呃+', '唉+', '哎+', '呀+', '哈+', '嘿+',
+      '喂+', '好+', '对+', '是+', '行+', '可以', '好吧', '谢谢', '抱歉',
+      '不好意思',
+    ].join('|') +
+    ')[\\s.。!！?？…,，、~～]*$',
+  'i',
+);
+
+export function isFillerOnly(text: string): boolean {
+  const t = normalize(text);
+  if (!t) return false;
+  return FILLER_ONLY.test(t);
 }

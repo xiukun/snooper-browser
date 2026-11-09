@@ -386,6 +386,25 @@ function persistSessions() {
   }
 }
 
+// src/lib/subtitle-order.ts
+function startOf(item) {
+  return typeof item.at === "number" && Number.isFinite(item.at) && item.at > 0 ? item.at : 0;
+}
+function compareStart(a, b) {
+  return startOf(a) - startOf(b);
+}
+function sortByStart(items) {
+  return items.slice().sort(compareStart);
+}
+function insertByStart(items, item) {
+  let index = items.length;
+  while (index > 0 && startOf(items[index - 1]) > startOf(item)) {
+    index -= 1;
+  }
+  items.splice(index, 0, item);
+  return items;
+}
+
 // src/ext/background/transcript-store.ts
 var TRANSCRIPT_INDEX_KEY = "snooper.extension.transcripts.v1";
 var TRANSCRIPT_CHUNK_PREFIX = "snooper.extension.transcript.v1.";
@@ -832,7 +851,7 @@ async function readTranscript(id) {
       if (line) lines.push(line);
     }
   }
-  return lines;
+  return sortByStart(lines);
 }
 async function deleteTranscripts(ids) {
   const records = await getIndex();
@@ -1239,7 +1258,7 @@ function registerOffscreenEventRouter() {
           target: message.target || "",
           latency: message.latency || 0
         };
-        s.subtitles.push(entry);
+        insertByStart(s.subtitles, entry);
         if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
           s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
         }

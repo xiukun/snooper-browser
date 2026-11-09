@@ -20,7 +20,9 @@ import { shouldSkipTranslation } from '../../lib/passthrough'
 import {
   isLikelyAsrHallucination,
   isLikelyAsrHallucinationSequence,
+  isLikelyAsrLanguageMismatch,
   isLikelyAsrRepeatLoop,
+  isLikelyShortRepeatLoop,
 } from '../../lib/asr-guard'
 import {
   computeRMS,
@@ -667,7 +669,13 @@ async function finalizeSegment(tabId: number) {
       transcription,
     )
     const isRepeatLoop = isLikelyAsrRepeatLoop(session.recentAsrWindow, transcription)
-    if (isHallucination || isRepeatLoop) {
+    // ADR-039: a gateway that ignores the `language` field returns another
+    // script; translating it would disguise the failure.
+    const isLanguageMismatch = isLikelyAsrLanguageMismatch(
+      transcription,
+      session.sourceLang,
+    )
+    if (isHallucination || isRepeatLoop || isLanguageMismatch) {
       // Loud music and encoder noise still reach the model even with energy
       // gating. Drop the stock phrases instead of translating them. The
       // duration and level make it possible to tune the energy gate when a
@@ -676,6 +684,8 @@ async function finalizeSegment(tabId: number) {
         text: transcription,
         burst: isHallucination,
         repeatLoop: isRepeatLoop,
+        languageMismatch: isLanguageMismatch,
+        sourceLang: session.sourceLang,
         durationMs: Math.round(durationMs),
         speechMs,
         recentCandidates: [...session.recentAsrCandidates],
@@ -769,6 +779,30 @@ async function finalizeSegment(tabId: number) {
         })
       },
     })
+
+    // ADR-039: different fragments can collapse into the same short
+    // translation ("你快" / "快快" → "Speak up."). The ASR-side repeat check
+    // cannot see that; the translated line is the last chance before display.
+    const recentTargets = (session.recentContext || [])
+      .map((entry) => entry.target)
+      .filter(Boolean)
+    if (isLikelyShortRepeatLoop(recentTargets, translation)) {
+      console.warn('[RTTS] dropped repeated translation:', {
+        source: transcription,
+        translation,
+        recentTargets,
+      })
+      chrome.runtime.sendMessage({
+        type: 'CAPTURE_SUBTITLE_STREAMING',
+        tabId,
+        generation: session.generation,
+        at: segmentStartTime,
+        source: '',
+        partialTarget: '',
+        latency: 0,
+      }).catch(() => {})
+      return
+    }
 
     const processingMs = Math.round(performance.now() - t0)
     const llmMs = Math.max(0, processingMs - asrMs)

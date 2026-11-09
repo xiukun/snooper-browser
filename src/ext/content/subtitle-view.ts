@@ -6,6 +6,8 @@
 import { chatRenderSignature } from '../chat-state'
 import { renderMarkdownLite } from './markdown'
 import { formatVideoTime } from '../../lib/video-clock'
+import { isFillerOnly } from '../../lib/asr-guard'
+import { sortByStart } from '../../lib/subtitle-order'
 import { seekTo } from './video-seek'
 import type { StreamingSubtitle } from './types'
 
@@ -33,7 +35,7 @@ export interface SubtitleViewRefs {
 export interface SubtitleViewSession {
   state: string
   isDemoMode: boolean
-  subtitles: Array<{ target?: string; source?: string; id?: string; videoTime?: number | null }>
+  subtitles: Array<{ target?: string; source?: string; id?: string; at?: number; videoTime?: number | null }>
   messages?: Array<{ role: string; content: string; images?: string[] }>
   streamingSubtitle?: StreamingSubtitle | null
   audioSilent?: boolean
@@ -78,7 +80,9 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
     deps.updateLangLabel()
 
     // === Scrollable Subtitle Display (full history) ===
-    const subs = session.subtitles || []
+    // ADR-038: segment starts define order. Out-of-order completion must not
+    // reorder the gutter (24:28 followed by 24:24 read as broken time).
+    const subs = sortByStart(session.subtitles || [])
     const streaming = session.streamingSubtitle
     const last = subs[subs.length - 1]
     const subtitleSignal = `${subs.length}:${last?.id || ''}:${streaming?.at || ''}`
@@ -115,6 +119,9 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
 
         const anchored = typeof sub.videoTime === 'number' && Number.isFinite(sub.videoTime) && sub.videoTime >= 0
         if (anchored) {
+          // ADR-038: the time lives in its own narrow gutter so a dragged-wide
+          // panel cannot split the row into three columns.
+          row.classList.add('has-time')
           // The chip is the seek affordance (ADR-034); the text stays
           // selectable, so only the chip handles clicks.
           const chip = document.createElement('button')
@@ -155,12 +162,20 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
           row.appendChild(src)
         }
 
+        // ADR-039: filler-only lines remain in the transcript but are dimmed
+        // on the overlay so they do not compete with content.
+        if (isFillerOnly(sub.target || sub.source || '')) {
+          row.classList.add('filler')
+        }
+
         r.subRows.appendChild(row)
       })
 
-      // Highlight the latest entry
+      // Highlight the latest entry without dropping the layout classes
+      // (ADR-038: the old className overwrite was why the last row's chip
+      // jumped above the text).
       const lastRow = r.subRows.lastElementChild
-      if (lastRow) lastRow.className = 'sub-row current'
+      if (lastRow) lastRow.classList.add('current')
 
       // Render streaming row (if active)
       if (streaming) {

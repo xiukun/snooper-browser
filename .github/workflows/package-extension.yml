@@ -52,6 +52,7 @@ jobs:
           npm run test:chat-state
           npm run test:transcript
           npm run test:video-clock
+          npm run test:subtitle-order
           npm run test:deep-link
           npm run test:markdown
           npm run test:session-state

@@ -271,7 +271,10 @@ ${options.context}
 ` : "";
     return [
       `\u4F60\u662F\u4E00\u540D\u4E13\u4E1A\u7684\u540C\u58F0\u4F20\u8BD1\u5458\u3002\u6E90\u8BED\u8A00\uFF1A${source}\uFF1B\u76EE\u6807\u8BED\u8A00\uFF1A${target}\u3002`,
-      "\u5C06\u4E0B\u9762\u7684\u5185\u5BB9\u7FFB\u8BD1\u4E3A\u76EE\u6807\u8BED\u8A00\u3002\u53EA\u8F93\u51FA\u8BD1\u6587\u672C\u8EAB\uFF0C\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981\u52A0\u5F15\u53F7\u3001\u4E0D\u8981\u91CD\u590D\u539F\u6587\u3002",
+      "\u8F93\u5165\u6765\u81EA\u8BED\u97F3\u8BC6\u522B\uFF0C\u53EF\u80FD\u6709\u9519\u5B57\u3001\u6F0F\u5B57\u6216\u65AD\u53E5\u9519\u8BEF\u3002\u53EA\u7FFB\u8BD1\u4F60\u770B\u5230\u7684\u5185\u5BB9\uFF1A\u4E0D\u5F97\u8865\u5168\u3001\u4E0D\u5F97\u6269\u5199\u3001\u4E0D\u5F97\u6839\u636E\u4E0A\u4E0B\u6587\u7F16\u9020\u672A\u8BF4\u51FA\u7684\u4FE1\u606F\u3002",
+      "\u788E\u7247\u6216\u8BED\u6C14\u8BCD\u5C31\u8BD1\u6210\u788E\u7247\u6216\u8BED\u6C14\u8BCD\uFF0C\u4E0D\u8981\u6539\u5199\u6210\u5B8C\u6574\u53E5\u5B50\u3002",
+      "\u4EBA\u540D\u3001\u5730\u540D\u3001\u4E13\u6709\u540D\u8BCD\u53EA\u4F7F\u7528\u4E0A\u4E0B\u6587\u4E2D\u51FA\u73B0\u8FC7\u7684\u5199\u6CD5\uFF1B\u6CA1\u6709\u628A\u63E1\u65F6\u97F3\u8BD1\uFF0C\u4E0D\u5F97\u865A\u6784\u3002",
+      "\u53EA\u8F93\u51FA\u8BD1\u6587\u672C\u8EAB\uFF0C\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981\u52A0\u5F15\u53F7\u3001\u4E0D\u8981\u91CD\u590D\u539F\u6587\u3001\u4E0D\u8981\u8F93\u51FA\u6807\u7B7E\u6216\u6CE8\u91CA\u3002",
       "\u4FDD\u6301\u53E3\u8BED\u5316\u3001\u7B80\u6D01\u3001\u9002\u5408\u4F5C\u4E3A\u5B9E\u65F6\u5B57\u5E55\u663E\u793A\u3002",
       contextBlock ? `\u6CE8\u610F\u4FDD\u6301\u4E0E\u4E0A\u4E0B\u6587\u7684\u8FDE\u8D2F\u6027\uFF0C\u4E13\u6709\u540D\u8BCD\u524D\u540E\u4E00\u81F4\u3002
 ${contextBlock}` : "",
@@ -310,7 +313,7 @@ ${contextBlock}` : "",
                 content: [{ type: "text", text: promptText }]
               }
             ],
-            temperature: 0.12,
+            temperature: 0.05,
             max_tokens: 512,
             stream: true
           })
@@ -377,7 +380,7 @@ ${contextBlock}` : "",
             ]
           }
         ],
-        temperature: 0.12,
+        temperature: 0.05,
         max_tokens: 512,
         stream: false
       })
@@ -799,8 +802,108 @@ ${question}`
     if (GENERIC_BURST_LINES_ZH.has(currentZh)) {
       return fullWindow.some((candidate) => bareText(candidate) === currentZh);
     }
-    return false;
+    return isLikelyShortRepeatLoop(fullWindow, text);
   }
+  function isLikelyShortRepeatLoop(fullWindow, text) {
+    if (!isShortLine(text)) return false;
+    const key = repeatKey(text);
+    if (!key) return false;
+    return fullWindow.slice(-4).some((candidate) => repeatKey(candidate) === key);
+  }
+  function countCjk(text) {
+    const matches = text.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/g);
+    return matches ? matches.length : 0;
+  }
+  var SHORT_LINE_MAX_CJK = 12;
+  var SHORT_LINE_MAX_WORDS = 4;
+  function isShortLine(text) {
+    const bare = bareText(text);
+    if (!bare) return false;
+    const cjk = countCjk(bare);
+    if (cjk > 0) return cjk <= SHORT_LINE_MAX_CJK;
+    const words = normalizeEnglish(bare).split(" ").filter(Boolean);
+    return words.length > 0 && words.length <= SHORT_LINE_MAX_WORDS;
+  }
+  function repeatKey(text) {
+    return countCjk(text) > 0 ? bareText(text) : normalizeEnglish(text);
+  }
+  function isLikelyAsrLanguageMismatch(text, sourceLang) {
+    const lang = String(sourceLang || "").trim().toLowerCase();
+    if (!lang || lang === "auto") return false;
+    const t = normalize(text);
+    if (!t) return false;
+    const cjk = countCjk(t);
+    const latinWords = t.match(/[A-Za-z][A-Za-z'’-]*/g) || [];
+    const latinLetters = latinWords.reduce(
+      (sum, word) => sum + word.replace(/[^A-Za-z]/g, "").length,
+      0
+    );
+    const latinLooksLikeSentence = latinWords.length >= 2 && latinLetters >= 8;
+    switch (lang) {
+      case "zh":
+      case "ja":
+        return cjk === 0 && latinLooksLikeSentence;
+      case "ko":
+        return !/[\uac00-\ud7af]/.test(t) && latinLooksLikeSentence;
+      case "en":
+        return latinWords.length === 0 && cjk > 0;
+      default:
+        return false;
+    }
+  }
+  var FILLER_ONLY = new RegExp(
+    "^(?:" + [
+      "ah+",
+      "oh+",
+      "uh+",
+      "um+",
+      "hmm+",
+      "mm+",
+      "eh+",
+      "hey",
+      "hi",
+      "hello",
+      "well",
+      "okay",
+      "ok",
+      "yeah",
+      "yep",
+      "yes",
+      "no",
+      "right",
+      "alright",
+      "wow",
+      "ouch",
+      "huh+",
+      "aha+",
+      "ha+",
+      "bye",
+      "thanks?",
+      "sorry",
+      "please",
+      "\u55EF+",
+      "\u554A+",
+      "\u54E6+",
+      "\u5662+",
+      "\u5443+",
+      "\u5509+",
+      "\u54CE+",
+      "\u5440+",
+      "\u54C8+",
+      "\u563F+",
+      "\u5582+",
+      "\u597D+",
+      "\u5BF9+",
+      "\u662F+",
+      "\u884C+",
+      "\u53EF\u4EE5",
+      "\u597D\u5427",
+      "\u8C22\u8C22",
+      "\u62B1\u6B49",
+      "\u4E0D\u597D\u610F\u601D"
+    ].join("|") + ")[\\s.\u3002!\uFF01?\uFF1F\u2026,\uFF0C\u3001~\uFF5E]*$",
+    "i"
+  );
 
   // src/ext/offscreen/capture.ts
   var WORKLET_PATH = chrome.runtime.getURL("audio-worklet.js");
@@ -1215,11 +1318,17 @@ ${question}`
         transcription
       );
       const isRepeatLoop = isLikelyAsrRepeatLoop(session.recentAsrWindow, transcription);
-      if (isHallucination || isRepeatLoop) {
+      const isLanguageMismatch = isLikelyAsrLanguageMismatch(
+        transcription,
+        session.sourceLang
+      );
+      if (isHallucination || isRepeatLoop || isLanguageMismatch) {
         console.warn("[RTTS] dropped likely ASR hallucination:", {
           text: transcription,
           burst: isHallucination,
           repeatLoop: isRepeatLoop,
+          languageMismatch: isLanguageMismatch,
+          sourceLang: session.sourceLang,
           durationMs: Math.round(durationMs),
           speechMs,
           recentCandidates: [...session.recentAsrCandidates],
@@ -1293,6 +1402,25 @@ ${question}`
           });
         }
       });
+      const recentTargets = (session.recentContext || []).map((entry) => entry.target).filter(Boolean);
+      if (isLikelyShortRepeatLoop(recentTargets, translation)) {
+        console.warn("[RTTS] dropped repeated translation:", {
+          source: transcription,
+          translation,
+          recentTargets
+        });
+        chrome.runtime.sendMessage({
+          type: "CAPTURE_SUBTITLE_STREAMING",
+          tabId,
+          generation: session.generation,
+          at: segmentStartTime,
+          source: "",
+          partialTarget: "",
+          latency: 0
+        }).catch(() => {
+        });
+        return;
+      }
       const processingMs = Math.round(performance.now() - t0);
       const llmMs = Math.max(0, processingMs - asrMs);
       const totalLatency = processingMs + (Date.now() - segmentStartTime);

@@ -25,6 +25,7 @@ export interface SubtitleViewRefs {
   subRows: HTMLElement
   subPlaceholder: HTMLElement
   subStatus: HTMLElement
+  subListening: HTMLElement
   streamingRow: HTMLElement
   streamingText: HTMLElement
   streamingSource: HTMLElement
@@ -100,6 +101,17 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
       r.subPlaceholder.textContent = session.isDemoMode
         ? '演示模式启动中…'
         : '正在聆听…'
+
+      // ADR-040: while audio accumulates and the panel already has content,
+      // a quiet breathing row replaces the blank gap so "nothing yet" never
+      // reads as "frozen". The empty-panel case stays with subPlaceholder,
+      // so the two never show together. Demo mode has no real audio.
+      const listening = s === 'running'
+        && !session.isDemoMode
+        && !silent
+        && hasContent
+        && !streaming
+      r.subListening.classList.toggle('hidden', !listening)
 
       // Stopped with content on screen: keep the last lines readable, but the
       // box must reach an end state — re-arm the idle collapse even though no
@@ -193,6 +205,7 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
       r.subPlaceholder.textContent = '点击「录音」开始实时转写'
       r.subRows.textContent = ''
       clearStreaming()
+      r.subListening.classList.add('hidden')
       r.subBox.classList.add('hidden')
       r.subBox.classList.remove('auto-idle')
     }

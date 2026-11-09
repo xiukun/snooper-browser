@@ -35,9 +35,9 @@
   // src/ext/offscreen/audio.ts
   var TARGET_SAMPLE_RATE = 16e3;
   var FRAME_SIZE = 320;
-  var MIN_SEGMENT_DURATION_MS = 800;
+  var MIN_SEGMENT_DURATION_MS = 600;
   var MAX_SEGMENT_DURATION_MS = 4e3;
-  var SILENCE_THRESHOLD_MS = 500;
+  var SILENCE_THRESHOLD_MS = 350;
   var SILENCE_RMS_THRESHOLD = 0.045;
   var MAX_QUEUE_SIZE = 3;
   function createWavBlob(pcmData, sampleRate) {

@@ -23,6 +23,7 @@ export interface ContentRefs {
   subRows: HTMLElement
   subPlaceholder: HTMLElement
   subStatus: HTMLElement
+  subListening: HTMLElement
   copyBtn: HTMLElement
   exportTxtBtn: HTMLElement
   exportMdBtn: HTMLElement
@@ -135,6 +136,7 @@ export function collectRefs(shadow: ShadowRoot): ContentRefs {
     subRows: shadow.getElementById('rtts-sub-rows') as ContentRefs['subRows'],
     subPlaceholder: shadow.getElementById('rtts-sub-placeholder') as ContentRefs['subPlaceholder'],
     subStatus: shadow.getElementById('rtts-sub-status') as ContentRefs['subStatus'],
+    subListening: shadow.getElementById('rtts-sub-listening') as ContentRefs['subListening'],
     copyBtn: shadow.getElementById('rtts-copy-btn') as ContentRefs['copyBtn'],
     exportTxtBtn: shadow.getElementById('rtts-export-txt-btn') as ContentRefs['exportTxtBtn'],
     exportMdBtn: shadow.getElementById('rtts-export-md-btn') as ContentRefs['exportMdBtn'],

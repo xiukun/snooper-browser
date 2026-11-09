@@ -10,9 +10,12 @@
 
 export const TARGET_SAMPLE_RATE = 16000
 export const FRAME_SIZE = 320 // 20ms at 16kHz
-export const MIN_SEGMENT_DURATION_MS = 800
+// ADR-040: 800/500 → 600/350. Short lines finalize ~300ms earlier end to end.
+// If real-world testing shows mid-phrase cuts, raise SILENCE_THRESHOLD_MS
+// first — it only delays finalize, while MIN gates whether a segment exists.
+export const MIN_SEGMENT_DURATION_MS = 600
 export const MAX_SEGMENT_DURATION_MS = 4000
-export const SILENCE_THRESHOLD_MS = 500
+export const SILENCE_THRESHOLD_MS = 350
 /**
  * Used by the boundary detector (speech → silence transition). Anything that
  * decides *whether* audio is worth transcribing lives in lib/audio-segments.

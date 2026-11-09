@@ -11,6 +11,8 @@ English · [简体中文](./README.zh-CN.md)
 
 snooper is an open-source multimodal workspace that runs entirely in the browser. Capture tab or microphone audio for real-time bilingual subtitles, question a vision model about what is on screen, and route every capability to whichever provider you trust. No backend, no bundled keys, no telemetry.
 
+Video walkthrough (Chinese): [snooper on Bilibili](https://www.bilibili.com/video/BV1JRWt6kEtp/).
+
 ## Features
 
 ### Real-time subtitles

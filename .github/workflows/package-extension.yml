@@ -1,6 +1,7 @@
 name: Package extension
 
-# Builds the loadable extension archive and its checksum. A tag must match
+# Builds the loadable extension archive and its checksum, runs the regression
+# suite, and publishes the GitHub Release for the tag. A tag must match
 # ext/manifest.json, so a release can never ship a ZIP labelled with a
 # different version than the code inside it.
 
@@ -11,7 +12,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package:
@@ -70,3 +71,23 @@ jobs:
           path: |
             dist-extension/*.zip
             dist-extension/*.zip.sha256
+
+      # The workflow artifact is for inspection/debugging; users download from
+      # the Releases page. Without this step a successful tag build left the
+      # latest release pointing at an older version.
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          assets=(dist-extension/*.zip dist-extension/*.zip.sha256)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --title "$tag" \
+              --generate-notes \
+              --latest \
+              --verify-tag
+          fi

@@ -8,6 +8,7 @@
 import type { NoteDocument, NoteEntry } from '../../lib/types'
 import { createNoteDocument, saveNotes } from './notes-store'
 import { renderMarkdownLite } from './markdown'
+import { seekTo } from './video-seek'
 import type { SessionState } from './types'
 
 export interface NotesRefs {
@@ -25,6 +26,15 @@ export interface NotesDeps {
 
 export function createNotes(deps: NotesDeps) {
   const r = deps.refs
+
+  // ADR-037: summaries and notes render `[mm:ss]` stamps as buttons (ADR-036
+  // renderer); clicking one seeks the video the same way chat does.
+  r.list.addEventListener('click', (event) => {
+    const target = (event.target as HTMLElement | null)?.closest?.('.chat-time-ref') as HTMLElement | null
+    if (!target) return
+    const seconds = Number(target.dataset.t)
+    if (Number.isFinite(seconds)) seekTo(seconds)
+  })
 
   function persistNotes() {
     saveNotes(deps.getSession().notes)
@@ -115,9 +125,10 @@ export function createNotes(deps: NotesDeps) {
 
       const text = document.createElement('span')
       const content = entry.text || entry.target || entry.source || '笔记'
-      if (entry.type === 'text') {
+      if (entry.type === 'text' || entry.type === 'summary') {
         // Notes are Markdown: render the same safe subset the composer uses
-        // instead of showing raw asterisks and backticks.
+        // instead of showing raw asterisks and backticks. Summaries are
+        // Markdown documents (ADR-037), so they render the same way.
         text.className = 'note-text note-md'
         text.innerHTML = renderMarkdownLite(content)
       } else {

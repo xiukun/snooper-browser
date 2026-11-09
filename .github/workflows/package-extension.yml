@@ -51,6 +51,9 @@ jobs:
           npm run test:export-assets
           npm run test:chat-state
           npm run test:transcript
+          npm run test:video-clock
+          npm run test:deep-link
+          npm run test:markdown
           npm run test:session-state
           npm run test:image-material
           npm run test:ext-globals

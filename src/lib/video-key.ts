@@ -36,7 +36,8 @@ function stripWww(host: string): string {
   return host.replace(/^www\./, '')
 }
 
-function youtubeId(url: URL): string | null {
+/** Extracts the YouTube video id, or null for other hosts. Exported for deep-link building (ADR-035). */
+export function youtubeId(url: URL): string | null {
   const host = stripWww(url.hostname)
   if (host === 'youtu.be') {
     const id = url.pathname.split('/').filter(Boolean)[0]
@@ -49,7 +50,8 @@ function youtubeId(url: URL): string | null {
   return match?.[1] ?? null
 }
 
-function bilibiliKey(url: URL): string | null {
+/** Extracts the Bilibili video identity (`BV…`/`av…`/path), or null. Exported for deep-link building (ADR-035). */
+export function bilibiliKey(url: URL): string | null {
   const host = stripWww(url.hostname)
   if (host !== 'bilibili.com' && !host.endsWith('.bilibili.com')) return null
   const bv = url.pathname.match(/\/(BV[0-9A-Za-z]+)/)

@@ -6,6 +6,7 @@ import { messagesFromTurns } from '../../chat-state'
 import {
   buildAskParts,
   buildSubtitleDigest,
+  buildSummaryParts,
   deleteSession as agentDeleteSession,
   getAgentPersistError,
   listSessions as agentListSessions,
@@ -548,6 +549,53 @@ export const sessionHandlers: MessageHandlerMap = {
     pushSession(tabId)
 
     return true // async – response will be sent later
+  },
+
+  /**
+   * ADR-037: one-shot session summary. Evidence comes from the server-side
+   * session state (same digest as ASK), the answer goes back to the content
+   * script which owns note writes. Chat history is untouched — a summary is a
+   * document, not a conversation turn.
+   */
+  SUMMARIZE: (message, { tabId, sendResponse }) => {
+    const s = getOrCreateSession(tabId)
+    const digest = buildSubtitleDigest(s.subtitles)
+    if (!digest.trim() || s.subtitles.length === 0) {
+      sendResponse({ ok: false, error: '还没有可总结的字幕，先开启实时翻译' })
+      return false
+    }
+
+    const video = videoFromMessage(message)
+    void (async () => {
+      try {
+        const config = s.configSnapshot || await loadConfig()
+        const parts = buildSummaryParts({
+          digest,
+          videoTitle: video.videoTitle,
+          subtitleCount: s.subtitles.length,
+        })
+        const summary = await askLLM({
+          parts,
+          config,
+          sourceLang: s.sourceLang,
+          targetLang: s.targetLang,
+        })
+        // Anchor for the note entry: the evidence window's latest position.
+        let videoTime: number | null = null
+        for (let i = s.subtitles.length - 1; i >= 0; i -= 1) {
+          const t = s.subtitles[i]?.videoTime
+          if (typeof t === 'number' && Number.isFinite(t)) {
+            videoTime = t
+            break
+          }
+        }
+        sendResponse({ ok: true, summary, videoTime, subtitleCount: s.subtitles.length })
+      } catch (err: any) {
+        sendResponse({ ok: false, error: err?.message || '生成纪要失败' })
+      }
+    })()
+
+    return true
   },
 
   /* ---------- Agent conversation management ---------- */

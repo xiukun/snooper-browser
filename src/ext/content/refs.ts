@@ -63,6 +63,7 @@ export interface ContentRefs {
   hideBtn: HTMLElement
   showBtn: HTMLElement
   noteBtn: HTMLElement
+  summaryBtn: HTMLElement
   imageBtn: HTMLElement
   screenshotBtn: HTMLButtonElement
   notesCount: HTMLElement
@@ -174,6 +175,7 @@ export function collectRefs(shadow: ShadowRoot): ContentRefs {
     hideBtn: shadow.getElementById('rtts-hide-btn') as ContentRefs['hideBtn'],
     showBtn: shadow.getElementById('rtts-show-btn') as ContentRefs['showBtn'],
     noteBtn: shadow.getElementById('rtts-note-btn') as ContentRefs['noteBtn'],
+    summaryBtn: shadow.getElementById('rtts-summary-btn') as ContentRefs['summaryBtn'],
     imageBtn: shadow.getElementById('rtts-image-btn') as ContentRefs['imageBtn'],
     screenshotBtn: shadow.getElementById('rtts-screenshot-btn') as ContentRefs['screenshotBtn'],
     notesCount: shadow.getElementById('rtts-notes-count') as ContentRefs['notesCount'],

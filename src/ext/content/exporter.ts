@@ -8,6 +8,7 @@
 import type { NoteDocument, SubtitleLine } from '../../lib/types'
 import { LANGUAGES } from '../../lib/models'
 import { formatVideoTime } from '../../lib/video-clock'
+import { videoDeepLink } from '../../lib/deep-link'
 
 export function getSubtitleText(subtitles: Array<Partial<SubtitleLine>>): string {
   return subtitles
@@ -63,6 +64,10 @@ export interface MarkdownSession {
   subtitles: Array<Partial<SubtitleLine>>
   messages: Array<{ role: string; content: string; images?: string[] }>
   notes: NoteDocument[]
+  /** Page URL the session was captured on; enables `?t=` deep links (ADR-035). */
+  pageUrl?: string
+  /** Page title for the export header, when known. */
+  pageTitle?: string
 }
 
 export function getSubtitleMarkdown(
@@ -79,6 +84,7 @@ export function getSubtitleMarkdown(
   const lines = [
     `# snooper-browser 翻译记录`,
     ``,
+    ...(session.pageTitle ? [`- **页面**：${session.pageTitle}`] : []),
     `- **时间**：${new Date().toLocaleString('zh-CN')}`,
     `- **语言方向**：${label(session.sourceLang)} → ${label(session.targetLang)}`,
     `- **字幕条目**：${session.subtitles.length} 条`,
@@ -101,7 +107,12 @@ export function getSubtitleMarkdown(
       const video = typeof sub.videoTime === 'number' && Number.isFinite(sub.videoTime)
         ? formatVideoTime(sub.videoTime)
         : ''
-      lines.push(`| ${video} | ${wall} | ${t} | ${s} |`)
+      // ADR-035: deep-link the timestamp when the site supports ?t= seeks.
+      const link = typeof sub.videoTime === 'number' && Number.isFinite(sub.videoTime)
+        ? videoDeepLink(session.pageUrl, sub.videoTime)
+        : null
+      const cell = link ? `[\`${video}\`](${link})` : video
+      lines.push(`| ${cell} | ${wall} | ${t} | ${s} |`)
     } else {
       lines.push(`| ${wall} | ${t} | ${s} |`)
     }
@@ -134,6 +145,9 @@ export function getSubtitleMarkdown(
         else lines.push(`> [图片：${label} — 图片数据仅保存在扩展存储中，未随本次导出携带]`)
         if (entry.text) lines.push('', `*${entry.text}*`)
         lines.push('')
+      } else if (entry.type === 'summary') {
+        // ADR-037: already-Markdown document text, never a list item.
+        lines.push('', `### 学习纪要`, '', entry.text || '', '')
       } else if (entry.target) {
         lines.push(`- ${entry.target} ${entry.source ? `（${entry.source}）` : ''}`)
       } else if (entry.text) lines.push(`- ${entry.text}`)

@@ -38,6 +38,10 @@ export interface NoteEntry {
   /** Associated language codes. */
   sourceLang?: string
   targetLang?: string
+  /** Seconds into the page's video when this was captured (ADR-035); null/absent when unavailable. */
+  videoTime?: number | null
+  /** Page URL the entry was captured on; enables `?t=` deep links in exports. */
+  videoUrl?: string
 }
 
 export interface NoteDocument {

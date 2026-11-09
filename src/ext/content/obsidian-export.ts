@@ -59,7 +59,10 @@ export function bindObsidianExport(deps: ObsidianExportDeps) {
       }
     }
 
-    const markdown = getSubtitleMarkdown(deps.getSession(), uploadedNames)
+    const markdown = getSubtitleMarkdown(
+      { ...deps.getSession(), pageUrl: location.href, pageTitle: document.title },
+      uploadedNames,
+    )
     const imageNote = uploadedCount > 0 ? `，含 ${uploadedCount} 张图片` : ''
     const failNote = failedCount > 0 ? `；${failedCount} 张图片上传失败，已用文字占位` : ''
 

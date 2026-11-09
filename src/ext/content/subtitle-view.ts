@@ -239,6 +239,22 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
     r.chatEl.scrollTop = r.chatEl.scrollHeight
   }
 
+  // ADR-036: `[mm:ss]` stamps in answers seek the video. One delegated
+  // listener covers every bubble, including re-renders.
+  r.chatEl.addEventListener('click', (event) => {
+    const target = (event.target as HTMLElement | null)?.closest?.('.chat-time-ref') as HTMLElement | null
+    if (!target) return
+    const seconds = Number(target.dataset.t)
+    if (!Number.isFinite(seconds)) return
+    const result = seekTo(seconds)
+    const bubble = target.closest('.rtts-msg')
+    if (bubble) {
+      bubble.classList.remove('seek-ok', 'seek-fail')
+      void (bubble as HTMLElement).offsetWidth
+      bubble.classList.add(result.ok ? 'seek-ok' : 'seek-fail')
+    }
+  })
+
   /* ===== Streaming Subtitle Rendering ===== */
 
   function renderStreaming(sub: StreamingSubtitle | null) {

@@ -8,6 +8,7 @@
 import { sendToPageWithInjection } from '../action-flow'
 import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-assets'
 import { formatVideoTime } from '../../lib/video-clock'
+import { videoDeepLink } from '../../lib/deep-link'
 
 (() => {
   /* ===== Types ===== */
@@ -378,14 +379,27 @@ import { formatVideoTime } from '../../lib/video-clock'
     for (const entry of note.entries) {
       const time = new Date(entry.at).toLocaleTimeString('zh-CN')
       switch (entry.type) {
-        case 'subtitle':
+        case 'subtitle': {
           lines.push(`### 字幕 ${time}`)
           if (entry.target) lines.push(`**译文**：${entry.target}`)
           if (entry.source) lines.push(`**原文**：${entry.source}`)
+          // ADR-035: deep-link the anchor when the entry carries one.
+          const link = typeof entry.videoTime === 'number' && Number.isFinite(entry.videoTime)
+            ? videoDeepLink(entry.videoUrl, entry.videoTime)
+            : null
+          if (link) lines.push(`**视频锚点**：[\`${formatVideoTime(entry.videoTime!)}\`](${link})`)
           lines.push('')
           break
+        }
         case 'text':
           lines.push(`### 笔记 ${time}`)
+          lines.push(entry.text || '')
+          lines.push('')
+          break
+        case 'summary':
+          // ADR-037: the summary entry is already Markdown; give it a heading
+          // so it reads as a document section in Obsidian.
+          lines.push(`### 学习纪要 ${time}`)
           lines.push(entry.text || '')
           lines.push('')
           break
@@ -506,8 +520,11 @@ import { formatVideoTime } from '../../lib/video-clock'
             files: ['content.js'],
           })
         },
+        // The content script answers `{ ok, seek }`; the generic envelope
+        // discards it, so pass the verdict through explicitly (ADR-036).
+        collectResponse: (raw: any) => raw?.seek?.ok === true,
       })
-      return res?.seek?.ok === true
+      return res?.responseOk === true
     } catch {
       return false
     }
@@ -638,7 +655,26 @@ import { formatVideoTime } from '../../lib/video-clock'
       main.className = 'history-item-main'
       const title = document.createElement('div')
       title.className = 'history-item-title'
-      title.title = item.pageTitle || ''
+      // ADR-036: the title returns to the video. Records without a stored URL
+      // (very old versions) keep the plain text.
+      if (item.url) {
+        title.classList.add('history-item-link')
+        title.setAttribute('role', 'link')
+        title.tabIndex = 0
+        title.title = `打开原视频：${item.pageTitle || ''}`
+        const open = () => {
+          void chrome.tabs.create({ url: item.url, active: true }).catch(() => {})
+        }
+        title.addEventListener('click', open)
+        title.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            open()
+          }
+        })
+      } else {
+        title.title = item.pageTitle || ''
+      }
       title.textContent = item.pageTitle || '未知页面'
       const meta = document.createElement('div')
       meta.className = 'history-item-meta'
@@ -798,10 +834,12 @@ import { formatVideoTime } from '../../lib/video-clock'
       const source = (subtitle.source || '').replace(/\|/g, '\\|').replace(/\n/g, '<br>')
       const target = (subtitle.target || '').replace(/\|/g, '\\|').replace(/\n/g, '<br>')
       if (anchored) {
-        const video = typeof subtitle.videoTime === 'number' && Number.isFinite(subtitle.videoTime)
-          ? formatVideoTime(subtitle.videoTime)
-          : ''
-        lines.push(`| ${video} | ${wall} | ${source} | ${target} |`)
+        const hasTime = typeof subtitle.videoTime === 'number' && Number.isFinite(subtitle.videoTime)
+        const video = hasTime ? formatVideoTime(subtitle.videoTime!) : ''
+        // ADR-035: link the timestamp back to the record's own page when the
+        // site supports ?t= seeks.
+        const link = hasTime ? videoDeepLink(item.url, subtitle.videoTime!) : null
+        lines.push(`| ${link ? `[\`${video}\`](${link})` : video} | ${wall} | ${source} | ${target} |`)
       } else {
         lines.push(`| ${wall} | ${source} | ${target} |`)
       }

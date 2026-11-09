@@ -492,6 +492,10 @@ body {
   text-overflow: ellipsis;
   margin-bottom: 4px;
 }
+/* ADR-036: titled records open the original video. */
+.history-item-link { cursor: pointer; }
+.history-item-link:hover { color: #a78bfa; }
+.history-item-link:focus-visible { outline: 1px solid rgba(124, 92, 255, 0.7); outline-offset: 2px; border-radius: 4px; }
 .history-item-meta {
   font-size: 11px;
   color: var(--text-muted);

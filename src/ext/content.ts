@@ -29,7 +29,7 @@ import { createAsk } from './content/ask'
 import { createCompanionSessions } from './content/history'
 import { readVideoContext } from './content/video-context'
 import { createVideoClock } from './content/video-clock'
-import { seekTo } from './content/video-seek'
+import { onAfterSeek, seekTo } from './content/video-seek'
 import { createToolsMenu } from './content/tools-menu'
 import { bindActions } from './content/actions'
 import { bindObsidianExport } from './content/obsidian-export'
@@ -170,7 +170,7 @@ import { createScreenshotCapturer } from './screenshot'
     chatNewTopic, chatHistoryBtn, chatHistoryPopover, chatHistoryList, chatHistoryEmpty, chatHistoryClose,
     chatBtn, chatAttachBtn, chatFile, chatAttachments, sendBtn,
     fsWarn, hideBtn, showBtn,
-    noteBtn, imageBtn, screenshotBtn,
+    noteBtn, summaryBtn, imageBtn, screenshotBtn,
     notesCount, notesBadge, notesBtn, notesList, notesAdd, obsidianBtn,
     settingsModal, settingsClose,
     cfgBaseUrl, cfgApiKey, cfgToggleKey, cfgLlm, cfgAudio, cfgImage,
@@ -229,6 +229,12 @@ import { createScreenshotCapturer } from './screenshot'
       return state === 'starting' || state === 'running' || state === 'stopping';
     },
   });
+
+  // ADR-037 (F5): an explicit seek flushes the wall-clock ↔ playback mapping
+  // immediately, so a line recorded right after the jump is not interpolated
+  // across it. The hook fires from both seek entry points (overlay chip and
+  // side-panel message).
+  onAfterSeek(() => videoClock.sample(true))
 
   function adoptBackgroundSession(incoming: any) {
     session = {
@@ -707,6 +713,7 @@ import { createScreenshotCapturer } from './screenshot'
       exportTxt: exportTxtBtn,
       exportMd: exportMdBtn,
       note: noteBtn,
+      summary: summaryBtn,
       image: imageBtn,
       screenshot: screenshotBtn,
     },
@@ -721,6 +728,17 @@ import { createScreenshotCapturer } from './screenshot'
     openImagePanel,
     captureVideoFrame,
     openShotPreview,
+    summarize: () => {
+      // ADR-037: the evidence lives in the background session; the page only
+      // supplies the video identity for the prompt header.
+      const video = readVideoContext()
+      return bg('SUMMARIZE', {
+        videoKey: video.videoKey,
+        videoTitle: video.videoTitle,
+        videoUrl: video.videoUrl,
+      })
+    },
+    openNotes: () => openDrawer('notes'),
   });
 
   // Notes pane (lives inside the unified drawer)
@@ -804,9 +822,10 @@ import { createScreenshotCapturer } from './screenshot'
     }
 
     if (msg && msg.type === 'SEEK_VIDEO') {
-      // ADR-034: side-panel rows seek through the page, which owns the video.
+      // ADR-034/036: side-panel rows seek through the page, which owns the
+      // video. `seek` is the verdict; the outer `ok` only means "handled".
       const result = seekTo(msg.seconds);
-      sendResponse?.({ ok: true, ...result });
+      sendResponse?.({ ok: true, seek: result });
       return;
     }
 

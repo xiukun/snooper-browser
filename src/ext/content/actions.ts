@@ -14,6 +14,7 @@ export interface ActionRefs {
   exportTxt: HTMLElement
   exportMd: HTMLElement
   note: HTMLElement
+  summary: HTMLElement
   image: HTMLElement
   screenshot: HTMLButtonElement
 }
@@ -29,6 +30,10 @@ export interface ActionDeps {
   openImagePanel: (prompt?: string) => void
   captureVideoFrame: () => Promise<{ dataUrl: string; cropped: boolean }>
   openShotPreview: (url: string, saved: boolean, insertable?: boolean) => void
+  /** ADR-037: the background round-trip lives in content.ts (it owns `bg`). */
+  summarize: () => Promise<{ ok: boolean; summary?: string; videoTime?: number | null; error?: string }>
+  /** ADR-037: reveal the notes pane after the summary lands. */
+  openNotes: () => void
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -109,7 +114,8 @@ export function bindActions(deps: ActionDeps) {
   r.exportMd.addEventListener('click', async () => {
     const session = deps.getSession()
     const subtitles = await resolveSubtitles(deps)
-    const text = getSubtitleMarkdown({ ...session, subtitles })
+    // ADR-035: the current page is the session's video for deep links.
+    const text = getSubtitleMarkdown({ ...session, subtitles, pageUrl: location.href, pageTitle: document.title })
     if (!text) { deps.toast('没有内容可导出', 'err'); return }
     deps.flashChip(r.exportMd)
 
@@ -136,7 +142,7 @@ export function bindActions(deps: ActionDeps) {
       }
     }
     const markdown = getSubtitleMarkdown(
-      session,
+      { ...session, pageUrl: location.href, pageTitle: document.title },
       new Map([...names].map(([entryId, name]) => [entryId, name])),
     )
     files.unshift({ name: 'record.md', bytes: new TextEncoder().encode(markdown) })
@@ -159,9 +165,48 @@ export function bindActions(deps: ActionDeps) {
       target: last.target,
       sourceLang: session.sourceLang,
       targetLang: session.targetLang,
+      // ADR-035: carry the anchor so exports can deep-link back to the video.
+      videoTime: typeof last.videoTime === 'number' ? last.videoTime : null,
+      videoUrl: location.href,
     })
     deps.flashChip(r.note)
     deps.toast('已记入笔记', 'ok')
+  })
+
+  // ADR-037: summarize the evidence digest into a note entry. The background
+  // owns the LLM call; this surface owns the note write and the feedback.
+  let summaryBusy = false
+  r.summary.addEventListener('click', async () => {
+    if (summaryBusy) return
+    const session = deps.getSession()
+    if (!session.subtitles || session.subtitles.length === 0) {
+      deps.toast('还没有字幕可总结，先开启实时翻译', 'err')
+      return
+    }
+    summaryBusy = true
+    r.summary.setAttribute('aria-disabled', 'true')
+    deps.toast('正在生成纪要…', 'info')
+    try {
+      const res = await deps.summarize()
+      if (!res.ok || !res.summary) {
+        deps.toast(res.error || '生成纪要失败', 'err')
+        return
+      }
+      deps.addNoteEntry({
+        id: `summary_${Date.now()}`,
+        type: 'summary',
+        at: Date.now(),
+        text: res.summary,
+        videoTime: typeof res.videoTime === 'number' ? res.videoTime : null,
+        videoUrl: location.href,
+      })
+      deps.openNotes()
+      deps.flashChip(r.summary)
+      deps.toast('纪要已记入笔记', 'ok')
+    } finally {
+      summaryBusy = false
+      r.summary.removeAttribute('aria-disabled')
+    }
   })
 
   // Open image generation with the current subtitle as the prompt seed.

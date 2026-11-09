@@ -54,7 +54,9 @@ try {
   )
   const {
     COMPANION_SYSTEM_PROMPT,
+    SUMMARY_SYSTEM_PROMPT,
     buildAskParts,
+    buildSummaryParts,
     buildSubtitleDigest,
     deleteSession,
     formatSubtitleOffset,
@@ -189,6 +191,35 @@ try {
     check('parts: bare question single text', parts.length, 1)
     check('parts: bare question text', parts[0].text.includes('你好'), true)
     check('parts: bare question system', parts[0].text.includes('【系统指令】'), true)
+  }
+
+  /* ---------- buildSummaryParts (ADR-037) ---------- */
+  {
+    const parts = buildSummaryParts({
+      digest: '[01:35] 讲者解释了注意力机制\n[02:10] 给出了一个例子',
+      videoTitle: '测试讲座',
+      subtitleCount: 42,
+    })
+    check('summary: single text part', parts.length, 1)
+    const text = parts[0].text
+    check('summary: system prompt present', text.includes(SUMMARY_SYSTEM_PROMPT.split('\n')[0]), true)
+    check('summary: video title', text.includes('【视频】测试讲座'), true)
+    check('summary: digest attached', text.includes('[01:35] 讲者解释了注意力机制'), true)
+    check('summary: evidence header', text.includes('【字幕证据'), true)
+    check('summary: task instruction', text.includes('【任务】'), true)
+    check('summary: subtitle count mentioned', text.includes('共 42 条字幕'), true)
+    check('summary: no chat-question marker', text.includes('【当前问题】'), false)
+    // The shared flattener always wraps a system prompt as 系统指令 + 对话记录;
+    // the summary rides that same envelope with a single user turn.
+    check('summary: shared envelope', text.includes('【系统指令】') && text.includes('【对话记录】'), true)
+  }
+
+  {
+    // Minimal call: no title, no count — still a valid one-shot request.
+    const parts = buildSummaryParts({ digest: '[00:05] 开场' })
+    check('summary: bare single part', parts.length, 1)
+    check('summary: bare digest attached', parts[0].text.includes('[00:05] 开场'), true)
+    check('summary: bare no count suffix', parts[0].text.includes('共 '), false)
   }
 
   /* ---------- video-scoped sessions ---------- */

@@ -121,6 +121,18 @@ export const COMPANION_SYSTEM_PROMPT = `你是视频学习助手，正在和用�
 6. 问题与视频无关时直接回答，不要强行联系字幕。
 7. 回答简洁，避免空泛的套话。`
 
+/**
+ * ADR-037: the session-summary role. Same evidence digest as the companion,
+ * different task — the output lands in notes, so it must read as a document
+ * section, not as a chat reply.
+ */
+export const SUMMARY_SYSTEM_PROMPT = `你是视频学习纪要助手。用户刚看完一段视频，你会收到视频标题和一份去重后的字幕证据（[mm:ss] 是视频时间）。
+把证据整理成一份中文学习纪要，直接输出 Markdown，不要寒暄、不要复述整段字幕：
+1. 开头一句话概括主题；
+2. 3-6 条要点，每条尽量带上证据里的 [mm:ss] 时间锚点；
+3. 结尾给 1-2 个值得继续思考的问题。
+只使用证据里出现的内容，证据不足就说明「本段未涉及」。总长度控制在 400 字以内。`
+
 function emptyStore(): AgentStore {
   return { activeByVideo: {}, sessions: [] }
 }
@@ -518,6 +530,27 @@ export function buildAskParts({ history, subtitleContext, question, images, vide
   })
 
   return flattenMessages(messages)
+}
+
+/**
+ * ADR-037: build the one-shot summary request. No history and no images —
+ * a summary is a document about the evidence, not a conversation turn.
+ */
+export function buildSummaryParts({ digest, videoTitle, subtitleCount }: {
+  digest: string
+  videoTitle?: string
+  subtitleCount?: number
+}): MossContentPart[] {
+  const blocks: string[] = []
+  if (videoTitle) blocks.push(`【视频】${videoTitle}`)
+  blocks.push(`【字幕证据（按时间顺序，已去重；[mm:ss] 为视频时间）】\n${digest}`)
+  const count = typeof subtitleCount === 'number' && subtitleCount > 0 ? `（共 ${subtitleCount} 条字幕）` : ''
+  blocks.push(`【任务】请按系统提示生成学习纪要${count}，直接输出 Markdown。`)
+
+  return flattenMessages([
+    { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
+    { role: 'user', content: blocks.join('\n\n') },
+  ])
 }
 
 /** Record a finished exchange and persist. Returns the updated store. */

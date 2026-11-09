@@ -417,6 +417,26 @@ export const TOOLBAR_CSS = `
     .sub-row.seek-ok .sub-time-chip { color: #9ff5ea; background: rgba(62,230,213,0.16); border-color: rgba(62,230,213,0.4); }
     .sub-row.seek-fail .sub-time-chip { color: #ffb3ad; background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.4); }
 
+    /* === ADR-036: [mm:ss] evidence stamps inside chat answers === */
+    .chat-time-ref {
+      font: inherit; font-size: 11px; line-height: 1.2;
+      font-variant-numeric: tabular-nums;
+      color: rgba(255,255,255,0.72);
+      background: rgba(124,92,255,0.14);
+      border: 1px solid rgba(124,92,255,0.35);
+      border-radius: 6px;
+      padding: 0 6px;
+      margin: 0 1px;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      vertical-align: baseline;
+      transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+    }
+    .chat-time-ref:hover { color: #fff; background: rgba(124,92,255,0.3); border-color: rgba(124,92,255,0.6); }
+    .rtts-msg.seek-ok .chat-time-ref { color: #9ff5ea; background: rgba(62,230,213,0.16); border-color: rgba(62,230,213,0.4); }
+    .rtts-msg.seek-fail .chat-time-ref { color: #ffb3ad; background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.4); }
+
     /* === Streaming Subtitle (live, in-progress) === */
     #rtts-streaming-row {
       font-size: 16px; font-weight: 500; color: rgba(255,255,255,0.97); line-height: 1.45;

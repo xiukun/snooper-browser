@@ -30,6 +30,21 @@ export function renderMarkdownLite(text: string): string {
     .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    // ADR-036: `[mm:ss]` / `[h:mm:ss]` evidence stamps become seek buttons.
+    // Strict grammar — bracketed, digits/colons, optional leading `+` — so
+    // ordinary brackets are never hijacked. Offset forms (`+`) have no video
+    // position and render as plain text.
+    .replace(/\[([+]?)(\d{1,2}(:\d{1,2}){0,2})\]/g, (match, plus: string, stamp: string) => {
+      if (plus) return match
+      const parts = stamp.split(':').map(Number)
+      if (parts.some((n) => !Number.isFinite(n))) return match
+      const seconds = parts.length === 3
+        ? parts[0]! * 3600 + parts[1]! * 60 + parts[2]!
+        : parts.length === 2
+          ? parts[0]! * 60 + parts[1]!
+          : parts[0]!
+      return `<button type="button" class="chat-time-ref" data-t="${seconds}">${stamp}</button>`
+    })
     .replace(/\n/g, '<br>')
 
   inlineCodes.forEach((code, index) => {

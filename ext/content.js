@@ -1099,6 +1099,26 @@
     .sub-row.seek-ok .sub-time-chip { color: #9ff5ea; background: rgba(62,230,213,0.16); border-color: rgba(62,230,213,0.4); }
     .sub-row.seek-fail .sub-time-chip { color: #ffb3ad; background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.4); }
 
+    /* === ADR-036: [mm:ss] evidence stamps inside chat answers === */
+    .chat-time-ref {
+      font: inherit; font-size: 11px; line-height: 1.2;
+      font-variant-numeric: tabular-nums;
+      color: rgba(255,255,255,0.72);
+      background: rgba(124,92,255,0.14);
+      border: 1px solid rgba(124,92,255,0.35);
+      border-radius: 6px;
+      padding: 0 6px;
+      margin: 0 1px;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      vertical-align: baseline;
+      transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+    }
+    .chat-time-ref:hover { color: #fff; background: rgba(124,92,255,0.3); border-color: rgba(124,92,255,0.6); }
+    .rtts-msg.seek-ok .chat-time-ref { color: #9ff5ea; background: rgba(62,230,213,0.16); border-color: rgba(62,230,213,0.4); }
+    .rtts-msg.seek-fail .chat-time-ref { color: #ffb3ad; background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.4); }
+
     /* === Streaming Subtitle (live, in-progress) === */
     #rtts-streaming-row {
       font-size: 16px; font-weight: 500; color: rgba(255,255,255,0.97); line-height: 1.45;
@@ -1206,6 +1226,10 @@
         <button id="rtts-note-btn" class="rtts-menu-item" type="button" role="menuitem">
           <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg></span>
           <span class="rtts-menu-text"><b>\u8BB0\u5165\u7B14\u8BB0</b><small>\u4FDD\u5B58\u5F53\u524D\u5B57\u5E55\u5230\u7B14\u8BB0</small></span>
+        </button>
+        <button id="rtts-summary-btn" class="rtts-menu-item" type="button" role="menuitem">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h14"/><path d="M17 12l2 2 3-3"/></svg></span>
+          <span class="rtts-menu-text"><b>\u751F\u6210\u7EAA\u8981</b><small>\u628A\u5F53\u524D\u5B57\u5E55\u603B\u7ED3\u6210\u7B14\u8BB0</small></span>
         </button>
         <button id="rtts-screenshot-btn" class="rtts-menu-item" type="button" role="menuitem">
           <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg></span>
@@ -1620,7 +1644,13 @@
       inlineCodes.push(`<code>${code}</code>`);
       return `\0INLINECODE${inlineCodes.length - 1}\0`;
     });
-    html = html.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>").replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>').replace(/\n/g, "<br>");
+    html = html.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>").replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>').replace(/\[([+]?)(\d{1,2}(:\d{1,2}){0,2})\]/g, (match, plus, stamp) => {
+      if (plus) return match;
+      const parts = stamp.split(":").map(Number);
+      if (parts.some((n) => !Number.isFinite(n))) return match;
+      const seconds = parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0];
+      return `<button type="button" class="chat-time-ref" data-t="${seconds}">${stamp}</button>`;
+    }).replace(/\n/g, "<br>");
     inlineCodes.forEach((code, index) => {
       html = html.replace(`\0INLINECODE${index}\0`, code);
     });
@@ -2384,6 +2414,10 @@
 
   // src/ext/content/video-seek.ts
   var SEEK_LEAD_SECONDS = 0.25;
+  var afterSeekHook = null;
+  function onAfterSeek(hook) {
+    afterSeekHook = hook;
+  }
   function seekTo(seconds) {
     let video = null;
     try {
@@ -2403,6 +2437,7 @@
       return { ok: false, reason: "no-progress" };
     }
     video.pause();
+    afterSeekHook?.();
     return { ok: true, time: video.currentTime };
   }
 
@@ -2552,6 +2587,19 @@
       }
       r.chatEl.scrollTop = r.chatEl.scrollHeight;
     }
+    r.chatEl.addEventListener("click", (event) => {
+      const target = event.target?.closest?.(".chat-time-ref");
+      if (!target) return;
+      const seconds = Number(target.dataset.t);
+      if (!Number.isFinite(seconds)) return;
+      const result = seekTo(seconds);
+      const bubble = target.closest(".rtts-msg");
+      if (bubble) {
+        bubble.classList.remove("seek-ok", "seek-fail");
+        void bubble.offsetWidth;
+        bubble.classList.add(result.ok ? "seek-ok" : "seek-fail");
+      }
+    });
     function renderStreaming(sub) {
       if (!sub || !sub.partialTarget && !sub.source) {
         r.streamingRow.classList.add("hidden");
@@ -3001,6 +3049,12 @@
   // src/ext/content/notes.ts
   function createNotes(deps) {
     const r = deps.refs;
+    r.list.addEventListener("click", (event) => {
+      const target = event.target?.closest?.(".chat-time-ref");
+      if (!target) return;
+      const seconds = Number(target.dataset.t);
+      if (Number.isFinite(seconds)) seekTo(seconds);
+    });
     function persistNotes() {
       saveNotes(deps.getSession().notes);
     }
@@ -3078,7 +3132,7 @@
         row.style.cssText = "display:flex;align-items:flex-start;gap:4px;width:100%";
         const text = document.createElement("span");
         const content = entry.text || entry.target || entry.source || "\u7B14\u8BB0";
-        if (entry.type === "text") {
+        if (entry.type === "text" || entry.type === "summary") {
           text.className = "note-text note-md";
           text.innerHTML = renderMarkdownLite(content);
         } else {
@@ -3881,6 +3935,32 @@
     return `${total} B`;
   }
 
+  // src/lib/deep-link.ts
+  function floorSeconds(seconds) {
+    return Math.max(0, Math.floor(seconds));
+  }
+  function videoDeepLink(url, seconds) {
+    if (!url || typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return null;
+    }
+    const t = floorSeconds(seconds);
+    if (bilibiliKey(parsed)) {
+      return `https://www.bilibili.com${parsed.pathname}?t=${t}`;
+    }
+    const yt = youtubeId(parsed);
+    if (yt) {
+      const host = parsed.hostname.replace(/^www\./, "");
+      if (host === "youtu.be") return `https://youtu.be/${yt}?t=${t}s`;
+      if (parsed.pathname.startsWith("/shorts/")) return `https://www.youtube.com/shorts/${yt}?t=${t}s`;
+      return `https://www.youtube.com/watch?v=${yt}&t=${t}s`;
+    }
+    return null;
+  }
+
   // src/ext/content/exporter.ts
   function getSubtitleText(subtitles) {
     return subtitles.map((sub) => {
@@ -3926,6 +4006,7 @@
     const lines = [
       `# snooper-browser \u7FFB\u8BD1\u8BB0\u5F55`,
       ``,
+      ...session.pageTitle ? [`- **\u9875\u9762**\uFF1A${session.pageTitle}`] : [],
       `- **\u65F6\u95F4**\uFF1A${(/* @__PURE__ */ new Date()).toLocaleString("zh-CN")}`,
       `- **\u8BED\u8A00\u65B9\u5411**\uFF1A${label(session.sourceLang)} \u2192 ${label(session.targetLang)}`,
       `- **\u5B57\u5E55\u6761\u76EE**\uFF1A${session.subtitles.length} \u6761`,
@@ -3941,7 +4022,9 @@
       const s = (sub.source || "").replace(/\|/g, "\\|");
       if (anchored) {
         const video = typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) ? formatVideoTime(sub.videoTime) : "";
-        lines.push(`| ${video} | ${wall} | ${t} | ${s} |`);
+        const link = typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) ? videoDeepLink(session.pageUrl, sub.videoTime) : null;
+        const cell = link ? `[\`${video}\`](${link})` : video;
+        lines.push(`| ${cell} | ${wall} | ${t} | ${s} |`);
       } else {
         lines.push(`| ${wall} | ${t} | ${s} |`);
       }
@@ -3972,6 +4055,8 @@
           else lines.push(`> [\u56FE\u7247\uFF1A${label2} \u2014 \u56FE\u7247\u6570\u636E\u4EC5\u4FDD\u5B58\u5728\u6269\u5C55\u5B58\u50A8\u4E2D\uFF0C\u672A\u968F\u672C\u6B21\u5BFC\u51FA\u643A\u5E26]`);
           if (entry.text) lines.push("", `*${entry.text}*`);
           lines.push("");
+        } else if (entry.type === "summary") {
+          lines.push("", `### \u5B66\u4E60\u7EAA\u8981`, "", entry.text || "", "");
         } else if (entry.target) {
           lines.push(`- ${entry.target} ${entry.source ? `\uFF08${entry.source}\uFF09` : ""}`);
         } else if (entry.text) lines.push(`- ${entry.text}`);
@@ -4059,7 +4144,7 @@
     r.exportMd.addEventListener("click", async () => {
       const session = deps.getSession();
       const subtitles = await resolveSubtitles(deps);
-      const text = getSubtitleMarkdown({ ...session, subtitles });
+      const text = getSubtitleMarkdown({ ...session, subtitles, pageUrl: location.href, pageTitle: document.title });
       if (!text) {
         deps.toast("\u6CA1\u6709\u5185\u5BB9\u53EF\u5BFC\u51FA", "err");
         return;
@@ -4084,7 +4169,7 @@
         }
       }
       const markdown = getSubtitleMarkdown(
-        session,
+        { ...session, pageUrl: location.href, pageTitle: document.title },
         new Map([...names].map(([entryId, name]) => [entryId, name]))
       );
       files.unshift({ name: "record.md", bytes: new TextEncoder().encode(markdown) });
@@ -4107,10 +4192,46 @@
         source: last.source,
         target: last.target,
         sourceLang: session.sourceLang,
-        targetLang: session.targetLang
+        targetLang: session.targetLang,
+        // ADR-035: carry the anchor so exports can deep-link back to the video.
+        videoTime: typeof last.videoTime === "number" ? last.videoTime : null,
+        videoUrl: location.href
       });
       deps.flashChip(r.note);
       deps.toast("\u5DF2\u8BB0\u5165\u7B14\u8BB0", "ok");
+    });
+    let summaryBusy = false;
+    r.summary.addEventListener("click", async () => {
+      if (summaryBusy) return;
+      const session = deps.getSession();
+      if (!session.subtitles || session.subtitles.length === 0) {
+        deps.toast("\u8FD8\u6CA1\u6709\u5B57\u5E55\u53EF\u603B\u7ED3\uFF0C\u5148\u5F00\u542F\u5B9E\u65F6\u7FFB\u8BD1", "err");
+        return;
+      }
+      summaryBusy = true;
+      r.summary.setAttribute("aria-disabled", "true");
+      deps.toast("\u6B63\u5728\u751F\u6210\u7EAA\u8981\u2026", "info");
+      try {
+        const res = await deps.summarize();
+        if (!res.ok || !res.summary) {
+          deps.toast(res.error || "\u751F\u6210\u7EAA\u8981\u5931\u8D25", "err");
+          return;
+        }
+        deps.addNoteEntry({
+          id: `summary_${Date.now()}`,
+          type: "summary",
+          at: Date.now(),
+          text: res.summary,
+          videoTime: typeof res.videoTime === "number" ? res.videoTime : null,
+          videoUrl: location.href
+        });
+        deps.openNotes();
+        deps.flashChip(r.summary);
+        deps.toast("\u7EAA\u8981\u5DF2\u8BB0\u5165\u7B14\u8BB0", "ok");
+      } finally {
+        summaryBusy = false;
+        r.summary.removeAttribute("aria-disabled");
+      }
     });
     r.image.addEventListener("click", () => {
       const subs = deps.getSession().subtitles;
@@ -4179,7 +4300,10 @@
           }
         }
       }
-      const markdown = getSubtitleMarkdown(deps.getSession(), uploadedNames);
+      const markdown = getSubtitleMarkdown(
+        { ...deps.getSession(), pageUrl: location.href, pageTitle: document.title },
+        uploadedNames
+      );
       const imageNote = uploadedCount > 0 ? `\uFF0C\u542B ${uploadedCount} \u5F20\u56FE\u7247` : "";
       const failNote = failedCount > 0 ? `\uFF1B${failedCount} \u5F20\u56FE\u7247\u4E0A\u4F20\u5931\u8D25\uFF0C\u5DF2\u7528\u6587\u5B57\u5360\u4F4D` : "";
       try {
@@ -4521,6 +4645,7 @@ ${context}`;
       hideBtn: shadow.getElementById("rtts-hide-btn"),
       showBtn: shadow.getElementById("rtts-show-btn"),
       noteBtn: shadow.getElementById("rtts-note-btn"),
+      summaryBtn: shadow.getElementById("rtts-summary-btn"),
       imageBtn: shadow.getElementById("rtts-image-btn"),
       screenshotBtn: shadow.getElementById("rtts-screenshot-btn"),
       notesCount: shadow.getElementById("rtts-notes-count"),
@@ -4733,6 +4858,7 @@ ${context}`;
       hideBtn,
       showBtn,
       noteBtn,
+      summaryBtn,
       imageBtn,
       screenshotBtn,
       notesCount,
@@ -4829,6 +4955,7 @@ ${context}`;
         return state === "starting" || state === "running" || state === "stopping";
       }
     });
+    onAfterSeek(() => videoClock.sample(true));
     function adoptBackgroundSession(incoming) {
       session = {
         ...incoming,
@@ -5240,6 +5367,7 @@ ${context}`;
         exportTxt: exportTxtBtn,
         exportMd: exportMdBtn,
         note: noteBtn,
+        summary: summaryBtn,
         image: imageBtn,
         screenshot: screenshotBtn
       },
@@ -5253,7 +5381,16 @@ ${context}`;
       addNoteEntry,
       openImagePanel,
       captureVideoFrame,
-      openShotPreview
+      openShotPreview,
+      summarize: () => {
+        const video = readVideoContext();
+        return bg("SUMMARIZE", {
+          videoKey: video.videoKey,
+          videoTitle: video.videoTitle,
+          videoUrl: video.videoUrl
+        });
+      },
+      openNotes: () => openDrawer("notes")
     });
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
@@ -5326,7 +5463,7 @@ ${context}`;
       }
       if (msg && msg.type === "SEEK_VIDEO") {
         const result = seekTo(msg.seconds);
-        sendResponse?.({ ok: true, ...result });
+        sendResponse?.({ ok: true, seek: result });
         return;
       }
       if (msg && msg.type === "STREAMING_UPDATE") {

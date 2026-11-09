@@ -16,6 +16,18 @@ export type SeekResult =
   | { ok: true; time: number }
   | { ok: false; reason: 'no-video' | 'no-progress' }
 
+/**
+ * ADR-037 (F5): a seek changes the mapping between wall clock and playback
+ * position, so the next 1 Hz sample would otherwise interpolate across the
+ * jump. content.ts registers the video clock here and gets a forced sample
+ * after every successful seek.
+ */
+let afterSeekHook: (() => void) | null = null
+
+export function onAfterSeek(hook: (() => void) | null): void {
+  afterSeekHook = hook
+}
+
 export function seekTo(seconds: number): SeekResult {
   let video: HTMLVideoElement | null = null
   try {
@@ -39,5 +51,6 @@ export function seekTo(seconds: number): SeekResult {
     return { ok: false, reason: 'no-progress' }
   }
   video.pause()
+  afterSeekHook?.()
   return { ok: true, time: video.currentTime }
 }

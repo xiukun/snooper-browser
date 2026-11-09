@@ -10,16 +10,24 @@
   function isUnsupportedTabUrl(url) {
     return /^(chrome|chrome-extension|edge|about|devtools|view-source|file):/i.test(url || "") || /^https?:\/\/(?:chromewebstore\.google\.com|chrome\.google\.com\/webstore)(?:\/|$)/i.test(url || "");
   }
-  async function sendToPageWithInjection(tabId, message, tabUrl, { sendMessage, injectContentScript }) {
+  async function sendToPageWithInjection(tabId, message, tabUrl, { sendMessage, injectContentScript, collectResponse }) {
     if (isUnsupportedTabUrl(tabUrl)) throw new UnsupportedPageError();
     try {
-      await sendMessage(tabId, message);
-      return { ok: true, injected: false };
+      const raw = await sendMessage(tabId, message);
+      return {
+        ok: true,
+        injected: false,
+        ...collectResponse ? { responseOk: collectResponse(raw) } : {}
+      };
     } catch (firstError) {
       try {
         await injectContentScript(tabId);
-        await sendMessage(tabId, message);
-        return { ok: true, injected: true };
+        const raw = await sendMessage(tabId, message);
+        return {
+          ok: true,
+          injected: true,
+          ...collectResponse ? { responseOk: collectResponse(raw) } : {}
+        };
       } catch (retryError) {
         const error = retryError instanceof Error ? retryError : new Error(String(retryError));
         if (firstError instanceof Error) error.cause ??= firstError;
@@ -188,6 +196,60 @@
     const secs = total % 60;
     const mmss = `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
     return hours > 0 ? `${hours}:${mmss}` : mmss;
+  }
+
+  // src/lib/video-key.ts
+  function stripWww(host) {
+    return host.replace(/^www\./, "");
+  }
+  function youtubeId(url) {
+    const host = stripWww(url.hostname);
+    if (host === "youtu.be") {
+      const id = url.pathname.split("/").filter(Boolean)[0];
+      return id || null;
+    }
+    if (host !== "youtube.com" && !host.endsWith(".youtube.com")) return null;
+    const direct = url.searchParams.get("v");
+    if (direct) return direct;
+    const match = url.pathname.match(/^\/(?:shorts|embed|live)\/([^/?#]+)/);
+    return match?.[1] ?? null;
+  }
+  function bilibiliKey(url) {
+    const host = stripWww(url.hostname);
+    if (host !== "bilibili.com" && !host.endsWith(".bilibili.com")) return null;
+    const bv = url.pathname.match(/\/(BV[0-9A-Za-z]+)/);
+    if (bv?.[1]) return `bilibili:${bv[1]}`;
+    const av = url.pathname.match(/\/av(\d+)/i);
+    if (av?.[1]) return `bilibili:av${av[1]}`;
+    const parts = url.pathname.split("/").filter(Boolean).slice(0, 3);
+    if (parts.length > 0) return `bilibili:${parts.join("/")}`;
+    return null;
+  }
+
+  // src/lib/deep-link.ts
+  function floorSeconds(seconds) {
+    return Math.max(0, Math.floor(seconds));
+  }
+  function videoDeepLink(url, seconds) {
+    if (!url || typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return null;
+    }
+    const t = floorSeconds(seconds);
+    if (bilibiliKey(parsed)) {
+      return `https://www.bilibili.com${parsed.pathname}?t=${t}`;
+    }
+    const yt = youtubeId(parsed);
+    if (yt) {
+      const host = parsed.hostname.replace(/^www\./, "");
+      if (host === "youtu.be") return `https://youtu.be/${yt}?t=${t}s`;
+      if (parsed.pathname.startsWith("/shorts/")) return `https://www.youtube.com/shorts/${yt}?t=${t}s`;
+      return `https://www.youtube.com/watch?v=${yt}&t=${t}s`;
+    }
+    return null;
   }
 
   // src/ext/sidepanel/panel.ts
@@ -474,14 +536,22 @@
       for (const entry of note.entries) {
         const time = new Date(entry.at).toLocaleTimeString("zh-CN");
         switch (entry.type) {
-          case "subtitle":
+          case "subtitle": {
             lines.push(`### \u5B57\u5E55 ${time}`);
             if (entry.target) lines.push(`**\u8BD1\u6587**\uFF1A${entry.target}`);
             if (entry.source) lines.push(`**\u539F\u6587**\uFF1A${entry.source}`);
+            const link = typeof entry.videoTime === "number" && Number.isFinite(entry.videoTime) ? videoDeepLink(entry.videoUrl, entry.videoTime) : null;
+            if (link) lines.push(`**\u89C6\u9891\u951A\u70B9**\uFF1A[\`${formatVideoTime(entry.videoTime)}\`](${link})`);
             lines.push("");
             break;
+          }
           case "text":
             lines.push(`### \u7B14\u8BB0 ${time}`);
+            lines.push(entry.text || "");
+            lines.push("");
+            break;
+          case "summary":
+            lines.push(`### \u5B66\u4E60\u7EAA\u8981 ${time}`);
             lines.push(entry.text || "");
             lines.push("");
             break;
@@ -583,9 +653,12 @@
               target: { tabId },
               files: ["content.js"]
             });
-          }
+          },
+          // The content script answers `{ ok, seek }`; the generic envelope
+          // discards it, so pass the verdict through explicitly (ADR-036).
+          collectResponse: (raw) => raw?.seek?.ok === true
         });
-        return res?.seek?.ok === true;
+        return res?.responseOk === true;
       } catch {
         return false;
       }
@@ -694,7 +767,25 @@
         main.className = "history-item-main";
         const title = document.createElement("div");
         title.className = "history-item-title";
-        title.title = item.pageTitle || "";
+        if (item.url) {
+          title.classList.add("history-item-link");
+          title.setAttribute("role", "link");
+          title.tabIndex = 0;
+          title.title = `\u6253\u5F00\u539F\u89C6\u9891\uFF1A${item.pageTitle || ""}`;
+          const open = () => {
+            void chrome.tabs.create({ url: item.url, active: true }).catch(() => {
+            });
+          };
+          title.addEventListener("click", open);
+          title.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              open();
+            }
+          });
+        } else {
+          title.title = item.pageTitle || "";
+        }
         title.textContent = item.pageTitle || "\u672A\u77E5\u9875\u9762";
         const meta = document.createElement("div");
         meta.className = "history-item-meta";
@@ -843,8 +934,10 @@ ${subtitle.target || ""}`).join("\n\n");
         const source = (subtitle.source || "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
         const target = (subtitle.target || "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
         if (anchored) {
-          const video = typeof subtitle.videoTime === "number" && Number.isFinite(subtitle.videoTime) ? formatVideoTime(subtitle.videoTime) : "";
-          lines.push(`| ${video} | ${wall} | ${source} | ${target} |`);
+          const hasTime = typeof subtitle.videoTime === "number" && Number.isFinite(subtitle.videoTime);
+          const video = hasTime ? formatVideoTime(subtitle.videoTime) : "";
+          const link = hasTime ? videoDeepLink(item.url, subtitle.videoTime) : null;
+          lines.push(`| ${link ? `[\`${video}\`](${link})` : video} | ${wall} | ${source} | ${target} |`);
         } else {
           lines.push(`| ${wall} | ${source} | ${target} |`);
         }

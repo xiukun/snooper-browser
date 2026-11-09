@@ -56,6 +56,10 @@ export const CONTENT_HTML = `
           <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg></span>
           <span class="rtts-menu-text"><b>记入笔记</b><small>保存当前字幕到笔记</small></span>
         </button>
+        <button id="rtts-summary-btn" class="rtts-menu-item" type="button" role="menuitem">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h14"/><path d="M17 12l2 2 3-3"/></svg></span>
+          <span class="rtts-menu-text"><b>生成纪要</b><small>把当前字幕总结成笔记</small></span>
+        </button>
         <button id="rtts-screenshot-btn" class="rtts-menu-item" type="button" role="menuitem">
           <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg></span>
           <span class="rtts-menu-text"><b>页面截图</b><small>录制中也能截取视频画面</small></span>

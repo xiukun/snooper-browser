@@ -8,6 +8,13 @@ export interface PageMessageOptions {
   tabUrl?: string
   sendMessage: (tabId: number, message: PageMessage) => Promise<unknown>
   injectContentScript: (tabId: number) => Promise<unknown>
+  /**
+   * ADR-036: inspect the content script's own response. The envelope this
+   * function returns (`{ ok, injected }`) says nothing about what the page
+   * *did*; callers that need the handler's verdict (e.g. whether a seek
+   * succeeded) pass this hook and read `responseOk` from the envelope.
+   */
+  collectResponse?: (raw: unknown) => boolean
 }
 
 export class UnsupportedPageError extends Error {
@@ -28,18 +35,26 @@ export async function sendToPageWithInjection(
   tabId: number,
   message: PageMessage,
   tabUrl: string | undefined,
-  { sendMessage, injectContentScript }: PageMessageOptions,
-): Promise<{ ok: true; injected: boolean }> {
+  { sendMessage, injectContentScript, collectResponse }: PageMessageOptions,
+): Promise<{ ok: true; injected: boolean; responseOk?: boolean }> {
   if (isUnsupportedTabUrl(tabUrl)) throw new UnsupportedPageError()
 
   try {
-    await sendMessage(tabId, message)
-    return { ok: true, injected: false }
+    const raw = await sendMessage(tabId, message)
+    return {
+      ok: true,
+      injected: false,
+      ...(collectResponse ? { responseOk: collectResponse(raw) } : {}),
+    }
   } catch (firstError) {
     try {
       await injectContentScript(tabId)
-      await sendMessage(tabId, message)
-      return { ok: true, injected: true }
+      const raw = await sendMessage(tabId, message)
+      return {
+        ok: true,
+        injected: true,
+        ...(collectResponse ? { responseOk: collectResponse(raw) } : {}),
+      }
     } catch (retryError) {
       const error = retryError instanceof Error ? retryError : new Error(String(retryError))
       if (firstError instanceof Error) error.cause ??= firstError

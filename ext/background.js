@@ -9,16 +9,24 @@ var UnsupportedPageError = class extends Error {
 function isUnsupportedTabUrl(url) {
   return /^(chrome|chrome-extension|edge|about|devtools|view-source|file):/i.test(url || "") || /^https?:\/\/(?:chromewebstore\.google\.com|chrome\.google\.com\/webstore)(?:\/|$)/i.test(url || "");
 }
-async function sendToPageWithInjection(tabId, message, tabUrl, { sendMessage, injectContentScript: injectContentScript2 }) {
+async function sendToPageWithInjection(tabId, message, tabUrl, { sendMessage, injectContentScript: injectContentScript2, collectResponse }) {
   if (isUnsupportedTabUrl(tabUrl)) throw new UnsupportedPageError();
   try {
-    await sendMessage(tabId, message);
-    return { ok: true, injected: false };
+    const raw = await sendMessage(tabId, message);
+    return {
+      ok: true,
+      injected: false,
+      ...collectResponse ? { responseOk: collectResponse(raw) } : {}
+    };
   } catch (firstError) {
     try {
       await injectContentScript2(tabId);
-      await sendMessage(tabId, message);
-      return { ok: true, injected: true };
+      const raw = await sendMessage(tabId, message);
+      return {
+        ok: true,
+        injected: true,
+        ...collectResponse ? { responseOk: collectResponse(raw) } : {}
+      };
     } catch (retryError) {
       const error = retryError instanceof Error ? retryError : new Error(String(retryError));
       if (firstError instanceof Error) error.cause ??= firstError;
@@ -1922,6 +1930,12 @@ var COMPANION_SYSTEM_PROMPT = `\u4F60\u662F\u89C6\u9891\u5B66\u4E60\u52A9\u624B\
 5. \u4E0D\u8981\u7F16\u9020\u5B57\u5E55\u4E2D\u6CA1\u6709\u51FA\u73B0\u7684\u4E8B\u5B9E\u3001\u6570\u5B57\u3001\u4EA7\u54C1\u53C2\u6570\u6216\u4EBA\u7269\u89C2\u70B9\u3002
 6. \u95EE\u9898\u4E0E\u89C6\u9891\u65E0\u5173\u65F6\u76F4\u63A5\u56DE\u7B54\uFF0C\u4E0D\u8981\u5F3A\u884C\u8054\u7CFB\u5B57\u5E55\u3002
 7. \u56DE\u7B54\u7B80\u6D01\uFF0C\u907F\u514D\u7A7A\u6CDB\u7684\u5957\u8BDD\u3002`;
+var SUMMARY_SYSTEM_PROMPT = `\u4F60\u662F\u89C6\u9891\u5B66\u4E60\u7EAA\u8981\u52A9\u624B\u3002\u7528\u6237\u521A\u770B\u5B8C\u4E00\u6BB5\u89C6\u9891\uFF0C\u4F60\u4F1A\u6536\u5230\u89C6\u9891\u6807\u9898\u548C\u4E00\u4EFD\u53BB\u91CD\u540E\u7684\u5B57\u5E55\u8BC1\u636E\uFF08[mm:ss] \u662F\u89C6\u9891\u65F6\u95F4\uFF09\u3002
+\u628A\u8BC1\u636E\u6574\u7406\u6210\u4E00\u4EFD\u4E2D\u6587\u5B66\u4E60\u7EAA\u8981\uFF0C\u76F4\u63A5\u8F93\u51FA Markdown\uFF0C\u4E0D\u8981\u5BD2\u6684\u3001\u4E0D\u8981\u590D\u8FF0\u6574\u6BB5\u5B57\u5E55\uFF1A
+1. \u5F00\u5934\u4E00\u53E5\u8BDD\u6982\u62EC\u4E3B\u9898\uFF1B
+2. 3-6 \u6761\u8981\u70B9\uFF0C\u6BCF\u6761\u5C3D\u91CF\u5E26\u4E0A\u8BC1\u636E\u91CC\u7684 [mm:ss] \u65F6\u95F4\u951A\u70B9\uFF1B
+3. \u7ED3\u5C3E\u7ED9 1-2 \u4E2A\u503C\u5F97\u7EE7\u7EED\u601D\u8003\u7684\u95EE\u9898\u3002
+\u53EA\u4F7F\u7528\u8BC1\u636E\u91CC\u51FA\u73B0\u7684\u5185\u5BB9\uFF0C\u8BC1\u636E\u4E0D\u8DB3\u5C31\u8BF4\u660E\u300C\u672C\u6BB5\u672A\u6D89\u53CA\u300D\u3002\u603B\u957F\u5EA6\u63A7\u5236\u5728 400 \u5B57\u4EE5\u5185\u3002`;
 function emptyStore() {
   return { activeByVideo: {}, sessions: [] };
 }
@@ -2200,6 +2214,18 @@ ${question || "\u8BF7\u63CF\u8FF0\u8FD9\u5F20\u56FE\u7247\uFF0C\u5E76\u7ED3\u540
     ] : blocks.join("\n\n")
   });
   return flattenMessages(messages);
+}
+function buildSummaryParts({ digest, videoTitle, subtitleCount }) {
+  const blocks = [];
+  if (videoTitle) blocks.push(`\u3010\u89C6\u9891\u3011${videoTitle}`);
+  blocks.push(`\u3010\u5B57\u5E55\u8BC1\u636E\uFF08\u6309\u65F6\u95F4\u987A\u5E8F\uFF0C\u5DF2\u53BB\u91CD\uFF1B[mm:ss] \u4E3A\u89C6\u9891\u65F6\u95F4\uFF09\u3011
+${digest}`);
+  const count = typeof subtitleCount === "number" && subtitleCount > 0 ? `\uFF08\u5171 ${subtitleCount} \u6761\u5B57\u5E55\uFF09` : "";
+  blocks.push(`\u3010\u4EFB\u52A1\u3011\u8BF7\u6309\u7CFB\u7EDF\u63D0\u793A\u751F\u6210\u5B66\u4E60\u7EAA\u8981${count}\uFF0C\u76F4\u63A5\u8F93\u51FA Markdown\u3002`);
+  return flattenMessages([
+    { role: "system", content: SUMMARY_SYSTEM_PROMPT },
+    { role: "user", content: blocks.join("\n\n") }
+  ]);
 }
 async function recordExchange(store, session, userTurn, assistantTurn) {
   session.turns.push(
@@ -2676,6 +2702,49 @@ var sessionHandlers = {
     });
     s.messages.push({ role: "user", content: question, images });
     pushSession(tabId);
+    return true;
+  },
+  /**
+   * ADR-037: one-shot session summary. Evidence comes from the server-side
+   * session state (same digest as ASK), the answer goes back to the content
+   * script which owns note writes. Chat history is untouched — a summary is a
+   * document, not a conversation turn.
+   */
+  SUMMARIZE: (message, { tabId, sendResponse }) => {
+    const s = getOrCreateSession(tabId);
+    const digest = buildSubtitleDigest(s.subtitles);
+    if (!digest.trim() || s.subtitles.length === 0) {
+      sendResponse({ ok: false, error: "\u8FD8\u6CA1\u6709\u53EF\u603B\u7ED3\u7684\u5B57\u5E55\uFF0C\u5148\u5F00\u542F\u5B9E\u65F6\u7FFB\u8BD1" });
+      return false;
+    }
+    const video = videoFromMessage(message);
+    void (async () => {
+      try {
+        const config = s.configSnapshot || await loadConfig();
+        const parts = buildSummaryParts({
+          digest,
+          videoTitle: video.videoTitle,
+          subtitleCount: s.subtitles.length
+        });
+        const summary = await askLLM({
+          parts,
+          config,
+          sourceLang: s.sourceLang,
+          targetLang: s.targetLang
+        });
+        let videoTime = null;
+        for (let i = s.subtitles.length - 1; i >= 0; i -= 1) {
+          const t = s.subtitles[i]?.videoTime;
+          if (typeof t === "number" && Number.isFinite(t)) {
+            videoTime = t;
+            break;
+          }
+        }
+        sendResponse({ ok: true, summary, videoTime, subtitleCount: s.subtitles.length });
+      } catch (err) {
+        sendResponse({ ok: false, error: err?.message || "\u751F\u6210\u7EAA\u8981\u5931\u8D25" });
+      }
+    })();
     return true;
   },
   /* ---------- Agent conversation management ---------- */

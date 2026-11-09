@@ -7,6 +7,7 @@
 
 import { sendToPageWithInjection } from '../action-flow'
 import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-assets'
+import { formatVideoTime } from '../../lib/video-clock'
 
 (() => {
   /* ===== Types ===== */
@@ -45,6 +46,8 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
   interface HistorySubtitle {
     at?: number
     endedAt?: number | null
+    /** Video-timeline position in seconds (ADR-033). */
+    videoTime?: number | null
     source: string
     target: string
     latency?: number
@@ -499,7 +502,10 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
       const row = document.createElement('div')
       row.className = 'history-subtitle-row'
       const time = document.createElement('time')
-      time.textContent = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : '--:--:--'
+      const anchored = typeof subtitle.videoTime === 'number' && Number.isFinite(subtitle.videoTime)
+      const wall = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : ''
+      time.textContent = anchored ? formatVideoTime(subtitle.videoTime!) : (wall || '--:--:--')
+      if (anchored && wall) time.title = `录制时间 ${wall}`
       const source = document.createElement('span')
       source.className = 'history-source'
       source.textContent = subtitle.source || '（无原文）'
@@ -729,6 +735,9 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
   })
 
   function historyMarkdown(item: HistoryEntry, subtitles: HistorySubtitle[]): string {
+    const anchored = subtitles.some(
+      (subtitle) => typeof subtitle.videoTime === 'number' && Number.isFinite(subtitle.videoTime),
+    )
     const lines = [
       `# ${item.pageTitle || '转写历史'}`,
       '',
@@ -737,14 +746,21 @@ import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-ass
       `- **语言**：${item.sourceLang || 'auto'} → ${item.targetLang || 'zh'}`,
       `- **字幕条目**：${subtitles.length} 条`,
       '',
-      '| 时间 | 原文 | 译文 |',
-      '| :--- | :--- | :--- |',
+      anchored ? '| 视频时间 | 录制时间 | 原文 | 译文 |' : '| 时间 | 原文 | 译文 |',
+      anchored ? '| :--- | :--- | :--- | :--- |' : '| :--- | :--- | :--- |',
     ]
     for (const subtitle of subtitles) {
-      const time = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : ''
+      const wall = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : ''
       const source = (subtitle.source || '').replace(/\|/g, '\\|').replace(/\n/g, '<br>')
       const target = (subtitle.target || '').replace(/\|/g, '\\|').replace(/\n/g, '<br>')
-      lines.push(`| ${time} | ${source} | ${target} |`)
+      if (anchored) {
+        const video = typeof subtitle.videoTime === 'number' && Number.isFinite(subtitle.videoTime)
+          ? formatVideoTime(subtitle.videoTime)
+          : ''
+        lines.push(`| ${video} | ${wall} | ${source} | ${target} |`)
+      } else {
+        lines.push(`| ${wall} | ${source} | ${target} |`)
+      }
     }
     return lines.join('\n')
   }

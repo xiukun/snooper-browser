@@ -28,6 +28,7 @@
 
 import { flattenMessages } from '../../lib/moss-messages'
 import type { MossContentPart, MossMessage } from '../../lib/models'
+import { formatVideoTime } from '../../lib/video-clock'
 
 export interface AgentTurn {
   role: 'user' | 'assistant'
@@ -361,6 +362,8 @@ export function selectHistoryTurns(turns: AgentTurn[], budgetTokens = HISTORY_TO
 
 export interface DigestSubtitle {
   at: number
+  /** Video-timeline position (seconds) when the page had a clock (ADR-033). */
+  videoTime?: number | null
   source: string
   target?: string
 }
@@ -414,9 +417,10 @@ function sampleDigestRows<T>(rows: T[], maxLines: number): T[] {
  * Turn raw subtitles into a bounded, de-duplicated evidence digest.
  *
  * Dedupe is global, not just consecutive: the field bug was a tagline that
- * repeated throughout an ad loop. Timestamps are offsets from the first
- * captured line (`SubtitleEntry.at` is epoch ms, not video time); that keeps
- * ordering honest without inventing precision the pipeline does not carry.
+ * repeated throughout an ad loop. When a line carries a video anchor
+ * (ADR-033), the stamp is the real playback position `[mm:ss]`; otherwise it
+ * falls back to the offset from the first captured line (`SubtitleEntry.at`
+ * is epoch ms, not video time). Both are honest about what they measure.
  */
 export function buildSubtitleDigest(
   subtitles: DigestSubtitle[],
@@ -424,7 +428,7 @@ export function buildSubtitleDigest(
 ): string {
   const maxLines = options.maxLines ?? MAX_DIGEST_LINES
   const maxChars = options.maxChars ?? MAX_DIGEST_CHARS
-  const rows: Array<{ at: number; text: string }> = []
+  const rows: Array<{ at: number; videoTime: number | null; text: string }> = []
   const seen = new Set<string>()
 
   for (const subtitle of subtitles) {
@@ -438,13 +442,20 @@ export function buildSubtitleDigest(
     const text = source && target && subtitleNoiseKey(target) !== key
       ? `${source} → ${target}`
       : primary
-    rows.push({ at: Number(subtitle.at) || 0, text })
+    const videoTime = typeof subtitle.videoTime === 'number'
+      && Number.isFinite(subtitle.videoTime)
+      && subtitle.videoTime >= 0
+      ? subtitle.videoTime
+      : null
+    rows.push({ at: Number(subtitle.at) || 0, videoTime, text })
   }
 
   if (rows.length === 0) return ''
   const firstAt = rows[0]!.at
   const sampled = sampleDigestRows(rows, Math.max(1, maxLines))
-  const lines = sampled.map((row) => `[+${formatSubtitleOffset(row.at - firstAt)}] ${row.text}`)
+  const lines = sampled.map((row) => row.videoTime == null
+    ? `[+${formatSubtitleOffset(row.at - firstAt)}] ${row.text}`
+    : `[${formatVideoTime(row.videoTime)}] ${row.text}`)
 
   let joined = lines.join('\n')
   while (joined.length > maxChars && lines.length > 1) {
@@ -491,7 +502,7 @@ export function buildAskParts({ history, subtitleContext, question, images, vide
     blocks.push(`【视频】${videoTitle}${at}`)
   }
   if (subtitleContext) {
-    blocks.push(`【最近字幕（按时间顺序，已去重）】\n${subtitleContext}`)
+    blocks.push(`【最近字幕（按时间顺序，已去重；[mm:ss] 为视频时间，[+mm:ss] 为相对首条字幕的偏移）】\n${subtitleContext}`)
   }
   blocks.push(`【当前问题】\n${question || '请描述这张图片，并结合视频上下文解释。'}`)
   if (subtitleContext) blocks.push('请回答【当前问题】，不要复述字幕。')

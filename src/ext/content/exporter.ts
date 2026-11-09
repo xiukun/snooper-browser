@@ -7,6 +7,7 @@
 
 import type { NoteDocument, SubtitleLine } from '../../lib/types'
 import { LANGUAGES } from '../../lib/models'
+import { formatVideoTime } from '../../lib/video-clock'
 
 export function getSubtitleText(subtitles: Array<Partial<SubtitleLine>>): string {
   return subtitles
@@ -72,6 +73,9 @@ export function getSubtitleMarkdown(
     const lang = LANGUAGES.find((l) => l.code === code)
     return lang ? lang.label : code
   }
+  const anchored = session.subtitles.some(
+    (sub) => typeof sub.videoTime === 'number' && Number.isFinite(sub.videoTime),
+  )
   const lines = [
     `# snooper-browser 翻译记录`,
     ``,
@@ -81,15 +85,26 @@ export function getSubtitleMarkdown(
     ``,
     `---`,
     ``,
-    `| 时间 | 译文 | 原文 |`,
-    `| :--- | :--- | :--- |`,
+    anchored
+      ? `| 视频时间 | 录制时间 | 译文 | 原文 |`
+      : `| 时间 | 译文 | 原文 |`,
+    anchored
+      ? `| :--- | :--- | :--- | :--- |`
+      : `| :--- | :--- | :--- |`,
   ]
 
   for (const sub of session.subtitles) {
-    const time = sub.at ? new Date(sub.at).toLocaleTimeString('zh-CN') : ''
+    const wall = sub.at ? new Date(sub.at).toLocaleTimeString('zh-CN') : ''
     const t = (sub.target || '').replace(/\|/g, '\\|')
     const s = (sub.source || '').replace(/\|/g, '\\|')
-    lines.push(`| ${time} | ${t} | ${s} |`)
+    if (anchored) {
+      const video = typeof sub.videoTime === 'number' && Number.isFinite(sub.videoTime)
+        ? formatVideoTime(sub.videoTime)
+        : ''
+      lines.push(`| ${video} | ${wall} | ${t} | ${s} |`)
+    } else {
+      lines.push(`| ${wall} | ${t} | ${s} |`)
+    }
   }
 
   if (session.messages.length > 0) {

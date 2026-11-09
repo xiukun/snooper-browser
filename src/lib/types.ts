@@ -8,6 +8,8 @@ export interface SubtitleLine {
   at: number
   /** End timestamp (seconds relative to session start). */
   endedAt: number
+  /** Seconds into the page's video (ADR-033); null/absent when unavailable. */
+  videoTime?: number | null
   source: string
   target: string
   speaker: string

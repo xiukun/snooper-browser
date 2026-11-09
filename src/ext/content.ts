@@ -28,6 +28,7 @@ import { createCitePicker } from './content/cite-picker'
 import { createAsk } from './content/ask'
 import { createCompanionSessions } from './content/history'
 import { readVideoContext } from './content/video-context'
+import { createVideoClock } from './content/video-clock'
 import { createToolsMenu } from './content/tools-menu'
 import { bindActions } from './content/actions'
 import { bindObsidianExport } from './content/obsidian-export'
@@ -215,6 +216,19 @@ import { createScreenshotCapturer } from './screenshot'
     }
   }
 
+  /* ===== Video clock (ADR-033) ===== */
+  // The background maps each subtitle's segment-start wall clock to the page's
+  // playback position. Sampling is driven by the adopted session state, so a
+  // stop or a tab switch ends it without another listener.
+  const videoClock = createVideoClock({
+    send: (sample) => { void bg('VIDEO_CLOCK', sample) },
+    isActive: () => {
+      const state = session.state;
+      if (session.isDemoMode) return false;
+      return state === 'starting' || state === 'running' || state === 'stopping';
+    },
+  });
+
   function adoptBackgroundSession(incoming: any) {
     session = {
       ...incoming,
@@ -229,6 +243,7 @@ import { createScreenshotCapturer } from './screenshot'
     };
     if (!Array.isArray(session.messages)) session.messages = [];
     render();
+    videoClock.sync();
   }
 
   let sessionSyncSerial = 0;

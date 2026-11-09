@@ -141,6 +141,20 @@ function line(index, tag = '') {
   check('finalize is idempotent', await mod.finalizeTranscript(record.id), true)
 }
 
+/* ---------- 3b. Video anchors survive the chunk round trip (ADR-033) ---------- */
+
+{
+  const mod = await freshStore()
+  const record = await mod.beginTranscript({ tabId: 33, generation: 33 })
+  await mod.appendTranscriptLine(record.id, { ...line(1), videoTime: 95.25 })
+  await mod.appendTranscriptLine(record.id, line(2))
+  await mod.finalizeTranscript(record.id)
+
+  const rows = await mod.readTranscript(record.id)
+  check('video anchor kept', rows[0].videoTime, 95.25)
+  check('unanchored row normalizes to null', rows[1].videoTime, null)
+}
+
 /* ---------- 4. Recording records are protected from deletion ---------- */
 
 {

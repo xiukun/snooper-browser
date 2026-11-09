@@ -180,6 +180,16 @@
     return assets;
   }
 
+  // src/lib/video-clock.ts
+  function formatVideoTime(seconds) {
+    const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor(total % 3600 / 60);
+    const secs = total % 60;
+    const mmss = `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+    return hours > 0 ? `${hours}:${mmss}` : mmss;
+  }
+
   // src/ext/sidepanel/panel.ts
   (() => {
     const DEFAULT_OBSIDIAN = {
@@ -567,7 +577,10 @@
         const row = document.createElement("div");
         row.className = "history-subtitle-row";
         const time = document.createElement("time");
-        time.textContent = subtitle.at ? new Date(subtitle.at).toLocaleTimeString("zh-CN") : "--:--:--";
+        const anchored = typeof subtitle.videoTime === "number" && Number.isFinite(subtitle.videoTime);
+        const wall = subtitle.at ? new Date(subtitle.at).toLocaleTimeString("zh-CN") : "";
+        time.textContent = anchored ? formatVideoTime(subtitle.videoTime) : wall || "--:--:--";
+        if (anchored && wall) time.title = `\u5F55\u5236\u65F6\u95F4 ${wall}`;
         const source = document.createElement("span");
         source.className = "history-source";
         source.textContent = subtitle.source || "\uFF08\u65E0\u539F\u6587\uFF09";
@@ -772,6 +785,9 @@ ${subtitle.target || ""}`).join("\n\n");
       await loadAndRenderHistory();
     });
     function historyMarkdown(item, subtitles) {
+      const anchored = subtitles.some(
+        (subtitle) => typeof subtitle.videoTime === "number" && Number.isFinite(subtitle.videoTime)
+      );
       const lines = [
         `# ${item.pageTitle || "\u8F6C\u5199\u5386\u53F2"}`,
         "",
@@ -780,14 +796,19 @@ ${subtitle.target || ""}`).join("\n\n");
         `- **\u8BED\u8A00**\uFF1A${item.sourceLang || "auto"} \u2192 ${item.targetLang || "zh"}`,
         `- **\u5B57\u5E55\u6761\u76EE**\uFF1A${subtitles.length} \u6761`,
         "",
-        "| \u65F6\u95F4 | \u539F\u6587 | \u8BD1\u6587 |",
-        "| :--- | :--- | :--- |"
+        anchored ? "| \u89C6\u9891\u65F6\u95F4 | \u5F55\u5236\u65F6\u95F4 | \u539F\u6587 | \u8BD1\u6587 |" : "| \u65F6\u95F4 | \u539F\u6587 | \u8BD1\u6587 |",
+        anchored ? "| :--- | :--- | :--- | :--- |" : "| :--- | :--- | :--- |"
       ];
       for (const subtitle of subtitles) {
-        const time = subtitle.at ? new Date(subtitle.at).toLocaleTimeString("zh-CN") : "";
+        const wall = subtitle.at ? new Date(subtitle.at).toLocaleTimeString("zh-CN") : "";
         const source = (subtitle.source || "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
         const target = (subtitle.target || "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
-        lines.push(`| ${time} | ${source} | ${target} |`);
+        if (anchored) {
+          const video = typeof subtitle.videoTime === "number" && Number.isFinite(subtitle.videoTime) ? formatVideoTime(subtitle.videoTime) : "";
+          lines.push(`| ${video} | ${wall} | ${source} | ${target} |`);
+        } else {
+          lines.push(`| ${wall} | ${source} | ${target} |`);
+        }
       }
       return lines.join("\n");
     }

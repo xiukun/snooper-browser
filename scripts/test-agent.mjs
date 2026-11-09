@@ -135,6 +135,18 @@ try {
   }
 
   {
+    // ADR-033: an anchored line is stamped with video time, not an offset.
+    const digest = buildSubtitleDigest([
+      { at: 1_000, videoTime: 95, source: '开场介绍' },
+      { at: 4_000, videoTime: 98.4, source: '第二句' },
+      { at: 8_000, source: '没有锚点的一句' },
+    ])
+    check('digest: video time first row', digest.includes('[01:35] 开场介绍'), true)
+    check('digest: video time truncates', digest.includes('[01:38] 第二句'), true)
+    check('digest: unanchored row keeps offset', digest.includes('[+00:07] 没有锚点的一句'), true)
+  }
+
+  {
     const rows = Array.from({ length: 50 }, (_, i) => ({ at: i * 1_000, source: `${i}` + '长'.repeat(80) }))
     const digest = buildSubtitleDigest(rows, { maxLines: 999, maxChars: 300 })
     check('digest: character cap', digest.length <= 300, true)

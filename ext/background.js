@@ -398,10 +398,12 @@ function normalizeLine(raw) {
   const source = typeof raw.source === "string" ? raw.source : "";
   const target = typeof raw.target === "string" ? raw.target : "";
   if (!source && !target) return null;
+  const videoTime = typeof raw.videoTime === "number" && Number.isFinite(raw.videoTime) && raw.videoTime >= 0 ? raw.videoTime : null;
   return {
     ...typeof raw.id === "string" && raw.id ? { id: raw.id } : {},
     at: toNumber(raw.at),
     endedAt: raw.endedAt == null ? null : toNumber(raw.endedAt),
+    videoTime,
     source,
     target,
     latency: toNumber(raw.latency)
@@ -887,6 +889,110 @@ async function recoverTranscripts(liveGenerations = {}) {
   return liveByTab;
 }
 
+// src/lib/video-clock.ts
+var DEFAULT_MAX_DISTANCE_MS = 3e4;
+var DEFAULT_MAX_BRACKET_MS = 6e4;
+var DEFAULT_MAX_DRIFT_SECONDS = 2;
+var MAX_RATE = 16;
+function sanitizeVideoClockSample(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const at = Number(raw.at);
+  const videoTime = Number(raw.videoTime);
+  const rate = Number(raw.rate);
+  if (!Number.isFinite(at) || at <= 0) return null;
+  if (!Number.isFinite(videoTime) || videoTime < 0) return null;
+  return {
+    at,
+    videoTime,
+    paused: raw.paused === true,
+    rate: Number.isFinite(rate) && rate > 0 ? Math.min(rate, MAX_RATE) : 1
+  };
+}
+function roundSeconds(value) {
+  return Math.max(0, Math.round(value * 1e3) / 1e3);
+}
+function resolveVideoTimeAt(samples, at, options = {}) {
+  if (!Array.isArray(samples) || samples.length === 0) return null;
+  if (!Number.isFinite(at) || at <= 0) return null;
+  const maxDistanceMs = options.maxDistanceMs ?? DEFAULT_MAX_DISTANCE_MS;
+  const maxBracketMs = options.maxBracketMs ?? DEFAULT_MAX_BRACKET_MS;
+  const maxDriftSeconds = options.maxDriftSeconds ?? DEFAULT_MAX_DRIFT_SECONDS;
+  const sorted = samples.filter((sample) => Number.isFinite(sample.at) && Number.isFinite(sample.videoTime)).slice().sort((a, b) => a.at - b.at);
+  if (sorted.length === 0) return null;
+  const extrapolate = (sample, deltaMs) => {
+    if (sample.paused) return sample.videoTime;
+    return sample.videoTime + deltaMs / 1e3 * sample.rate;
+  };
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  if (at <= first.at) {
+    const gap = first.at - at;
+    if (gap > maxDistanceMs) return null;
+    return roundSeconds(extrapolate(first, -gap));
+  }
+  if (at >= last.at) {
+    const gap = at - last.at;
+    if (gap > maxDistanceMs) return null;
+    return roundSeconds(extrapolate(last, gap));
+  }
+  let lo = 0;
+  let hi = sorted.length - 1;
+  while (lo < hi) {
+    const mid = lo + hi >> 1;
+    if (sorted[mid].at < at) lo = mid + 1;
+    else hi = mid;
+  }
+  const next = sorted[lo];
+  const prev = sorted[lo - 1];
+  const wallMs = next.at - prev.at;
+  if (wallMs <= 0) return roundSeconds(next.videoTime);
+  if (wallMs > maxBracketMs) {
+    const usePrev = at - prev.at <= next.at - at;
+    return roundSeconds(usePrev ? prev.videoTime : next.videoTime);
+  }
+  const expectedDelta = wallMs / 1e3 * ((prev.rate + next.rate) / 2);
+  const actualDelta = next.videoTime - prev.videoTime;
+  const drift = Math.abs(actualDelta - expectedDelta);
+  if (drift > Math.max(maxDriftSeconds, expectedDelta * 0.25)) {
+    const usePrev = at - prev.at <= next.at - at;
+    return roundSeconds(usePrev ? prev.videoTime : next.videoTime);
+  }
+  const progress = (at - prev.at) / wallMs;
+  return roundSeconds(prev.videoTime + actualDelta * progress);
+}
+function formatVideoTime(seconds) {
+  const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total % 3600 / 60);
+  const secs = total % 60;
+  const mmss = `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  return hours > 0 ? `${hours}:${mmss}` : mmss;
+}
+
+// src/ext/background/video-clock.ts
+var MAX_SAMPLES = 300;
+var timelines = /* @__PURE__ */ new Map();
+function resetVideoClock(tabId) {
+  timelines.delete(tabId);
+}
+function recordVideoClock(tabId, sample) {
+  const list = timelines.get(tabId);
+  if (!list) {
+    timelines.set(tabId, [sample]);
+    return;
+  }
+  const last = list[list.length - 1];
+  if (last && sample.at < last.at) return;
+  if (last && sample.at === last.at) list[list.length - 1] = sample;
+  else list.push(sample);
+  if (list.length > MAX_SAMPLES) list.splice(0, list.length - MAX_SAMPLES);
+}
+function resolveVideoTimeAt2(tabId, at) {
+  const list = timelines.get(tabId);
+  if (!list || list.length === 0) return null;
+  return resolveVideoTimeAt(list, at);
+}
+
 // src/ext/background/lifecycle.ts
 var CONTENT_SCRIPT_FILE = "content.js";
 var FS_BRIDGE_FILE = "fullscreen-bridge.js";
@@ -903,6 +1009,7 @@ async function injectContentScript(tabId) {
 function removeSession(tabId) {
   const s = sessions.get(tabId);
   sessions.delete(tabId);
+  resetVideoClock(tabId);
   if (s) {
     const stop = sendToOffscreen({ type: "STOP_CAPTURE", tabId, generation: s.generation }).catch(() => {
     });
@@ -918,6 +1025,7 @@ function removeSession(tabId) {
 function stopSessionForTab(tabId) {
   const s = sessions.get(tabId);
   if (!s || s.state !== "running" && s.state !== "starting") return;
+  resetVideoClock(tabId);
   const stop = sendToOffscreen({ type: "STOP_CAPTURE", tabId, generation: s.generation }).catch(() => {
   });
   s.state = "idle";
@@ -1110,13 +1218,15 @@ function registerOffscreenEventRouter() {
           return false;
         }
         const tail = s.generation !== message.generation;
-        if (s.streamingSubtitle && s.streamingSubtitle.at === (message.at || Date.now())) {
+        const at = message.at || Date.now();
+        if (s.streamingSubtitle && s.streamingSubtitle.at === at) {
           s.streamingSubtitle = null;
         }
         const entry = {
           id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-          at: message.at || Date.now(),
+          at,
           endedAt: message.endedAt || null,
+          videoTime: resolveVideoTimeAt2(message.tabId, at),
           source: message.source || "",
           target: message.target || "",
           latency: message.latency || 0
@@ -2044,12 +2154,13 @@ function buildSubtitleDigest(subtitles, options = {}) {
     if (!key || seen.has(key)) continue;
     seen.add(key);
     const text = source && target && subtitleNoiseKey(target) !== key ? `${source} \u2192 ${target}` : primary;
-    rows.push({ at: Number(subtitle.at) || 0, text });
+    const videoTime = typeof subtitle.videoTime === "number" && Number.isFinite(subtitle.videoTime) && subtitle.videoTime >= 0 ? subtitle.videoTime : null;
+    rows.push({ at: Number(subtitle.at) || 0, videoTime, text });
   }
   if (rows.length === 0) return "";
   const firstAt = rows[0].at;
   const sampled = sampleDigestRows(rows, Math.max(1, maxLines));
-  const lines = sampled.map((row) => `[+${formatSubtitleOffset(row.at - firstAt)}] ${row.text}`);
+  const lines = sampled.map((row) => row.videoTime == null ? `[+${formatSubtitleOffset(row.at - firstAt)}] ${row.text}` : `[${formatVideoTime(row.videoTime)}] ${row.text}`);
   let joined = lines.join("\n");
   while (joined.length > maxChars && lines.length > 1) {
     lines.shift();
@@ -2075,7 +2186,7 @@ function buildAskParts({ history, subtitleContext, question, images, videoTitle,
     blocks.push(`\u3010\u89C6\u9891\u3011${videoTitle}${at}`);
   }
   if (subtitleContext) {
-    blocks.push(`\u3010\u6700\u8FD1\u5B57\u5E55\uFF08\u6309\u65F6\u95F4\u987A\u5E8F\uFF0C\u5DF2\u53BB\u91CD\uFF09\u3011
+    blocks.push(`\u3010\u6700\u8FD1\u5B57\u5E55\uFF08\u6309\u65F6\u95F4\u987A\u5E8F\uFF0C\u5DF2\u53BB\u91CD\uFF1B[mm:ss] \u4E3A\u89C6\u9891\u65F6\u95F4\uFF0C[+mm:ss] \u4E3A\u76F8\u5BF9\u9996\u6761\u5B57\u5E55\u7684\u504F\u79FB\uFF09\u3011
 ${subtitleContext}`);
   }
   blocks.push(`\u3010\u5F53\u524D\u95EE\u9898\u3011
@@ -2274,6 +2385,7 @@ async function runStart(message, tabId, startVersion) {
   s.streamingSubtitle = null;
   s.audioSilent = false;
   s.configSnapshot = JSON.parse(JSON.stringify(config));
+  resetVideoClock(tabId);
   pushSession(tabId);
   const generation = s.generation;
   const isCurrent = () => currentStartVersion(tabId) === startVersion && s.state === "starting" && s.generation === generation;
@@ -2654,6 +2766,27 @@ var sessionHandlers = {
   }
 };
 
+// src/ext/background/router/video-clock.ts
+var MAX_SAMPLE_SKEW_MS = 12e4;
+var videoClockHandlers = {
+  VIDEO_CLOCK: (message, { tabId, sendResponse }) => {
+    const session = sessions.get(tabId);
+    const active2 = session && (session.state === "running" || session.state === "starting" || session.state === "stopping");
+    if (!active2) {
+      sendResponse({ ok: true, ignored: true });
+      return false;
+    }
+    const sample = sanitizeVideoClockSample(message);
+    if (!sample || Math.abs(Date.now() - sample.at) > MAX_SAMPLE_SKEW_MS) {
+      sendResponse({ ok: true, ignored: true });
+      return false;
+    }
+    recordVideoClock(tabId, sample);
+    sendResponse({ ok: true });
+    return false;
+  }
+};
+
 // src/ext/background/router/index.ts
 var backgroundHandlers = {
   ...configHandlers,
@@ -2661,7 +2794,8 @@ var backgroundHandlers = {
   ...sessionHandlers,
   ...captureHandlers,
   ...obsidianHandlers,
-  ...historyHandlers
+  ...historyHandlers,
+  ...videoClockHandlers
 };
 function registerBackgroundRouters() {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

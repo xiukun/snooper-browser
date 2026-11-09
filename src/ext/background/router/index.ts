@@ -12,6 +12,7 @@ import { historyHandlers } from './history'
 import { imageHandlers } from './image'
 import { obsidianHandlers } from './obsidian'
 import { sessionHandlers } from './session'
+import { videoClockHandlers } from './video-clock'
 import type { MessageHandlerMap } from './types'
 
 export const backgroundHandlers: MessageHandlerMap = {
@@ -21,6 +22,7 @@ export const backgroundHandlers: MessageHandlerMap = {
   ...captureHandlers,
   ...obsidianHandlers,
   ...historyHandlers,
+  ...videoClockHandlers,
 }
 
 export function registerBackgroundRouters(): void {

@@ -3512,6 +3512,78 @@
     };
   }
 
+  // src/ext/content/video-clock.ts
+  var SAMPLE_INTERVAL_MS = 1e3;
+  var EVENT_MIN_GAP_MS = 500;
+  var RESOLVE_RETRY_MS = 1e4;
+  var MEDIA_EVENTS = ["play", "pause", "seeked", "ratechange", "loadedmetadata", "emptied"];
+  function createVideoClock(deps) {
+    let timer = null;
+    let video = null;
+    let lastSentAt = 0;
+    let nextResolveAt = 0;
+    function resolveVideo(force = false) {
+      if (video && video.isConnected) return video;
+      video = null;
+      const now = Date.now();
+      if (!force && now < nextResolveAt) return null;
+      nextResolveAt = now + RESOLVE_RETRY_MS;
+      try {
+        video = findBestVideoCandidate()?.video ?? null;
+      } catch {
+        video = null;
+      }
+      return video;
+    }
+    function sample(force = false) {
+      if (!deps.isActive()) return;
+      const el = resolveVideo(force);
+      if (!el) return;
+      const time = el.currentTime;
+      if (!Number.isFinite(time) || time < 0) return;
+      const now = Date.now();
+      deps.send({
+        at: now,
+        videoTime: time,
+        paused: el.paused === true,
+        rate: Number.isFinite(el.playbackRate) && el.playbackRate > 0 ? el.playbackRate : 1
+      });
+      lastSentAt = now;
+    }
+    function onMediaEvent(event) {
+      if (!deps.isActive()) return;
+      const target = event.target;
+      if (target && target.tagName === "VIDEO" && event.type === "play" && target !== video) {
+        video = null;
+        nextResolveAt = 0;
+      }
+      if (Date.now() - lastSentAt < EVENT_MIN_GAP_MS) return;
+      sample();
+    }
+    function start() {
+      if (timer !== null) {
+        sample();
+        return;
+      }
+      sample(true);
+      timer = window.setInterval(() => sample(), SAMPLE_INTERVAL_MS);
+    }
+    function stop() {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    }
+    function sync() {
+      if (deps.isActive()) start();
+      else stop();
+    }
+    for (const type of MEDIA_EVENTS) {
+      document.addEventListener(type, onMediaEvent, true);
+    }
+    return { sync, start, stop, sample };
+  }
+
   // src/ext/content/tools-menu.ts
   function createToolsMenu(refs) {
     const { button, menu, shadow } = refs;
@@ -3726,6 +3798,16 @@
     return `${total} B`;
   }
 
+  // src/lib/video-clock.ts
+  function formatVideoTime(seconds) {
+    const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor(total % 3600 / 60);
+    const secs = total % 60;
+    const mmss = `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+    return hours > 0 ? `${hours}:${mmss}` : mmss;
+  }
+
   // src/ext/content/exporter.ts
   function getSubtitleText(subtitles) {
     return subtitles.map((sub) => {
@@ -3765,6 +3847,9 @@
       const lang = LANGUAGES.find((l) => l.code === code);
       return lang ? lang.label : code;
     };
+    const anchored = session.subtitles.some(
+      (sub) => typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime)
+    );
     const lines = [
       `# snooper-browser \u7FFB\u8BD1\u8BB0\u5F55`,
       ``,
@@ -3774,14 +3859,19 @@
       ``,
       `---`,
       ``,
-      `| \u65F6\u95F4 | \u8BD1\u6587 | \u539F\u6587 |`,
-      `| :--- | :--- | :--- |`
+      anchored ? `| \u89C6\u9891\u65F6\u95F4 | \u5F55\u5236\u65F6\u95F4 | \u8BD1\u6587 | \u539F\u6587 |` : `| \u65F6\u95F4 | \u8BD1\u6587 | \u539F\u6587 |`,
+      anchored ? `| :--- | :--- | :--- | :--- |` : `| :--- | :--- | :--- |`
     ];
     for (const sub of session.subtitles) {
-      const time = sub.at ? new Date(sub.at).toLocaleTimeString("zh-CN") : "";
+      const wall = sub.at ? new Date(sub.at).toLocaleTimeString("zh-CN") : "";
       const t = (sub.target || "").replace(/\|/g, "\\|");
       const s = (sub.source || "").replace(/\|/g, "\\|");
-      lines.push(`| ${time} | ${t} | ${s} |`);
+      if (anchored) {
+        const video = typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) ? formatVideoTime(sub.videoTime) : "";
+        lines.push(`| ${video} | ${wall} | ${t} | ${s} |`);
+      } else {
+        lines.push(`| ${wall} | ${t} | ${s} |`);
+      }
     }
     if (session.messages.length > 0) {
       lines.push("", "---", "", "## \u4F34\u5B66\u5BF9\u8BDD", "");
@@ -4656,6 +4746,16 @@ ${context}`;
         return { ok: false, error: err.message || "\u540E\u53F0\u901A\u4FE1\u5F02\u5E38" };
       }
     }
+    const videoClock = createVideoClock({
+      send: (sample) => {
+        void bg("VIDEO_CLOCK", sample);
+      },
+      isActive: () => {
+        const state = session.state;
+        if (session.isDemoMode) return false;
+        return state === "starting" || state === "running" || state === "stopping";
+      }
+    });
     function adoptBackgroundSession(incoming) {
       session = {
         ...incoming,
@@ -4670,6 +4770,7 @@ ${context}`;
       };
       if (!Array.isArray(session.messages)) session.messages = [];
       render();
+      videoClock.sync();
     }
     let sessionSyncSerial = 0;
     async function syncSessionFromBackground() {

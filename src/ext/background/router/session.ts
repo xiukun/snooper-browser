@@ -40,6 +40,7 @@ import {
   safeSession,
   sessions,
 } from '../session-store'
+import { resetVideoClock } from '../video-clock'
 import type { MessageHandlerMap } from './types'
 
 interface StartResult {
@@ -169,6 +170,9 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
   s.streamingSubtitle = null
   s.audioSilent = false
   s.configSnapshot = JSON.parse(JSON.stringify(config))
+  // A new generation must not inherit the previous video position: the page
+  // may have been on a different episode or paused at a different time.
+  resetVideoClock(tabId)
   // Don't clear messages – they persist across restarts
   pushSession(tabId)
 

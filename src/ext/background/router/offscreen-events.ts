@@ -20,6 +20,7 @@ import {
   ensureTranscript,
   finalizeSessionTranscript,
 } from '../transcript-store'
+import { resolveVideoTimeAt } from '../video-clock'
 
 /**
  * The last line of an explicit stop arrives after the background has already
@@ -137,19 +138,23 @@ export function registerOffscreenEventRouter(): void {
           return false
         }
         const tail = s.generation !== message.generation
+        // The segment's start, not its arrival: mapping arrival time would
+        // shift every line by the ASR/translation latency (ADR-033).
+        const at = message.at || Date.now()
 
         // Clear streaming state only if the final subtitle belongs to the
         // currently streaming segment. If a NEWER segment is already streaming
         // (overlapping in-flight segments), leave it visible so it never
         // "disappears for a second" while waiting for its own final.
-        if (s.streamingSubtitle && s.streamingSubtitle.at === (message.at || Date.now())) {
+        if (s.streamingSubtitle && s.streamingSubtitle.at === at) {
           s.streamingSubtitle = null
         }
 
         const entry: SubtitleEntry = {
           id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-          at: message.at || Date.now(),
+          at,
           endedAt: message.endedAt || null,
+          videoTime: resolveVideoTimeAt(message.tabId, at),
           source: message.source || '',
           target: message.target || '',
           latency: message.latency || 0,

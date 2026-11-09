@@ -21,6 +21,8 @@ export interface SubtitleEntry {
   id: string
   at: number
   endedAt: number | null
+  /** Video-timeline position (seconds) for `at`, or null when no page video. */
+  videoTime: number | null
   source: string
   target: string
   latency: number

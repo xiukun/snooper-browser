@@ -25,6 +25,8 @@ export interface TranscriptLine {
   id?: string
   at: number
   endedAt: number | null
+  /** Video-timeline position (seconds) for `at` (ADR-033). */
+  videoTime?: number | null
   source: string
   target: string
   latency: number
@@ -115,10 +117,14 @@ function normalizeLine(raw: any): TranscriptLine | null {
   const source = typeof raw.source === 'string' ? raw.source : ''
   const target = typeof raw.target === 'string' ? raw.target : ''
   if (!source && !target) return null
+  const videoTime = typeof raw.videoTime === 'number' && Number.isFinite(raw.videoTime) && raw.videoTime >= 0
+    ? raw.videoTime
+    : null
   return {
     ...(typeof raw.id === 'string' && raw.id ? { id: raw.id } : {}),
     at: toNumber(raw.at),
     endedAt: raw.endedAt == null ? null : toNumber(raw.endedAt),
+    videoTime,
     source,
     target,
     latency: toNumber(raw.latency),

@@ -22,6 +22,7 @@ import {
   sessions,
 } from './session-store'
 import { finalizeSessionTranscript } from './transcript-store'
+import { resetVideoClock } from './video-clock'
 
 const CONTENT_SCRIPT_FILE = 'content.js'
 const FS_BRIDGE_FILE = 'fullscreen-bridge.js'
@@ -45,6 +46,7 @@ async function injectContentScript(tabId: number): Promise<void> {
 function removeSession(tabId: number): void {
   const s = sessions.get(tabId)
   sessions.delete(tabId)
+  resetVideoClock(tabId)
   if (s) {
     const stop = sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {})
     // Each subtitle is already on disk; finalization closes the record and
@@ -60,6 +62,7 @@ function removeSession(tabId: number): void {
 function stopSessionForTab(tabId: number): void {
   const s = sessions.get(tabId)
   if (!s || (s.state !== 'running' && s.state !== 'starting')) return
+  resetVideoClock(tabId)
   const stop = sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {})
   s.state = 'idle'
   s.generation = nextGeneration()

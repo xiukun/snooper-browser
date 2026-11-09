@@ -536,6 +536,7 @@
       await loadAndRenderNotes();
       showNotice(`\u5DF2\u5220\u9664 ${ids.length} \u7BC7\u7B14\u8BB0`);
     });
+    const HISTORY_PAGE_SIZE = 300;
     function formatTime(ts) {
       return new Date(ts).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
     }
@@ -544,16 +545,76 @@
     }
     function updateHistorySelection() {
       const all = Array.from(historyList.querySelectorAll("input.history-check"));
-      const selected = all.filter((el) => el.checked);
+      const selectable = all.filter((el) => !el.disabled);
+      const selected = selectable.filter((el) => el.checked);
       historyDeleteSelected.disabled = selected.length === 0;
       historyDeleteSelected.textContent = selected.length > 0 ? `\u5220\u9664\u6240\u9009 (${selected.length})` : "\u5220\u9664\u6240\u9009";
-      historySelectAll.checked = all.length > 0 && selected.length === all.length;
-      historySelectAll.indeterminate = selected.length > 0 && selected.length < all.length;
-      historySelectAll.disabled = all.length === 0;
+      historySelectAll.checked = selectable.length > 0 && selected.length === selectable.length;
+      historySelectAll.indeterminate = selected.length > 0 && selected.length < selectable.length;
+      historySelectAll.disabled = selectable.length === 0;
+    }
+    async function fetchHistoryTranscript(id) {
+      const res = await chrome.runtime.sendMessage({
+        target: "background",
+        type: "GET_HISTORY_TRANSCRIPT",
+        id
+      });
+      return res?.ok && Array.isArray(res.subtitles) ? res.subtitles : [];
+    }
+    function appendHistoryRows(container, subtitles, from, to) {
+      for (let index = from; index < to && index < subtitles.length; index += 1) {
+        const subtitle = subtitles[index];
+        const row = document.createElement("div");
+        row.className = "history-subtitle-row";
+        const time = document.createElement("time");
+        time.textContent = subtitle.at ? new Date(subtitle.at).toLocaleTimeString("zh-CN") : "--:--:--";
+        const source = document.createElement("span");
+        source.className = "history-source";
+        source.textContent = subtitle.source || "\uFF08\u65E0\u539F\u6587\uFF09";
+        const target = document.createElement("span");
+        target.className = "history-target";
+        target.textContent = subtitle.target || "\uFF08\u65E0\u8BD1\u6587\uFF09";
+        row.append(time, source, target);
+        container.appendChild(row);
+      }
+    }
+    function mountHistoryDetail(detail, item) {
+      let loaded = false;
+      let rows = [];
+      let shown = 0;
+      const list = document.createElement("div");
+      list.className = "history-subtitle-list";
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "btn btn-sm btn-secondary history-more";
+      more.hidden = true;
+      detail.append(list, more);
+      function paintNextBatch() {
+        const next = Math.min(rows.length, shown + HISTORY_PAGE_SIZE);
+        appendHistoryRows(list, rows, shown, next);
+        shown = next;
+        const remaining = rows.length - shown;
+        more.hidden = remaining <= 0;
+        more.textContent = `\u663E\u793A\u66F4\u591A\uFF08\u5269\u4F59 ${remaining} \u6761\uFF09`;
+      }
+      more.addEventListener("click", paintNextBatch);
+      return async function ensureLoaded() {
+        if (loaded) return;
+        detail.textContent = "\u6B63\u5728\u8BFB\u53D6\u2026";
+        rows = await fetchHistoryTranscript(item.id);
+        detail.textContent = "";
+        detail.append(list, more);
+        loaded = true;
+        if (rows.length === 0) {
+          detail.textContent = "\u8FD9\u6761\u8BB0\u5F55\u6CA1\u6709\u4FDD\u5B58\u5B57\u5E55\u6B63\u6587\u3002";
+          return;
+        }
+        paintNextBatch();
+      };
     }
     async function loadAndRenderHistory() {
       const res = await chrome.runtime.sendMessage({ target: "background", type: "GET_HISTORY" });
-      const items = res?.history || [];
+      const items = Array.isArray(res?.history) ? res.history : [];
       historyCount.textContent = String(items.length);
       historyList.textContent = "";
       if (items.length === 0) {
@@ -565,12 +626,15 @@
       historyList.style.display = "flex";
       historyEmpty.style.display = "none";
       items.forEach((item) => {
+        const recording = item.status === "recording";
         const el = document.createElement("div");
         el.className = "history-item";
         const check = document.createElement("input");
         check.type = "checkbox";
         check.className = "history-check";
         check.dataset.id = item.id;
+        check.disabled = recording;
+        check.title = recording ? "\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u4E0D\u80FD\u5220\u9664" : "";
         check.setAttribute("aria-label", `\u9009\u62E9 ${item.pageTitle || "\u8BB0\u5F55"}`);
         check.addEventListener("change", updateHistorySelection);
         el.appendChild(check);
@@ -582,41 +646,41 @@
         title.textContent = item.pageTitle || "\u672A\u77E5\u9875\u9762";
         const meta = document.createElement("div");
         meta.className = "history-item-meta";
-        meta.textContent = `${formatTime(item.startedAt)} \xB7 ${item.subtitleCount || 0} \u6761\u5B57\u5E55 \xB7 ${item.sourceLang || ""} \u2192 ${item.targetLang || ""}`;
+        const parts = [
+          formatTime(item.startedAt),
+          `${item.subtitleCount || 0} \u6761\u5B57\u5E55`,
+          `${item.sourceLang || "auto"} \u2192 ${item.targetLang || "zh"}`
+        ];
+        if (recording) parts.push("\u5F55\u5236\u4E2D");
+        meta.textContent = parts.join(" \xB7 ");
         main.append(title, meta);
         el.appendChild(main);
         const detail = document.createElement("div");
         detail.className = "history-item-detail";
         detail.hidden = true;
-        const rows = item.subtitles || [];
-        if (rows.length === 0) {
-          detail.textContent = "\u8FD9\u662F\u65E7\u7248\u5386\u53F2\u8BB0\u5F55\uFF0C\u53EA\u4FDD\u5B58\u4E86\u6761\u6570\uFF0C\u6CA1\u6709\u4FDD\u5B58\u5B57\u5E55\u6B63\u6587\u3002";
-        } else {
-          rows.forEach((subtitle) => {
-            const row = document.createElement("div");
-            row.className = "history-subtitle-row";
-            const time = document.createElement("time");
-            time.textContent = subtitle.at ? new Date(subtitle.at).toLocaleTimeString("zh-CN") : "--:--:--";
-            const source = document.createElement("span");
-            source.className = "history-source";
-            source.textContent = subtitle.source || "\uFF08\u65E0\u539F\u6587\uFF09";
-            const target = document.createElement("span");
-            target.className = "history-target";
-            target.textContent = subtitle.target || "\uFF08\u65E0\u8BD1\u6587\uFF09";
-            row.append(time, source, target);
-            detail.appendChild(row);
-          });
-        }
         el.appendChild(detail);
         const actions = document.createElement("div");
         actions.className = "history-item-actions";
+        let ensureDetail = null;
         const toggle = document.createElement("button");
         toggle.type = "button";
         toggle.className = "btn btn-sm btn-secondary";
         toggle.textContent = "\u67E5\u770B\u5185\u5BB9";
-        toggle.addEventListener("click", () => {
-          detail.hidden = !detail.hidden;
-          toggle.textContent = detail.hidden ? "\u67E5\u770B\u5185\u5BB9" : "\u6536\u8D77\u5185\u5BB9";
+        toggle.addEventListener("click", async () => {
+          if (!detail.hidden) {
+            detail.hidden = true;
+            toggle.textContent = "\u67E5\u770B\u5185\u5BB9";
+            return;
+          }
+          detail.hidden = false;
+          toggle.textContent = "\u6536\u8D77\u5185\u5BB9";
+          if (!ensureDetail) ensureDetail = mountHistoryDetail(detail, item);
+          toggle.disabled = true;
+          try {
+            await ensureDetail();
+          } finally {
+            toggle.disabled = false;
+          }
         });
         actions.appendChild(toggle);
         const copy = document.createElement("button");
@@ -624,38 +688,61 @@
         copy.className = "btn btn-sm btn-secondary";
         copy.textContent = "\u590D\u5236";
         copy.addEventListener("click", async () => {
-          const rows2 = item.subtitles || [];
-          if (rows2.length === 0) {
-            showNotice("\u65E7\u8BB0\u5F55\u6CA1\u6709\u4FDD\u5B58\u5B57\u5E55\u6B63\u6587\uFF0C\u65E0\u6CD5\u590D\u5236", true);
-            return;
-          }
-          const text = rows2.map((subtitle) => `${subtitle.source || ""}
+          copy.disabled = true;
+          try {
+            const rows = await fetchHistoryTranscript(item.id);
+            if (rows.length === 0) {
+              showNotice("\u8FD9\u6761\u8BB0\u5F55\u6CA1\u6709\u4FDD\u5B58\u5B57\u5E55\u6B63\u6587\uFF0C\u65E0\u6CD5\u590D\u5236", true);
+              return;
+            }
+            const text = rows.map((subtitle) => `${subtitle.source || ""}
 ${subtitle.target || ""}`).join("\n\n");
-          const ok = await copyText(text);
-          showNotice(ok ? "\u5DF2\u590D\u5236\u8F6C\u5199\u5185\u5BB9" : "\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u8BBE\u7F6E\u4E2D\u5141\u8BB8\u526A\u8D34\u677F\u8BBF\u95EE", !ok);
+            const ok = await copyText(text);
+            showNotice(ok ? "\u5DF2\u590D\u5236\u5B8C\u6574\u8F6C\u5199\u5185\u5BB9" : "\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u8BBE\u7F6E\u4E2D\u5141\u8BB8\u526A\u8D34\u677F\u8BBF\u95EE", !ok);
+          } finally {
+            copy.disabled = false;
+          }
         });
         actions.appendChild(copy);
         const exportButton = document.createElement("button");
         exportButton.type = "button";
         exportButton.className = "btn btn-sm btn-secondary";
         exportButton.textContent = "\u5BFC\u51FA Markdown";
-        exportButton.addEventListener("click", () => {
-          const blob = new Blob([historyMarkdown(item)], { type: "text/markdown;charset=utf-8" });
-          const url = URL.createObjectURL(blob);
-          const anchor = document.createElement("a");
-          anchor.href = url;
-          anchor.download = `snooper-history-${item.id}.md`;
-          anchor.click();
-          setTimeout(() => URL.revokeObjectURL(url), 2e3);
+        exportButton.addEventListener("click", async () => {
+          exportButton.disabled = true;
+          try {
+            const rows = await fetchHistoryTranscript(item.id);
+            if (rows.length === 0) {
+              showNotice("\u8FD9\u6761\u8BB0\u5F55\u6CA1\u6709\u4FDD\u5B58\u5B57\u5E55\u6B63\u6587\uFF0C\u65E0\u6CD5\u5BFC\u51FA", true);
+              return;
+            }
+            const blob = new Blob([historyMarkdown(item, rows)], { type: "text/markdown;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = `snooper-history-${item.id}.md`;
+            anchor.click();
+            setTimeout(() => URL.revokeObjectURL(url), 2e3);
+          } finally {
+            exportButton.disabled = false;
+          }
         });
         actions.appendChild(exportButton);
         const del = document.createElement("button");
         del.type = "button";
         del.className = "btn btn-sm btn-secondary";
         del.textContent = "\u5220\u9664";
-        del.addEventListener("click", () => {
+        del.disabled = recording;
+        del.title = recording ? "\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u4E0D\u80FD\u5220\u9664" : "";
+        del.addEventListener("click", async () => {
           if (!confirm(`\u786E\u5B9A\u5220\u9664\u300C${item.pageTitle || "\u8FD9\u6761\u8BB0\u5F55"}\u300D\uFF1F`)) return;
-          chrome.runtime.sendMessage({ target: "background", type: "DELETE_HISTORY", id: item.id }).then(() => loadAndRenderHistory());
+          const res2 = await chrome.runtime.sendMessage({
+            target: "background",
+            type: "DELETE_HISTORY",
+            id: item.id
+          });
+          if (res2?.skipped) showNotice("\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u5DF2\u8DF3\u8FC7", true);
+          await loadAndRenderHistory();
         });
         actions.appendChild(del);
         el.appendChild(actions);
@@ -665,39 +752,43 @@ ${subtitle.target || ""}`).join("\n\n");
     }
     historySelectAll.addEventListener("change", () => {
       const checked = historySelectAll.checked;
-      historyList.querySelectorAll("input.history-check").forEach((el) => {
+      historyList.querySelectorAll("input.history-check:not(:disabled)").forEach((el) => {
         el.checked = checked;
       });
       updateHistorySelection();
     });
-    historyDeleteSelected.addEventListener("click", () => {
+    historyDeleteSelected.addEventListener("click", async () => {
       const ids = getSelectedHistoryIds();
       if (ids.length === 0) return;
       if (!confirm(`\u786E\u5B9A\u5220\u9664\u9009\u4E2D\u7684 ${ids.length} \u6761\u5386\u53F2\u8BB0\u5F55\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002`)) return;
-      chrome.runtime.sendMessage({ target: "background", type: "DELETE_HISTORY", ids }).then(() => loadAndRenderHistory());
+      const res = await chrome.runtime.sendMessage({ target: "background", type: "DELETE_HISTORY", ids });
+      if (res?.skipped) showNotice("\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u5DF2\u8DF3\u8FC7", true);
+      await loadAndRenderHistory();
     });
-    historyClear.addEventListener("click", () => {
+    historyClear.addEventListener("click", async () => {
       if (!confirm("\u786E\u5B9A\u6E05\u7A7A\u5168\u90E8\u5386\u53F2\u8BB0\u5F55\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002")) return;
-      chrome.runtime.sendMessage({ target: "background", type: "DELETE_ALL_HISTORY" }).then(() => loadAndRenderHistory());
+      const res = await chrome.runtime.sendMessage({ target: "background", type: "DELETE_ALL_HISTORY" });
+      if (res?.skipped) showNotice("\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u5DF2\u8DF3\u8FC7", true);
+      await loadAndRenderHistory();
     });
-    function historyMarkdown(item) {
+    function historyMarkdown(item, subtitles) {
       const lines = [
         `# ${item.pageTitle || "\u8F6C\u5199\u5386\u53F2"}`,
         "",
         `- **\u5F00\u59CB**\uFF1A${formatTime(item.startedAt)}`,
-        `- **\u7ED3\u675F**\uFF1A${formatTime(item.endedAt)}`,
+        `- **\u7ED3\u675F**\uFF1A${formatTime(item.endedAt ?? item.lastAt)}`,
         `- **\u8BED\u8A00**\uFF1A${item.sourceLang || "auto"} \u2192 ${item.targetLang || "zh"}`,
+        `- **\u5B57\u5E55\u6761\u76EE**\uFF1A${subtitles.length} \u6761`,
         "",
         "| \u65F6\u95F4 | \u539F\u6587 | \u8BD1\u6587 |",
         "| :--- | :--- | :--- |"
       ];
-      for (const subtitle of item.subtitles || []) {
+      for (const subtitle of subtitles) {
         const time = subtitle.at ? new Date(subtitle.at).toLocaleTimeString("zh-CN") : "";
         const source = (subtitle.source || "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
         const target = (subtitle.target || "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
         lines.push(`| ${time} | ${source} | ${target} |`);
       }
-      if (!item.subtitles?.length) lines.push("|  | \u65E7\u8BB0\u5F55\u672A\u4FDD\u5B58\u5B57\u5E55\u6B63\u6587 |  |");
       return lines.join("\n");
     }
     async function copyText(text) {

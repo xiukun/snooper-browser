@@ -804,6 +804,7 @@ ${question}`
 
   // src/ext/offscreen/capture.ts
   var WORKLET_PATH = chrome.runtime.getURL("audio-worklet.js");
+  var STOP_DRAIN_MS = 4e3;
   var captureSessions = /* @__PURE__ */ new Map();
   var MAX_CONTEXT_ENTRIES = 5;
   function getContextSummary(session) {
@@ -884,6 +885,8 @@ ${question}`
       pendingTranscriptions: 0,
       currentAskController: null,
       aborted: false,
+      captureStopped: false,
+      draining: false,
       videoEl: null,
       frameRms: [],
       frameLens: [],
@@ -986,7 +989,7 @@ ${question}`
       throw err;
     }
   }
-  async function stopTabCapture(tabId, generation) {
+  async function stopTabCapture(tabId, generation, drain = false) {
     const session = captureSessions.get(tabId);
     const result = stopCaptureGeneration(
       generationState(tabId),
@@ -998,13 +1001,15 @@ ${question}`
       startLocks,
       tabId,
       "queue",
-      () => stopCurrentCapture(tabId, session)
+      () => stopCurrentCapture(tabId, session, drain)
     );
   }
-  async function stopCurrentCapture(tabId, expectedSession) {
+  async function stopCurrentCapture(tabId, expectedSession, drain = false) {
     const session = captureSessions.get(tabId);
     if (!session || expectedSession && session !== expectedSession) return;
-    session.aborted = true;
+    session.captureStopped = true;
+    session.draining = drain;
+    if (!drain) session.aborted = true;
     if (session.currentAskController) {
       session.currentAskController.abort();
       session.currentAskController = null;
@@ -1027,12 +1032,21 @@ ${question}`
       session.audioCtx && session.audioCtx.state !== "closed" ? session.audioCtx.close() : Promise.resolve(),
       session.monitorAudioCtx && session.monitorAudioCtx.state !== "closed" ? session.monitorAudioCtx.close() : Promise.resolve()
     ]);
+    if (drain) await waitForPendingTranscriptions(session, STOP_DRAIN_MS);
+    session.aborted = true;
+    session.draining = false;
     if (captureSessions.get(tabId) === session) captureSessions.delete(tabId);
     stopKeepAliveIfIdle();
   }
+  async function waitForPendingTranscriptions(session, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (session.pendingTranscriptions > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
   function onPcmChunk(tabId, msg) {
     const session = captureSessions.get(tabId);
-    if (!session || session.aborted) return;
+    if (!session || session.aborted || session.captureStopped) return;
     const pcmData = new Int16Array(msg.buffer);
     session.pcmBuffer.push(pcmData);
     session.lastChunkTime = Date.now();
@@ -1073,7 +1087,7 @@ ${question}`
   }
   function checkSegment(tabId) {
     const session = captureSessions.get(tabId);
-    if (!session || session.aborted) return;
+    if (!session || session.aborted || session.captureStopped) return;
     if (session.pendingTranscriptions >= MAX_QUEUE_SIZE) {
       trimBufferToMax(session, MAX_SEGMENT_DURATION_MS);
       return;
@@ -1113,6 +1127,21 @@ ${question}`
       offset += buf.length;
     }
     return result;
+  }
+  async function emitFinalSubtitle(session, payload) {
+    const message = {
+      type: "CAPTURE_SUBTITLE",
+      tabId: session.tabId,
+      generation: session.generation,
+      ...payload
+    };
+    if (session.draining) {
+      await chrome.runtime.sendMessage(message).catch(() => {
+      });
+      return;
+    }
+    chrome.runtime.sendMessage(message).catch(() => {
+    });
   }
   async function finalizeSegment(tabId) {
     const session = captureSessions.get(tabId);
@@ -1221,16 +1250,12 @@ ${question}`
           passthrough: true,
           asrMs
         });
-        chrome.runtime.sendMessage({
-          type: "CAPTURE_SUBTITLE",
-          tabId,
-          generation: session.generation,
+        await emitFinalSubtitle(session, {
           at: segmentStartTime,
           endedAt: Date.now(),
           source: transcription,
           target: transcription,
           latency: passthroughLatency
-        }).catch(() => {
         });
         return;
       }
@@ -1251,7 +1276,7 @@ ${question}`
         config: session.config,
         context: contextSummary,
         onDelta: (delta) => {
-          if (session.aborted) return;
+          if (session.aborted || session.draining) return;
           fullTranslation += delta;
           const currentLatency = Math.round(
             performance.now() - t0 + (Date.now() - segmentStartTime)
@@ -1282,10 +1307,7 @@ ${question}`
         asrMs,
         llmMs
       });
-      chrome.runtime.sendMessage({
-        type: "CAPTURE_SUBTITLE",
-        tabId,
-        generation: session.generation,
+      await emitFinalSubtitle(session, {
         at: segmentStartTime,
         endedAt: Date.now(),
         source: transcription,
@@ -1401,7 +1423,7 @@ ${question}`
       }
       case "STOP_CAPTURE": {
         const tabId = message.tabId;
-        stopTabCapture(tabId, message.generation).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }));
+        stopTabCapture(tabId, message.generation, message.drain === true).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }));
         return true;
       }
       case "GET_CAPTURE_SESSIONS": {

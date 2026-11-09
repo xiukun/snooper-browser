@@ -148,6 +148,8 @@ pnpm package:ext
 - `dist-extension/snooper-browser-v<version>.zip`
 - `dist-extension/snooper-browser-v<version>.zip.sha256`
 
+推送 `v*` 标签会触发 `.github/workflows/package-extension.yml`：重新构建、运行扩展回归测试，并上传 ZIP 与校验文件。标签版本必须与 `ext/manifest.json` 一致。
+
 ZIP 刻意保持可读，不包含加密代码，也不会加载远程代码。Chrome Web Store 与 Edge Add-ons 要求提交代码可供审核，不能用压缩或加密来隐藏功能。压缩包根目录同时包含 `LICENSE` 与 `NOTICE`，确保 Apache-2.0 的许可条款与署名信息随包分发。
 
 ### 首次使用流程
@@ -171,15 +173,19 @@ ZIP 刻意保持可读，不包含加密代码，也不会加载远程代码。C
 
 ### 转写历史
 
-每次停止转写都会在本地保存完整记录（原文、译文、时间戳；每条最多 500 行，共保留 100 条）。打开侧边栏 → **历史** 即可展开记录、阅读字幕、复制全文、导出 Markdown 或删除。旧版本保存的记录只有条数，会明确标注。
+实时翻译开启后就会持续写入本地记录，不再等到停止才保存：每条最终字幕都会立即追加。单个会话没有行数上限；页面只渲染最近 200 行，历史、复制和导出按需读取完整转写。最多保留 100 条已完成记录。关闭面板、页面跳转或浏览器崩溃也会保留已经写入的部分。打开侧边栏 → **历史** 即可展开记录、阅读字幕、复制全文、导出 Markdown 或删除。正在录制的记录不能删除。旧版本保存的记录只有条数，会明确标注。
 
 ### Obsidian 同步（可选）
 
 snooper 通过 Obsidian 的 **Local REST API** 社区插件写入 Markdown。这个插件运行在 Obsidian 内部，把仓库暴露在 localhost；它不是 snooper 专用插件。
 
+![Obsidian 第三方插件页面：Local REST API 已启用](./docs/screenshots/obsidian-local-rest-api.png)
+
+截图中应看到：**Local REST API** 出现在已安装的第三方插件列表中，并且右侧开关已打开。点击这一行的齿轮按钮进入插件设置，复制 API Key。
+
 1. 安装 Obsidian 桌面版，并打开要写入的仓库。
-2. 打开 **设置 → 第三方插件**，关闭**安全模式**，点击**浏览**，安装 **Local REST API**，然后启用它。
-3. 打开该插件的设置，复制 **API Key**。
+2. 打开 **设置 → 第三方插件**，关闭**安全模式**，点击**浏览**，安装 **Local REST API**，返回已安装插件列表后打开右侧开关。
+3. 点击该插件一行的齿轮按钮，打开插件设置并复制 **API Key**。
 4. 在 snooper 中打开侧边栏 → **Obsidian**，填写：
    - **启用 Obsidian 同步**：勾选
    - **协议**：`HTTP`（推荐；Chrome 会拒绝插件在 27124 端口使用的自签名 HTTPS 证书）

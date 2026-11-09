@@ -1,0 +1,72 @@
+name: Package extension
+
+# Builds the loadable extension archive and its checksum. A tag must match
+# ext/manifest.json, so a release can never ship a ZIP labelled with a
+# different version than the code inside it.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build extension bundles
+        run: npm run build:ext
+
+      - name: Verify tag matches the manifest
+        if: github.ref_type == 'tag'
+        run: |
+          version="$(node -p "require('./ext/manifest.json').version")"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match ext/manifest.json $version"
+            exit 1
+          fi
+
+      - name: Run extension regression tests
+        run: |
+          npm run test:guards
+          npm run test:spectrum-gate
+          npm run test:capture-generation
+          npm run test:keyed-task
+          npm run test:export-assets
+          npm run test:chat-state
+          npm run test:transcript
+          npm run test:session-state
+          npm run test:image-material
+          npm run test:ext-globals
+          node scripts/test-agent.mjs
+          node scripts/test-languages.mjs
+          node scripts/test-transcription-request.mjs
+          node scripts/test-capture-recovery.mjs
+          node scripts/test-capture-suspects.mjs
+
+      - name: Build and package
+        run: npm run package:ext
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: snooper-browser-extension
+          if-no-files-found: error
+          path: |
+            dist-extension/*.zip
+            dist-extension/*.zip.sha256

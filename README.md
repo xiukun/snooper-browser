@@ -174,6 +174,8 @@ The package command rebuilds the extension, copies the 16/32/48/128 px icons, an
 - `dist-extension/snooper-browser-v<version>.zip`
 - `dist-extension/snooper-browser-v<version>.zip.sha256`
 
+Pushing a `v*` tag runs `.github/workflows/package-extension.yml`, which rebuilds the bundles, runs the extension regression suite, and uploads the ZIP and checksum. The tag must match the version in `ext/manifest.json`.
+
 The ZIP is intentionally readable and contains no encrypted or remotely loaded code. Chrome Web Store and Edge Add-ons require submitted code to be reviewable; minification or encryption must not be used to hide functionality. The archive root also contains `LICENSE` and `NOTICE`, so the Apache-2.0 terms and attribution travel with the package.
 
 ### First-use workflow
@@ -209,11 +211,15 @@ The page toolbar keeps screenshot and note actions in its **…** menu:
 
 ### Transcription history
 
-Every finished capture is stored locally with its full subtitle list (original,
-translation, timestamps; up to 500 lines per record, 100 records). Open the
-side panel → **历史** to expand a record, read the transcript, copy it, export
-it as Markdown, or delete it. Records saved by older versions only contain
-counts and are marked accordingly.
+Realtime translation is recorded while it runs, not only when it stops: every
+final line is appended to the local transcript immediately. A session has no
+per-record row cap; the page renders the most recent 200 lines, while history,
+copy, and export read the complete transcript on demand. At most 100 completed
+records are kept. Closing the panel, navigating away, or a browser crash still
+leaves the lines that were already written. Open the side panel → **历史** to
+expand a record, read the transcript, copy it, export it as Markdown, or delete
+it. A record that is still recording cannot be deleted. Records saved by older
+versions only contain counts and are marked accordingly.
 
 ### Obsidian sync (optional)
 
@@ -221,10 +227,17 @@ snooper writes Markdown through the **Local REST API** community plugin. The
 plugin runs inside Obsidian and exposes the vault on localhost; it is not a
 snooper-specific plugin.
 
+![Obsidian Community plugins page with Local REST API enabled](./docs/screenshots/obsidian-local-rest-api.png)
+
+The screenshot shows the expected plugin state: **Local REST API** is listed
+under installed third-party plugins and its toggle is enabled. Click the gear
+button on that row to open the plugin settings and copy its API key.
+
 1. Install Obsidian desktop and open the vault you want to write to.
 2. Open **Settings → Community plugins**, turn off **Restricted mode**, click
-   **Browse**, install **Local REST API**, then enable it.
-3. Open the plugin settings and copy the **API key**.
+   **Browse**, install **Local REST API**, then return to the installed-plugin
+   list and enable its toggle.
+3. Click the plugin's gear button, open its settings, and copy the **API key**.
 4. In snooper, open the side panel → **Obsidian** and fill in:
    - **启用 Obsidian 同步**: checked
    - **协议**: `HTTP` (recommended; Chrome rejects the plugin's self-signed

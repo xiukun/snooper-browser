@@ -22,10 +22,12 @@
     }
     .rtts-drawer-tab:hover { color: rgba(255,255,255,0.8); }
     .rtts-drawer-tab.active { background: rgba(124,92,255,0.3); color: #fff; }
-    /* New-topic: a quiet action on the far side of the tab strip; loud only on hover. */
+    /* Drawer actions: history and new-topic sit next to the close button. */
+    #rtts-drawer-actions {
+      display: flex; align-items: center; gap: 2px; margin-left: auto;
+    }
     .rtts-drawer-newtopic {
       display: flex; align-items: center; gap: 4px;
-      margin-left: auto;
       border: none; background: none; color: rgba(255,255,255,0.5);
       font-size: 11px; font-weight: 500;
       padding: 4px 8px; border-radius: 7px; cursor: pointer;
@@ -258,9 +260,68 @@
     #rtts-drawer-header {
       padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.06);
       display: flex; align-items: center; justify-content: space-between;
+      gap: 8px;
     }
     #rtts-drawer-header h3 { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
     #rtts-drawer-close { background: none; border: none; color: rgba(255,255,255,0.5); cursor: pointer; font-size: 18px; padding: 4px; }
+    #rtts-pane-chat { position: relative; }
+
+    /* === History popover: per-video companion sessions === */
+    .rtts-history-popover {
+      position: absolute; left: 12px; right: 12px; top: 10px;
+      max-height: min(320px, 56vh);
+      display: flex; flex-direction: column;
+      background: rgba(18,18,28,0.98);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      box-shadow: 0 18px 44px rgba(0,0,0,0.6);
+      z-index: 2147483646;
+      overflow: hidden;
+    }
+    .rtts-history-popover[hidden] { display: none; }
+    .rtts-history-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 12px 8px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      color: rgba(255,255,255,0.55);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .rtts-history-head button {
+      border: none; background: none; color: rgba(255,255,255,0.4);
+      font-size: 12px; cursor: pointer; padding: 2px 4px;
+    }
+    .rtts-history-head button:hover { color: #fff; }
+    .rtts-history-list {
+      overflow-y: auto; padding: 6px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.16) transparent;
+    }
+    .rtts-history-item {
+      display: flex; align-items: stretch; gap: 4px;
+      border-radius: 8px;
+    }
+    .rtts-history-item:hover { background: rgba(255,255,255,0.05); }
+    .rtts-history-item.active { background: rgba(124,92,255,0.18); }
+    .rtts-history-main {
+      flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+      text-align: left; border: none; background: none; color: inherit;
+      padding: 8px; border-radius: 8px; cursor: pointer;
+    }
+    .rtts-history-title {
+      font-size: 12px; color: rgba(255,255,255,0.86);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .rtts-history-meta { font-size: 10px; color: rgba(255,255,255,0.42); }
+    .rtts-history-del {
+      flex-shrink: 0; width: 28px; border: none; background: none;
+      color: rgba(255,255,255,0.3); cursor: pointer; font-size: 11px;
+      border-radius: 8px;
+    }
+    .rtts-history-del:hover { background: rgba(239,68,68,0.16); color: #fca5a5; }
+    .rtts-history-empty {
+      padding: 22px 12px; text-align: center;
+      font-size: 12px; color: rgba(255,255,255,0.35);
+    }
     #rtts-chat {
       flex: 1; overflow-y: auto; padding: 12px 16px;
       display: flex; flex-direction: column; gap: 10px;
@@ -278,6 +339,10 @@
     .rtts-msg .rtts-msg-images img {
       width: 72px; height: 72px; object-fit: cover; border-radius: 7px;
       border: 1px solid rgba(255,255,255,0.14); cursor: zoom-in; display: block;
+    }
+    .rtts-msg-image-note {
+      margin-top: 6px; font-size: 10px;
+      color: rgba(255,255,255,0.35);
     }
     #rtts-chat-composer {
       position: relative;
@@ -1195,16 +1260,32 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
             \u7B14\u8BB0 <span id="rtts-notes-count">0</span>
           </button>
-          <button id="rtts-chat-new-topic" class="rtts-drawer-newtopic" type="button" title="\u5F00\u59CB\u65B0\u8BDD\u9898\uFF08\u6E05\u7A7A\u5F53\u524D\u5BF9\u8BDD\u4E0A\u4E0B\u6587\uFF09" aria-label="\u5F00\u59CB\u65B0\u8BDD\u9898">
+        </div>
+        <div id="rtts-drawer-actions">
+          <button id="rtts-chat-history" class="rtts-drawer-newtopic" type="button" title="\u67E5\u770B\u8FD9\u4E2A\u89C6\u9891\u7684\u5386\u53F2\u4F1A\u8BDD" aria-label="\u67E5\u770B\u5386\u53F2\u4F1A\u8BDD" aria-haspopup="dialog" aria-expanded="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+            \u5386\u53F2
+          </button>
+          <button id="rtts-chat-new-topic" class="rtts-drawer-newtopic" type="button" title="\u5F00\u59CB\u65B0\u8BDD\u9898\uFF08\u65B0\u5EFA\u7A7A\u767D\u4F1A\u8BDD\uFF09" aria-label="\u5F00\u59CB\u65B0\u8BDD\u9898">
             <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             \u65B0\u8BDD\u9898
           </button>
+          <button id="rtts-drawer-close" aria-label="\u5173\u95ED"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         </div>
-        <button id="rtts-drawer-close" aria-label="\u5173\u95ED"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
 
       <div id="rtts-pane-chat" class="rtts-pane active" role="tabpanel" aria-label="AI \u4F34\u5B66">
         <div id="rtts-chat"></div>
+
+        <div id="rtts-history-popover" class="rtts-history-popover" hidden role="dialog" aria-label="\u5386\u53F2\u4F1A\u8BDD">
+          <div class="rtts-history-head">
+            <span>\u5386\u53F2\u4F1A\u8BDD</span>
+            <button id="rtts-history-close" type="button" aria-label="\u5173\u95ED">\u2715</button>
+          </div>
+          <div id="rtts-history-list" class="rtts-history-list"></div>
+          <div id="rtts-history-empty" class="rtts-history-empty" hidden>\u8FD9\u4E2A\u89C6\u9891\u8FD8\u6CA1\u6709\u5386\u53F2\u4F1A\u8BDD</div>
+        </div>
+
         <div id="rtts-chat-composer">
           <div id="rtts-chat-attachments" aria-live="polite"></div>
 
@@ -2072,11 +2153,19 @@
     const last = messages[messages.length - 1];
     return !!last && last.role === "assistant";
   }
+  function messagesFromTurns(turns) {
+    return turns.map((turn) => ({
+      role: turn.role === "assistant" ? "assistant" : "user",
+      content: turn.content,
+      ...turn.hasImages ? { hasImages: true } : {}
+    }));
+  }
   function chatRenderSignature(messages) {
     return JSON.stringify(messages.map((message) => [
       message.role,
       message.content,
-      message.images?.length || 0
+      message.images?.length || 0,
+      message.hasImages ? 1 : 0
     ]));
   }
 
@@ -2189,6 +2278,11 @@
               imgGrid.appendChild(thumb);
             }
             b.appendChild(imgGrid);
+          } else if (m.hasImages) {
+            const note = document.createElement("div");
+            note.className = "rtts-msg-image-note";
+            note.textContent = "\u542B\u56FE\u7247 \xB7 \u5386\u53F2\u8BB0\u5F55\u4E0D\u4FDD\u7559\u56FE\u7247";
+            b.appendChild(note);
           }
           r.chatEl.appendChild(b);
         });
@@ -2906,7 +3000,16 @@
       });
       deps.updateChat();
       const requestId = "q_" + Date.now();
-      const res = await deps.bg("ASK", { question, images, requestId });
+      const video = deps.getVideoContext();
+      const res = await deps.bg("ASK", {
+        question,
+        images,
+        requestId,
+        videoKey: video.videoKey,
+        videoTitle: video.videoTitle,
+        videoUrl: video.videoUrl,
+        videoTime: video.videoTime
+      });
       const current = deps.getSession();
       if (res.ok && res.answer) {
         if (!isLatestAssistantReply(current.messages || [], res.answer)) {
@@ -2928,6 +3031,9 @@
           role: "assistant",
           content: "\u8BF7\u6C42\u5931\u8D25\uFF1A" + (res.error || "\u672A\u77E5\u9519\u8BEF")
         });
+      }
+      if (res.persistWarning) {
+        deps.toast("\u56DE\u7B54\u5DF2\u751F\u6210\uFF0C\u4F46\u5BF9\u8BDD\u5386\u53F2\u5199\u5165\u5931\u8D25\uFF1A" + res.persistWarning, "err");
       }
       busy = false;
       deps.refs.editor.setAttribute("contenteditable", "plaintext-only");
@@ -2952,7 +3058,416 @@
         void sendQuestion();
       }
     });
-    return { submitQuestion, sendQuestion };
+    return { submitQuestion, sendQuestion, isBusy: () => busy };
+  }
+
+  // src/ext/content/history.ts
+  function relativeTime(timestamp) {
+    const diff = Date.now() - timestamp;
+    if (!Number.isFinite(diff) || diff < 6e4) return "\u521A\u521A";
+    if (diff < 36e5) return `${Math.floor(diff / 6e4)} \u5206\u949F\u524D`;
+    if (diff < 864e5) return `${Math.floor(diff / 36e5)} \u5C0F\u65F6\u524D`;
+    const date = new Date(timestamp);
+    return `${date.getMonth() + 1}/${date.getDate()}`;
+  }
+  function createCompanionSessions(deps) {
+    const r = deps.refs;
+    let isOpen = false;
+    function setOpen(next) {
+      isOpen = next;
+      r.popover.hidden = !next;
+      r.historyButton.setAttribute("aria-expanded", String(next));
+      if (next) void refresh();
+    }
+    function close() {
+      setOpen(false);
+    }
+    function renderList(sessions, currentId) {
+      r.list.textContent = "";
+      const visible = sessions.filter((session) => session.turnCount > 0);
+      r.empty.hidden = visible.length > 0;
+      for (const session of visible) {
+        const row = document.createElement("div");
+        row.className = "rtts-history-item" + (session.id === currentId ? " active" : "");
+        const main = document.createElement("button");
+        main.type = "button";
+        main.className = "rtts-history-main";
+        main.dataset.id = session.id;
+        main.title = session.title || "\u672A\u547D\u540D\u5BF9\u8BDD";
+        const title = document.createElement("span");
+        title.className = "rtts-history-title";
+        title.textContent = session.title || "\u672A\u547D\u540D\u5BF9\u8BDD";
+        main.appendChild(title);
+        const meta = document.createElement("span");
+        meta.className = "rtts-history-meta";
+        const rounds = Math.max(1, Math.ceil(session.turnCount / 2));
+        meta.textContent = `${rounds} \u8F6E \xB7 ${relativeTime(session.updatedAt)}`;
+        main.appendChild(meta);
+        const remove2 = document.createElement("button");
+        remove2.type = "button";
+        remove2.className = "rtts-history-del";
+        remove2.dataset.del = session.id;
+        remove2.title = "\u5220\u9664\u8FD9\u4E2A\u4F1A\u8BDD";
+        remove2.setAttribute("aria-label", `\u5220\u9664\u4F1A\u8BDD ${session.title || "\u672A\u547D\u540D\u5BF9\u8BDD"}`);
+        remove2.textContent = "\u2715";
+        row.append(main, remove2);
+        r.list.appendChild(row);
+      }
+    }
+    async function refresh() {
+      const video = deps.getVideoContext();
+      const res = await deps.bg("AGENT_LIST_SESSIONS", { videoKey: video.videoKey });
+      if (!res.ok) {
+        deps.toast(res.error || "\u8BFB\u53D6\u5386\u53F2\u5931\u8D25", "err");
+        return;
+      }
+      const currentId = res.currentId ?? deps.getSession().agentSessionId ?? null;
+      renderList(Array.isArray(res.sessions) ? res.sessions : [], currentId);
+    }
+    function applySession(currentId, turns) {
+      const session = deps.getSession();
+      session.agentSessionId = currentId;
+      session.messages = messagesFromTurns(Array.isArray(turns) ? turns : []);
+      deps.updateChat();
+    }
+    async function startNewTopic() {
+      if (deps.isBusy()) {
+        deps.toast("\u6B63\u5728\u56DE\u7B54\u4E0A\u4E00\u9898\uFF0C\u8BF7\u7A0D\u5019", "info");
+        return;
+      }
+      const res = await deps.bg("AGENT_NEW_SESSION", { ...deps.getVideoContext() });
+      if (!res.ok) {
+        deps.toast(res.error || "\u65B0\u5EFA\u4F1A\u8BDD\u5931\u8D25", "err");
+        return;
+      }
+      applySession(res.currentId ?? null, []);
+      deps.clearComposer();
+      deps.focusComposer();
+      setOpen(false);
+      deps.toast("\u5DF2\u5F00\u59CB\u65B0\u8BDD\u9898", "ok");
+    }
+    async function switchTo(id) {
+      if (deps.isBusy()) {
+        deps.toast("\u6B63\u5728\u56DE\u7B54\u4E0A\u4E00\u9898\uFF0C\u8BF7\u7A0D\u5019", "info");
+        return;
+      }
+      const video = deps.getVideoContext();
+      const res = await deps.bg("AGENT_SWITCH_SESSION", { id, videoKey: video.videoKey });
+      if (!res.ok) {
+        deps.toast(res.error || "\u5207\u6362\u4F1A\u8BDD\u5931\u8D25", "err");
+        return;
+      }
+      applySession(res.currentId ?? null, res.turns);
+      setOpen(false);
+      deps.focusComposer();
+    }
+    async function remove(id) {
+      if (deps.isBusy()) {
+        deps.toast("\u6B63\u5728\u56DE\u7B54\u4E0A\u4E00\u9898\uFF0C\u8BF7\u7A0D\u5019", "info");
+        return;
+      }
+      const video = deps.getVideoContext();
+      const res = await deps.bg("AGENT_DELETE_SESSION", { id, videoKey: video.videoKey });
+      if (!res.ok) {
+        deps.toast(res.error || "\u5220\u9664\u4F1A\u8BDD\u5931\u8D25", "err");
+        return;
+      }
+      applySession(res.currentId ?? null, res.turns);
+      await refresh();
+    }
+    r.historyButton.addEventListener("click", () => {
+      setOpen(!isOpen);
+    });
+    r.close.addEventListener("click", () => setOpen(false));
+    r.newTopic.addEventListener("click", () => {
+      void startNewTopic();
+    });
+    r.list.addEventListener("click", (event) => {
+      const target = event.target;
+      const removeButton = target.closest(".rtts-history-del");
+      if (removeButton?.dataset.del) {
+        event.stopPropagation();
+        void remove(removeButton.dataset.del);
+        return;
+      }
+      const main = target.closest(".rtts-history-main");
+      if (main?.dataset.id) void switchTo(main.dataset.id);
+    });
+    return {
+      isOpen: () => isOpen,
+      open: () => setOpen(true),
+      close,
+      refresh,
+      startNewTopic
+    };
+  }
+
+  // src/lib/video-key.ts
+  var TRACKING_PARAMS = /* @__PURE__ */ new Set([
+    "t",
+    "si",
+    "feature",
+    "index",
+    "list",
+    "start_radio",
+    "spm_id_from",
+    "vd_source",
+    "share_source",
+    "share_medium",
+    "share_plat",
+    "share_session_id",
+    "share_tag",
+    "timestamp",
+    "unique_k",
+    "from",
+    "ref",
+    "ref_src",
+    "fbclid",
+    "gclid"
+  ]);
+  function stripWww(host) {
+    return host.replace(/^www\./, "");
+  }
+  function youtubeId(url) {
+    const host = stripWww(url.hostname);
+    if (host === "youtu.be") {
+      const id = url.pathname.split("/").filter(Boolean)[0];
+      return id || null;
+    }
+    if (host !== "youtube.com" && !host.endsWith(".youtube.com")) return null;
+    const direct = url.searchParams.get("v");
+    if (direct) return direct;
+    const match = url.pathname.match(/^\/(?:shorts|embed|live)\/([^/?#]+)/);
+    return match?.[1] ?? null;
+  }
+  function bilibiliKey(url) {
+    const host = stripWww(url.hostname);
+    if (host !== "bilibili.com" && !host.endsWith(".bilibili.com")) return null;
+    const bv = url.pathname.match(/\/(BV[0-9A-Za-z]+)/);
+    if (bv?.[1]) return `bilibili:${bv[1]}`;
+    const av = url.pathname.match(/\/av(\d+)/i);
+    if (av?.[1]) return `bilibili:av${av[1]}`;
+    const parts = url.pathname.split("/").filter(Boolean).slice(0, 3);
+    if (parts.length > 0) return `bilibili:${parts.join("/")}`;
+    return null;
+  }
+  function videoKeyForUrl(rawUrl) {
+    let url;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      return `page:${(rawUrl || "unknown").slice(0, 160)}`;
+    }
+    const yt = youtubeId(url);
+    if (yt) return `youtube:${yt}`;
+    const bili = bilibiliKey(url);
+    if (bili) return bili;
+    const normalized = new URL(url.toString());
+    normalized.hash = "";
+    for (const key of [...normalized.searchParams.keys()]) {
+      if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) {
+        normalized.searchParams.delete(key);
+      }
+    }
+    return `page:${normalized.toString()}`;
+  }
+  function videoTitleFromDocumentTitle(rawTitle) {
+    const title = (rawTitle || "").trim();
+    if (!title) return "";
+    const stripped = title.replace(/\s*[-–—_|]\s*YouTube\s*$/i, "").replace(/[_\-–—|]\s*哔哩哔哩.*$/i, "").replace(/\s*[-–—|]\s*Bilibili\s*$/i, "").trim();
+    return (stripped || title).slice(0, 120);
+  }
+
+  // src/ext/screenshot.ts
+  function loadImageElement(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("\u622A\u56FE\u89E3\u7801\u5931\u8D25"));
+      img.src = src;
+    });
+  }
+  function collectVideos(root, out, depth) {
+    if (depth > 3) return;
+    root.querySelectorAll("video").forEach((video) => out.push(video));
+    root.querySelectorAll("iframe").forEach((frame) => {
+      try {
+        const doc = frame.contentDocument;
+        if (doc) collectVideos(doc, out, depth + 1);
+      } catch {
+      }
+    });
+    root.querySelectorAll("*").forEach((el) => {
+      const shadowRoot = el.shadowRoot;
+      if (shadowRoot) collectVideos(shadowRoot, out, depth + 1);
+    });
+  }
+  function getFrameGeometry(win) {
+    const frames = [];
+    let current = win;
+    for (let depth = 0; current && current !== window && depth < 5; depth++) {
+      let frame = null;
+      try {
+        frame = current.frameElement;
+      } catch {
+        break;
+      }
+      if (!frame) break;
+      frames.unshift(frame);
+      current = frame.ownerDocument.defaultView;
+    }
+    let x = 0;
+    let y = 0;
+    let clip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    for (const frame of frames) {
+      const rect = frame.getBoundingClientRect();
+      const left = x + rect.left;
+      const top = y + rect.top;
+      clip = {
+        left: Math.max(clip.left, left),
+        top: Math.max(clip.top, top),
+        right: Math.min(clip.right, left + rect.width),
+        bottom: Math.min(clip.bottom, top + rect.height)
+      };
+      x = left;
+      y = top;
+    }
+    return { x, y, clip };
+  }
+  function getVideoContentRect(video) {
+    if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
+    const win = video.ownerDocument.defaultView;
+    if (!win) return null;
+    const style = win.getComputedStyle(video);
+    if (style.display === "none" || style.visibility === "hidden") return null;
+    if (Number(style.opacity) < 0.05) return null;
+    const r = video.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const frame = getFrameGeometry(win);
+    let x = r.left + frame.x;
+    let y = r.top + frame.y;
+    let w = r.width;
+    let h = r.height;
+    const fit = style.objectFit || "contain";
+    if (fit === "contain" || fit === "scale-down") {
+      const videoAspect = video.videoWidth / video.videoHeight;
+      const boxAspect = w / h;
+      if (videoAspect > boxAspect) {
+        const nh = w / videoAspect;
+        y += (h - nh) / 2;
+        h = nh;
+      } else {
+        const nw = h * videoAspect;
+        x += (w - nw) / 2;
+        w = nw;
+      }
+    }
+    const left = Math.max(frame.clip.left, x);
+    const top = Math.max(frame.clip.top, y);
+    const right = Math.min(frame.clip.right, x + w);
+    const bottom = Math.min(frame.clip.bottom, y + h);
+    if (right - left < 64 || bottom - top < 64) return null;
+    return { x: left, y: top, w: right - left, h: bottom - top };
+  }
+  function findBestVideoCandidate() {
+    const videos = [];
+    collectVideos(document, videos, 0);
+    let best = null;
+    for (const video of videos) {
+      const rect = getVideoContentRect(video);
+      if (!rect) continue;
+      const score = rect.w * rect.h * (video.paused ? 0.6 : 1);
+      if (!best || score > best.score) best = { video, rect, score };
+    }
+    return best ? { video: best.video, rect: best.rect, count: videos.length } : null;
+  }
+  function createScreenshotCapturer(deps) {
+    const maxWidth = deps.maxWidth ?? 1600;
+    const quality = deps.jpegQuality ?? 0.9;
+    const hideDelayMs = deps.hideDelayMs ?? 120;
+    async function render(dataUrl, rect) {
+      const img = await loadImageElement(dataUrl);
+      const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
+      const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
+      let sx = 0;
+      let sy = 0;
+      let sw = img.naturalWidth;
+      let sh = img.naturalHeight;
+      if (rect) {
+        sx = Math.min(img.naturalWidth - 1, Math.max(0, Math.round(rect.x * scaleX)));
+        sy = Math.min(img.naturalHeight - 1, Math.max(0, Math.round(rect.y * scaleY)));
+        sw = Math.min(img.naturalWidth - sx, Math.max(1, Math.round(rect.w * scaleX)));
+        sh = Math.min(img.naturalHeight - sy, Math.max(1, Math.round(rect.h * scaleY)));
+        if (sw < 32 || sh < 32) throw new Error("\u89C6\u9891\u88C1\u526A\u533A\u57DF\u8FC7\u5C0F");
+      }
+      let outW = sw;
+      let outH = sh;
+      if (outW > maxWidth) {
+        outH = Math.round(outH * maxWidth / outW);
+        outW = maxWidth;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("\u65E0\u6CD5\u521B\u5EFA\u753B\u5E03");
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+      return canvas.toDataURL("image/jpeg", quality);
+    }
+    async function captureVideoFrame() {
+      const candidate = findBestVideoCandidate();
+      console.log("[RTTS] screenshot candidates", {
+        count: candidate?.count ?? 0,
+        chosen: candidate ? { width: candidate.video.videoWidth, height: candidate.video.videoHeight, area: Math.round(candidate.rect.w * candidate.rect.h) } : null
+      });
+      deps.host.style.display = "none";
+      try {
+        await new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        await new Promise((resolve) => setTimeout(resolve, hideDelayMs));
+        const res = await deps.capture();
+        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u6D4F\u89C8\u5668\u622A\u56FE\u5931\u8D25");
+        let dataUrl = res.dataUrl;
+        let cropped = false;
+        if (candidate) {
+          try {
+            dataUrl = await render(res.dataUrl, candidate.rect);
+            cropped = true;
+          } catch (err) {
+            console.warn("[RTTS] screenshot crop failed, using the full frame:", err);
+          }
+        }
+        if (!cropped) dataUrl = await render(res.dataUrl, null);
+        console.log("[RTTS] screenshot", {
+          path: res.path || "unknown",
+          cropped,
+          bytes: dataUrl.length
+        });
+        return { dataUrl, cropped };
+      } finally {
+        deps.host.style.display = "";
+      }
+    }
+    return { captureVideoFrame, findBestVideoCandidate };
+  }
+
+  // src/ext/content/video-context.ts
+  function readVideoContext() {
+    const videoUrl = location.href;
+    let videoTime = 0;
+    try {
+      const candidate = findBestVideoCandidate();
+      const time = candidate?.video?.currentTime;
+      if (typeof time === "number" && Number.isFinite(time) && time > 0) videoTime = time;
+    } catch {
+    }
+    return {
+      videoKey: videoKeyForUrl(videoUrl),
+      videoTitle: videoTitleFromDocumentTitle(document.title),
+      videoUrl,
+      videoTime
+    };
   }
 
   // src/ext/content/tools-menu.ts
@@ -3293,6 +3808,14 @@
   function sessionHasAssets(session) {
     return collectAssets(session.notes, session.messages).length > 0;
   }
+  async function resolveSubtitles(deps) {
+    try {
+      const rows = await deps.getTranscript();
+      if (Array.isArray(rows) && rows.length > 0) return rows;
+    } catch {
+    }
+    return deps.getSession().subtitles;
+  }
   function downloadZip(filename, files) {
     const blob = new Blob([buildZip(files)], { type: "application/zip" });
     const url = URL.createObjectURL(blob);
@@ -3305,7 +3828,7 @@
   function bindActions(deps) {
     const r = deps.refs;
     r.copy.addEventListener("click", async () => {
-      const text = getSubtitleText(deps.getSession().subtitles);
+      const text = getSubtitleText(await resolveSubtitles(deps));
       if (!text) {
         deps.toast("\u6CA1\u6709\u5B57\u5E55\u53EF\u590D\u5236", "err");
         return;
@@ -3318,8 +3841,8 @@
         deps.toast("\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u8BBE\u7F6E\u4E2D\u5141\u8BB8\u526A\u8D34\u677F\u8BBF\u95EE", "err");
       }
     });
-    r.exportTxt.addEventListener("click", () => {
-      const text = getSubtitleText(deps.getSession().subtitles);
+    r.exportTxt.addEventListener("click", async () => {
+      const text = getSubtitleText(await resolveSubtitles(deps));
       if (!text) {
         deps.toast("\u6CA1\u6709\u5B57\u5E55\u53EF\u5BFC\u51FA", "err");
         return;
@@ -3330,7 +3853,8 @@
     });
     r.exportMd.addEventListener("click", async () => {
       const session = deps.getSession();
-      const text = getSubtitleMarkdown(session);
+      const subtitles = await resolveSubtitles(deps);
+      const text = getSubtitleMarkdown({ ...session, subtitles });
       if (!text) {
         deps.toast("\u6CA1\u6709\u5185\u5BB9\u53EF\u5BFC\u51FA", "err");
         return;
@@ -3776,6 +4300,11 @@ ${context}`;
       drawerTabChat: shadow.getElementById("rtts-tab-chat"),
       drawerTabNotes: shadow.getElementById("rtts-tab-notes"),
       chatNewTopic: shadow.getElementById("rtts-chat-new-topic"),
+      chatHistoryBtn: shadow.getElementById("rtts-chat-history"),
+      chatHistoryPopover: shadow.getElementById("rtts-history-popover"),
+      chatHistoryList: shadow.getElementById("rtts-history-list"),
+      chatHistoryEmpty: shadow.getElementById("rtts-history-empty"),
+      chatHistoryClose: shadow.getElementById("rtts-history-close"),
       paneChat: shadow.getElementById("rtts-pane-chat"),
       paneNotes: shadow.getElementById("rtts-pane-notes"),
       chatBtn: shadow.getElementById("rtts-chat-btn"),
@@ -3849,180 +4378,6 @@ ${context}`;
     { source: "Enjoy the seamless multilingual experience", target: "\u4EAB\u53D7\u65E0\u7F1D\u7684\u591A\u8BED\u8A00\u4F53\u9A8C", delay: 2500 }
   ];
 
-  // src/ext/screenshot.ts
-  function loadImageElement(src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error("\u622A\u56FE\u89E3\u7801\u5931\u8D25"));
-      img.src = src;
-    });
-  }
-  function collectVideos(root, out, depth) {
-    if (depth > 3) return;
-    root.querySelectorAll("video").forEach((video) => out.push(video));
-    root.querySelectorAll("iframe").forEach((frame) => {
-      try {
-        const doc = frame.contentDocument;
-        if (doc) collectVideos(doc, out, depth + 1);
-      } catch {
-      }
-    });
-    root.querySelectorAll("*").forEach((el) => {
-      const shadowRoot = el.shadowRoot;
-      if (shadowRoot) collectVideos(shadowRoot, out, depth + 1);
-    });
-  }
-  function getFrameGeometry(win) {
-    const frames = [];
-    let current = win;
-    for (let depth = 0; current && current !== window && depth < 5; depth++) {
-      let frame = null;
-      try {
-        frame = current.frameElement;
-      } catch {
-        break;
-      }
-      if (!frame) break;
-      frames.unshift(frame);
-      current = frame.ownerDocument.defaultView;
-    }
-    let x = 0;
-    let y = 0;
-    let clip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
-    for (const frame of frames) {
-      const rect = frame.getBoundingClientRect();
-      const left = x + rect.left;
-      const top = y + rect.top;
-      clip = {
-        left: Math.max(clip.left, left),
-        top: Math.max(clip.top, top),
-        right: Math.min(clip.right, left + rect.width),
-        bottom: Math.min(clip.bottom, top + rect.height)
-      };
-      x = left;
-      y = top;
-    }
-    return { x, y, clip };
-  }
-  function getVideoContentRect(video) {
-    if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
-    const win = video.ownerDocument.defaultView;
-    if (!win) return null;
-    const style = win.getComputedStyle(video);
-    if (style.display === "none" || style.visibility === "hidden") return null;
-    if (Number(style.opacity) < 0.05) return null;
-    const r = video.getBoundingClientRect();
-    if (!r.width || !r.height) return null;
-    const frame = getFrameGeometry(win);
-    let x = r.left + frame.x;
-    let y = r.top + frame.y;
-    let w = r.width;
-    let h = r.height;
-    const fit = style.objectFit || "contain";
-    if (fit === "contain" || fit === "scale-down") {
-      const videoAspect = video.videoWidth / video.videoHeight;
-      const boxAspect = w / h;
-      if (videoAspect > boxAspect) {
-        const nh = w / videoAspect;
-        y += (h - nh) / 2;
-        h = nh;
-      } else {
-        const nw = h * videoAspect;
-        x += (w - nw) / 2;
-        w = nw;
-      }
-    }
-    const left = Math.max(frame.clip.left, x);
-    const top = Math.max(frame.clip.top, y);
-    const right = Math.min(frame.clip.right, x + w);
-    const bottom = Math.min(frame.clip.bottom, y + h);
-    if (right - left < 64 || bottom - top < 64) return null;
-    return { x: left, y: top, w: right - left, h: bottom - top };
-  }
-  function findBestVideoCandidate() {
-    const videos = [];
-    collectVideos(document, videos, 0);
-    let best = null;
-    for (const video of videos) {
-      const rect = getVideoContentRect(video);
-      if (!rect) continue;
-      const score = rect.w * rect.h * (video.paused ? 0.6 : 1);
-      if (!best || score > best.score) best = { video, rect, score };
-    }
-    return best ? { video: best.video, rect: best.rect, count: videos.length } : null;
-  }
-  function createScreenshotCapturer(deps) {
-    const maxWidth = deps.maxWidth ?? 1600;
-    const quality = deps.jpegQuality ?? 0.9;
-    const hideDelayMs = deps.hideDelayMs ?? 120;
-    async function render(dataUrl, rect) {
-      const img = await loadImageElement(dataUrl);
-      const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
-      const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
-      let sx = 0;
-      let sy = 0;
-      let sw = img.naturalWidth;
-      let sh = img.naturalHeight;
-      if (rect) {
-        sx = Math.min(img.naturalWidth - 1, Math.max(0, Math.round(rect.x * scaleX)));
-        sy = Math.min(img.naturalHeight - 1, Math.max(0, Math.round(rect.y * scaleY)));
-        sw = Math.min(img.naturalWidth - sx, Math.max(1, Math.round(rect.w * scaleX)));
-        sh = Math.min(img.naturalHeight - sy, Math.max(1, Math.round(rect.h * scaleY)));
-        if (sw < 32 || sh < 32) throw new Error("\u89C6\u9891\u88C1\u526A\u533A\u57DF\u8FC7\u5C0F");
-      }
-      let outW = sw;
-      let outH = sh;
-      if (outW > maxWidth) {
-        outH = Math.round(outH * maxWidth / outW);
-        outW = maxWidth;
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = outW;
-      canvas.height = outH;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("\u65E0\u6CD5\u521B\u5EFA\u753B\u5E03");
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
-      return canvas.toDataURL("image/jpeg", quality);
-    }
-    async function captureVideoFrame() {
-      const candidate = findBestVideoCandidate();
-      console.log("[RTTS] screenshot candidates", {
-        count: candidate?.count ?? 0,
-        chosen: candidate ? { width: candidate.video.videoWidth, height: candidate.video.videoHeight, area: Math.round(candidate.rect.w * candidate.rect.h) } : null
-      });
-      deps.host.style.display = "none";
-      try {
-        await new Promise((resolve) => {
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-        });
-        await new Promise((resolve) => setTimeout(resolve, hideDelayMs));
-        const res = await deps.capture();
-        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u6D4F\u89C8\u5668\u622A\u56FE\u5931\u8D25");
-        let dataUrl = res.dataUrl;
-        let cropped = false;
-        if (candidate) {
-          try {
-            dataUrl = await render(res.dataUrl, candidate.rect);
-            cropped = true;
-          } catch (err) {
-            console.warn("[RTTS] screenshot crop failed, using the full frame:", err);
-          }
-        }
-        if (!cropped) dataUrl = await render(res.dataUrl, null);
-        console.log("[RTTS] screenshot", {
-          path: res.path || "unknown",
-          cropped,
-          bytes: dataUrl.length
-        });
-        return { dataUrl, cropped };
-      } finally {
-        deps.host.style.display = "";
-      }
-    }
-    return { captureVideoFrame, findBestVideoCandidate };
-  }
-
   // src/ext/content.ts
   (() => {
     if (window.__rttsContentInstalled) return;
@@ -4039,6 +4394,7 @@ ${context}`;
       targetLang: "zh",
       subtitles: [],
       messages: [],
+      agentSessionId: null,
       notes: [],
       activeNoteId: null,
       isDemoMode: false
@@ -4157,6 +4513,12 @@ ${context}`;
       drawerTabNotes,
       paneChat,
       paneNotes,
+      chatNewTopic,
+      chatHistoryBtn,
+      chatHistoryPopover,
+      chatHistoryList,
+      chatHistoryEmpty,
+      chatHistoryClose,
       chatBtn,
       chatAttachBtn,
       chatFile,
@@ -4261,7 +4623,8 @@ ${context}`;
         // background session snapshot.
         notes: session.notes,
         activeNoteId: session.activeNoteId,
-        isDemoMode: session.isDemoMode
+        isDemoMode: session.isDemoMode,
+        agentSessionId: incoming.agentSessionId ?? null
       };
       if (!Array.isArray(session.messages)) session.messages = [];
       render();
@@ -4508,10 +4871,38 @@ ${context}`;
       clearComposer: () => {
         clearChatEditor();
         chatAttachmentsCtrl.clear();
-      }
+      },
+      getVideoContext: readVideoContext
     });
     const submitQuestion = ask.submitQuestion;
     const sendQuestion = ask.sendQuestion;
+    const companionSessions = createCompanionSessions({
+      refs: {
+        newTopic: chatNewTopic,
+        historyButton: chatHistoryBtn,
+        popover: chatHistoryPopover,
+        list: chatHistoryList,
+        empty: chatHistoryEmpty,
+        close: chatHistoryClose
+      },
+      getSession: () => session,
+      getVideoContext: readVideoContext,
+      bg,
+      toast,
+      updateChat,
+      clearComposer: () => {
+        setCiteOpen(false);
+        clearChatEditor();
+        chatAttachmentsCtrl.clear();
+      },
+      focusComposer: () => {
+        chatEditor.focus();
+      },
+      isBusy: ask.isBusy
+    });
+    drawer.addEventListener("transitionend", () => {
+      if (!drawer.classList.contains("open")) companionSessions.close();
+    });
     const toolsMenuCtrl = createToolsMenu({ button: moreBtn, menu: toolsMenu, shadow });
     const setMenuOpen = toolsMenuCtrl.setOpen;
     shadow.getElementById("rtts-settings-btn").addEventListener("click", () => {
@@ -4637,6 +5028,10 @@ ${context}`;
         screenshot: screenshotBtn
       },
       getSession: () => session,
+      getTranscript: async () => {
+        const res = await bg("GET_TRANSCRIPT");
+        return Array.isArray(res?.subtitles) ? res.subtitles : [];
+      },
       toast,
       flashChip,
       addNoteEntry,
@@ -4651,7 +5046,14 @@ ${context}`;
         setCiteOpen(false);
         return;
       }
+      if (companionSessions.isOpen()) {
+        companionSessions.close();
+        return;
+      }
       if (drawerCtrl.isOpen()) closeDrawer();
+    });
+    shadow.getElementById("rtts-tab-notes").addEventListener("click", () => {
+      companionSessions.close();
     });
     function addQuickNote() {
       if (isNotesPreviewing) toggleNotesPreview();

@@ -214,7 +214,10 @@ The page toolbar keeps screenshot and note actions in its **…** menu:
 ### Transcription history
 
 Realtime translation is recorded while it runs, not only when it stops: every
-final line is appended to the local transcript immediately. A session has no
+final line is appended to the local transcript immediately. Each line also
+carries the video's playback position when the page exposes a `<video>`, so
+history and Markdown exports show where in the video a sentence was spoken
+instead of only when it was recorded. A session has no
 per-record row cap; the page renders the most recent 200 lines, while history,
 copy, and export read the complete transcript on demand. At most 100 completed
 records are kept. Closing the panel, navigating away, or a browser crash still

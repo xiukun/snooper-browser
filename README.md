@@ -27,8 +27,10 @@ video is paused or silent.
 - Two audio sources: microphone, or tab audio through `getDisplayMedia({ audio: true })`.
 - The original playback is **never muted** — subtitles and video coexist.
 - Speech detection is local: silent segments are dropped before any request,
-  and known ASR hallucination patterns (stock phrases, `123456789`, `[whistle]`)
-  are filtered before translation.
+  and ASR output is filtered for stock phrases, decoder loops (short lines that
+  repeat), language/script mismatches, and filler-only lines before
+  translation. The translator is instructed to keep fragments as fragments and
+  never to complete or invent content.
 - Source languages (speech recognition): **automatic detection (default)**,
   Chinese, English. The matching language hint is sent to the audio model;
   `auto` omits the hint.
@@ -80,6 +82,10 @@ video is paused or silent.
   capture instead of an error.
 - After 6.5 seconds without a new subtitle, the subtitle box collapses and
   fades; a new line or a nearby pointer restores it.
+- Subtitle rows keep the translation above the source in a centered reading
+  column. The video timestamp sits in a quiet left gutter and seeks on click,
+  and rows are ordered by segment start even when two in-flight segments finish
+  out of order.
 - Review, edit, and delete notes in the extension side panel; export the full
   transcript with notes as Markdown for Obsidian or any plain-text workflow.
 - Optional Obsidian sync through the Local REST API plugin, verified with a

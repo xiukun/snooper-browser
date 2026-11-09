@@ -447,6 +447,7 @@ body {
 }
 .history-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 9px;
   background: rgba(255,255,255,0.03);
@@ -456,7 +457,10 @@ body {
   transition: background 0.15s;
 }
 .history-item:hover { background: rgba(255,255,255,0.06); }
-.history-item-main { flex: 1; min-width: 0; }
+/* min-width keeps the title block readable; when the actions row cannot fit
+   beside it, flex-wrap pushes the whole row below the title instead of
+   squeezing the title into a vertical sliver. */
+.history-item-main { flex: 1; min-width: 140px; }
 .history-item-title {
   font-size: 13px;
   font-weight: 500;
@@ -485,6 +489,26 @@ body {
   padding: 0 8px;
   font-size: 11px;
 }
+.history-item-detail {
+  flex-basis: 100%;
+  max-height: 280px;
+  overflow: auto;
+  padding: 8px 0 2px 24px;
+  border-top: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.history-subtitle-row {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.history-subtitle-row time { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.history-source, .history-target { min-width: 0; overflow-wrap: anywhere; }
+.history-target { color: var(--text-main); }
 .btn-danger {
   background: rgba(239, 68, 68, 0.14);
   border-color: rgba(239, 68, 68, 0.32);
@@ -592,7 +616,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   justify-content: space-between;
   margin-bottom: 4px;
 }
-.note-card-title-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.note-card-title-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; overflow: hidden; }
 .note-check {
   width: 15px; height: 15px; flex: none; accent-color: var(--accent-primary); cursor: pointer;
 }
@@ -609,6 +633,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-weight: 600;
   font-size: 13px;
   color: var(--text-main);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .note-card-count {
@@ -617,6 +645,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   background: rgba(255, 255, 255, 0.05);
   padding: 1px 6px;
   border-radius: 4px;
+  flex: none;
 }
 
 .note-card-meta {
@@ -641,7 +670,46 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .note-card-actions {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 6px;
+}
+
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s, border-color 0.2s;
+}
+
+.icon-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+}
+
+.icon-btn-danger:hover {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #f87171;
 }
 
 .btn-xs {

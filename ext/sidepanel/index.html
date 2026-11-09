@@ -117,8 +117,8 @@
               <input id="obsidian-folder" type="text" class="field-input" value="snooper-notes" placeholder="snooper-notes">
             </div>
             <div class="field-group full">
-              <label for="obsidian-key" class="field-label">API Key（可选）</label>
-              <input id="obsidian-key" type="password" class="field-input" value="" placeholder="在 Obsidian 插件设置中获取">
+              <label for="obsidian-key" class="field-label">API Key（同步必填）</label>
+              <input id="obsidian-key" type="password" class="field-input" value="" placeholder="在 Obsidian Local REST API 插件设置中复制">
             </div>
             <div class="field-group full">
               <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -138,7 +138,7 @@
             </h2>
             <span class="section-badge" id="history-count">0</span>
           </div>
-          <p class="section-desc">每次停止转写后自动保存。历史记录存储在浏览器本地。</p>
+           <p class="section-desc">每次停止转写后自动保存。展开记录可查看原文、译文、时间戳并复制或导出。</p>
           <div id="history-toolbar" class="history-toolbar">
             <label class="history-select-all">
               <input id="history-select-all" type="checkbox">

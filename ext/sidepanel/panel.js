@@ -1,4 +1,29 @@
 (() => {
+  // src/ext/content/notes-store.ts
+  var NOTES_STORAGE_KEY = "snooper.notes.v1";
+  async function request(type, fields = {}) {
+    const result = await chrome.runtime.sendMessage({ target: "background", type, ...fields });
+    if (!result?.ok || !Array.isArray(result.notes)) throw new Error(result?.error || "\u7B14\u8BB0\u4FDD\u5B58\u670D\u52A1\u4E0D\u53EF\u7528\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA");
+    return result.notes;
+  }
+  async function loadNotes() {
+    let legacy;
+    try {
+      const raw = localStorage.getItem(NOTES_STORAGE_KEY);
+      if (raw) legacy = JSON.parse(raw);
+    } catch {
+    }
+    const notes = await request("NOTES_LIST", { legacy });
+    try {
+      localStorage.removeItem(NOTES_STORAGE_KEY);
+    } catch {
+    }
+    return notes;
+  }
+  function deleteNoteDocuments(ids) {
+    return request("NOTES_DELETE_DOCUMENTS", { ids });
+  }
+
   // src/ext/action-flow.ts
   var UnsupportedPageError = class extends Error {
     code = "UNSUPPORTED_PAGE";
@@ -276,43 +301,7 @@
       apiKey: "",
       noteFolder: "snooper-notes"
     };
-    const NOTES_KEY = "snooper.notes.v1";
     const OBSIDIAN_KEY = "snooper.obsidian-config.v1";
-    function loadNotes() {
-      return (async () => {
-        try {
-          const got = await chrome.storage.local.get(NOTES_KEY);
-          const stored = got?.[NOTES_KEY];
-          if (Array.isArray(stored)) return stored;
-        } catch {
-        }
-        try {
-          const raw = localStorage.getItem(NOTES_KEY);
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              try {
-                await chrome.storage.local.set({ [NOTES_KEY]: parsed });
-              } catch {
-              }
-              return parsed;
-            }
-          }
-        } catch {
-        }
-        return [];
-      })();
-    }
-    async function saveNotes(next) {
-      try {
-        await chrome.storage.local.set({ [NOTES_KEY]: next });
-      } catch {
-      }
-      try {
-        localStorage.setItem(NOTES_KEY, JSON.stringify(next));
-      } catch {
-      }
-    }
     function normalizeObsidianConfig(raw) {
       const r = raw && typeof raw === "object" ? raw : {};
       const port = Number(r.apiPort) || DEFAULT_OBSIDIAN.apiPort;
@@ -435,8 +424,74 @@
       notesSelectAll.indeterminate = selected.length > 0 && selected.length < all.length;
       notesSelectAll.disabled = all.length === 0;
     }
+    const saveFailures = document.createElement("div");
+    saveFailures.setAttribute("role", "status");
+    notesList.before(saveFailures);
+    async function renderSaveFailures() {
+      try {
+        const result = await chrome.runtime.sendMessage({ target: "background", type: "GET_SAVE_FAILURES" });
+        if (!result?.ok) return;
+        saveFailures.textContent = "";
+        for (const failure of result.failures || []) {
+          const item = document.createElement("p");
+          item.className = "empty-hint";
+          item.textContent = `\u6709\u5185\u5BB9\u672A\u4FDD\u5B58\uFF08${failure.pendingCount} \u6761\u5F85\u4FDD\u5B58\uFF09\uFF1A${failure.saveState.message}`;
+          const retry = document.createElement("button");
+          retry.textContent = "\u91CD\u8BD5\u4FDD\u5B58";
+          retry.className = "btn btn-sm btn-secondary";
+          retry.addEventListener("click", async () => {
+            retry.disabled = true;
+            try {
+              const res = await chrome.runtime.sendMessage({ target: "background", type: "RETRY_TRANSCRIPT", tabId: failure.tabId });
+              if (!res?.ok) showNotice(res?.error || "\u4FDD\u5B58\u5931\u8D25\uFF0C\u8BF7\u5BFC\u51FA");
+            } catch (error) {
+              showNotice(`\u4FDD\u5B58\u5931\u8D25\uFF1A${String(error)}`);
+            }
+            await renderSaveFailures();
+          });
+          const exportBtn = document.createElement("button");
+          exportBtn.textContent = "\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9";
+          exportBtn.className = "btn btn-sm btn-secondary";
+          exportBtn.addEventListener("click", async () => {
+            try {
+              const res = await chrome.runtime.sendMessage({ target: "background", type: "GET_TRANSCRIPT", tabId: failure.tabId });
+              const lines = Array.isArray(res?.subtitles) ? res.subtitles : [];
+              if (!lines.length) {
+                showNotice(res?.error || "\u6682\u65E0\u53EF\u5BFC\u51FA\u5185\u5BB9\uFF0C\u8BF7\u91CD\u8BD5\u8BFB\u53D6");
+                return;
+              }
+              const text = lines.map((line) => `${line.source}
+${line.target}`).join("\n\n");
+              const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "snooper-unsaved-transcript.txt";
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(url), 2e3);
+              showNotice(res.complete ? "\u5DF2\u5BFC\u51FA\u5F53\u524D\u8F6C\u5199\uFF08\u542B\u672A\u4FDD\u5B58\u5185\u5BB9\uFF09" : "\u4EC5\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9\uFF0C\u90E8\u5206\u6B63\u6587\u8BFB\u53D6\u5931\u8D25");
+            } catch (error) {
+              showNotice(`\u5BFC\u51FA\u5931\u8D25\uFF1A${String(error)}`);
+            }
+          });
+          item.style.overflowWrap = "anywhere";
+          const actions = document.createElement("div");
+          actions.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:6px";
+          actions.append(retry, exportBtn);
+          item.appendChild(actions);
+          saveFailures.appendChild(item);
+        }
+      } catch (error) {
+        showNotice(`\u4FDD\u5B58\u72B6\u6001\u8BFB\u53D6\u5931\u8D25\uFF1A${String(error)}`);
+      }
+    }
     async function loadAndRenderNotes() {
-      notes = await loadNotes();
+      await renderSaveFailures();
+      try {
+        notes = await loadNotes();
+      } catch (error) {
+        showNotice(`\u7B14\u8BB0\u8BFB\u53D6\u5931\u8D25\uFF0C\u8BF7\u70B9\u5237\u65B0\u91CD\u8BD5\uFF1A${String(error)}`);
+        return;
+      }
       notesList.textContent = "";
       if (notes.length === 0) {
         const empty = document.createElement("p");
@@ -508,10 +563,13 @@
         delBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
           if (!confirm("\u786E\u5B9A\u5220\u9664\u8FD9\u7BC7\u7B14\u8BB0\uFF1F")) return;
-          notes = (await loadNotes()).filter((n) => n.id !== note.id);
-          await saveNotes(notes);
-          await loadAndRenderNotes();
-          showNotice("\u7B14\u8BB0\u5DF2\u5220\u9664");
+          try {
+            notes = await deleteNoteDocuments([note.id]);
+            await loadAndRenderNotes();
+            showNotice("\u7B14\u8BB0\u5DF2\u5220\u9664");
+          } catch (error) {
+            showNotice(`\u5220\u9664\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\uFF1A${String(error)}`);
+          }
         });
         actions.appendChild(delBtn);
         card.appendChild(actions);
@@ -620,10 +678,13 @@
       const ids = getSelectedNoteIds();
       if (ids.length === 0) return;
       if (!confirm(`\u786E\u5B9A\u5220\u9664\u9009\u4E2D\u7684 ${ids.length} \u7BC7\u7B14\u8BB0\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002`)) return;
-      notes = (await loadNotes()).filter((note) => !ids.includes(note.id));
-      await saveNotes(notes);
-      await loadAndRenderNotes();
-      showNotice(`\u5DF2\u5220\u9664 ${ids.length} \u7BC7\u7B14\u8BB0`);
+      try {
+        notes = await deleteNoteDocuments(ids);
+        await loadAndRenderNotes();
+        showNotice(`\u5DF2\u5220\u9664 ${ids.length} \u7BC7\u7B14\u8BB0`);
+      } catch (error) {
+        showNotice(`\u5220\u9664\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\uFF1A${String(error)}`);
+      }
     });
     const HISTORY_PAGE_SIZE = 300;
     function formatTime(ts) {

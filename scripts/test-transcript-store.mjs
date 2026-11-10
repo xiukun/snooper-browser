@@ -375,6 +375,21 @@ function line(index, tag = '') {
 }
 
 
+/* ---------- Legacy/recovery retention preserves 150 complete bodies ---------- */
+{
+  const mod = await freshStore()
+  store[mod.LEGACY_HISTORY_KEY] = Array.from({ length: 150 }, (_, i) => ({ id: `legacy-${i}`, startedAt: i + 1, subtitles: [line(0, `first-${i}-`), line(500, `last-${i}-`)] }))
+  assert.equal((await mod.listTranscripts()).length, 150)
+  const newRecord = await mod.beginTranscript({ tabId: 5000, generation: 1 })
+  await mod.appendTranscriptLine(newRecord.id, line(1))
+  const restarted = await loadModule()
+  await restarted.recoverTranscripts()
+  assert.equal((await restarted.listTranscripts()).length, 151)
+  assert.equal((await restarted.readTranscript('legacy-0'))[0].source, 'sfirst-0-0')
+  assert.equal((await restarted.readTranscript('legacy-149'))[1].target, 'tlast-149-500')
+  passed += 4
+}
+
 /* ---------- Storage failures are observable and retryable ---------- */
 {
   const mod = await freshStore()

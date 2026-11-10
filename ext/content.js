@@ -1660,49 +1660,34 @@
 
   // src/ext/content/notes-store.ts
   var NOTES_STORAGE_KEY = "snooper.notes.v1";
+  async function request(type, fields = {}) {
+    const result = await chrome.runtime.sendMessage({ target: "background", type, ...fields });
+    if (!result?.ok || !Array.isArray(result.notes)) throw new Error(result?.error || "\u7B14\u8BB0\u4FDD\u5B58\u670D\u52A1\u4E0D\u53EF\u7528\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA");
+    return result.notes;
+  }
   async function loadNotes() {
-    try {
-      const got = await chrome.storage.local.get(NOTES_STORAGE_KEY);
-      const stored = got?.[NOTES_STORAGE_KEY];
-      if (Array.isArray(stored)) return stored;
-    } catch {
-    }
+    let legacy;
     try {
       const raw = localStorage.getItem(NOTES_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          try {
-            await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: parsed });
-          } catch {
-          }
-          return parsed;
-        }
-      }
+      if (raw) legacy = JSON.parse(raw);
     } catch {
     }
-    return [];
+    const notes = await request("NOTES_LIST", { legacy });
+    try {
+      localStorage.removeItem(NOTES_STORAGE_KEY);
+    } catch {
+    }
+    return notes;
   }
-  async function saveNotes(notes) {
-    try {
-      await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes });
-    } catch {
-    }
-    try {
-      localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
-    } catch {
-    }
+  function addNoteEntry(note, entry) {
+    return request("NOTES_ADD_ENTRY", { input: { noteId: note.id, title: note.title, createdAt: note.createdAt, sessionInfo: note.sessionInfo, entry } });
+  }
+  function deleteNoteEntry(noteId, entryId) {
+    return request("NOTES_DELETE_ENTRY", { noteId, entryId });
   }
   function createNoteDocument(title, source) {
     const now = Date.now();
-    return {
-      id: `note_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-      title,
-      createdAt: now,
-      updatedAt: now,
-      entries: [],
-      sessionInfo: source
-    };
+    return { id: `note_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`, title, createdAt: now, updatedAt: now, entries: [], sessionInfo: source };
   }
 
   // src/ext/content/markdown.ts
@@ -3233,8 +3218,46 @@
       const seconds = Number(target.dataset.t);
       if (Number.isFinite(seconds)) seekTo(seconds);
     });
-    function persistNotes() {
-      saveNotes(deps.getSession().notes);
+    let loadError = "";
+    function setLoadError(error) {
+      loadError = String(error);
+      render();
+    }
+    const pending = /* @__PURE__ */ new Map();
+    const saving = /* @__PURE__ */ new Map();
+    function adopt(notes) {
+      loadError = "";
+      const merged = structuredClone(notes);
+      for (const item of pending.values()) {
+        let note = merged.find((n) => n.id === item.note.id);
+        if (!note) {
+          note = { ...item.note, entries: [] };
+          merged.push(note);
+        }
+        if (!note.entries.some((e) => e.id === item.entry.id)) note.entries.push(item.entry);
+      }
+      const session = deps.getSession();
+      session.notes = merged;
+      if (!merged.some((n) => n.id === session.activeNoteId)) session.activeNoteId = merged[0]?.id ?? null;
+      render();
+    }
+    function persistEntry(key) {
+      const current = saving.get(key);
+      if (current) return current;
+      const item = pending.get(key);
+      if (!item) return Promise.resolve(true);
+      const run = addNoteEntry(item.note, item.entry).then((notes) => {
+        pending.delete(key);
+        adopt(notes);
+        return true;
+      }).catch((error) => {
+        item.error = error.message || String(error);
+        deps.toast("\u6709\u7B14\u8BB0\u672A\u4FDD\u5B58\uFF0C\u8BF7\u5728\u7B14\u8BB0\u4E2D\u91CD\u8BD5\u6216\u5BFC\u51FA", "err");
+        render();
+        return false;
+      }).finally(() => saving.delete(key));
+      saving.set(key, run);
+      return run;
     }
     function getOrCreateActiveNote() {
       const session = deps.getSession();
@@ -3248,15 +3271,16 @@
       );
       session.notes.push(note);
       session.activeNoteId = note.id;
-      persistNotes();
       return note;
     }
     function addEntry(entry) {
       const note = getOrCreateActiveNote();
-      note.entries.push(entry);
+      const key = `${note.id}:${entry.id}`;
+      if (!note.entries.some((e) => e.id === entry.id)) note.entries.push(entry);
+      pending.set(key, { note, entry, error: "" });
       note.updatedAt = Date.now();
-      persistNotes();
       render();
+      return persistEntry(key);
     }
     function render() {
       const session = deps.getSession();
@@ -3267,14 +3291,54 @@
       r.badge.textContent = count > 99 ? "99+" : String(count);
       r.badge.hidden = count === 0;
       r.list.textContent = "";
+      if (loadError) {
+        const error = document.createElement("p");
+        error.textContent = `\u7B14\u8BB0\u8BFB\u53D6\u5931\u8D25\uFF1A${loadError}`;
+        const retry = document.createElement("button");
+        retry.textContent = "\u91CD\u8BD5\u8BFB\u53D6";
+        retry.className = "rtts-btn-ghost";
+        retry.addEventListener("click", () => {
+          void loadNotes().then(adopt).catch(setLoadError);
+        });
+        error.appendChild(retry);
+        r.list.appendChild(error);
+      }
       const hasEntries = !!(active && active.entries.length > 0);
-      if (!hasEntries) {
+      if (!hasEntries && !loadError) {
         const empty = document.createElement("p");
         empty.id = "rtts-notes-empty";
         empty.textContent = "\u8FD8\u6CA1\u6709\u7B14\u8BB0\uFF0C\u70B9\u51FB\u53F3\u4FA7\u7684\u300C\u8BB0\u5165\u7B14\u8BB0\u300D\u5F00\u59CB\u8BB0\u5F55\u3002";
         r.list.appendChild(empty);
       }
       if (!hasEntries || !active) return;
+      if (pending.size) {
+        const status = document.createElement("p");
+        const cause = [...pending.values()].find((item) => item.error)?.error;
+        status.textContent = `\u6709 ${pending.size} \u6761\u7B14\u8BB0\u672A\u4FDD\u5B58\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA\u3002${cause ? `\u539F\u56E0\uFF1A${cause}\u3002` : ""}\u5173\u95ED\u9875\u9762\u53EF\u80FD\u4E22\u5931\u672A\u4FDD\u5B58\u5185\u5BB9\u3002`;
+        const retry = document.createElement("button");
+        retry.textContent = "\u91CD\u8BD5\u4FDD\u5B58";
+        retry.className = "rtts-btn-ghost";
+        retry.addEventListener("click", () => {
+          for (const key of pending.keys()) void persistEntry(key);
+        });
+        const exportBtn = document.createElement("button");
+        exportBtn.textContent = "\u5BFC\u51FA\u672A\u4FDD\u5B58\u7B14\u8BB0";
+        exportBtn.className = "rtts-btn-ghost";
+        exportBtn.addEventListener("click", () => {
+          const url = URL.createObjectURL(new Blob([JSON.stringify([...pending.values()].map((p) => ({ ...p.note, entries: [p.entry] })), null, 2)], { type: "application/json" }));
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = "snooper-unsaved-notes.json";
+          anchor.click();
+          setTimeout(() => URL.revokeObjectURL(url), 2e3);
+        });
+        status.setAttribute("role", "status");
+        const actions = document.createElement("div");
+        actions.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:6px";
+        actions.append(retry, exportBtn);
+        status.appendChild(actions);
+        r.list.appendChild(status);
+      }
       active.entries.slice(-10).forEach((entry) => {
         const item = document.createElement("div");
         item.className = "note-item";
@@ -3288,7 +3352,7 @@
           img.className = "note-img-preview";
           img.alt = "\u7B14\u8BB0\u56FE\u7247";
           img.style.cssText = "max-width:100%;max-height:80px;border-radius:4px;object-fit:cover;cursor:pointer";
-          img.addEventListener("click", () => deps.openShotPreview(entry.imageUrl, true, true));
+          img.addEventListener("click", () => deps.openShotPreview(entry.imageUrl, !pending.has(`${active.id}:${entry.id}`), true));
           item.appendChild(img);
         }
         if (entry.type === "svg" && entry.svg) {
@@ -3334,11 +3398,15 @@
         delBtn.className = "note-del";
         delBtn.setAttribute("aria-label", "\u5220\u9664\u7B14\u8BB0\u6761\u76EE");
         delBtn.innerHTML = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-        delBtn.addEventListener("click", (event) => {
+        delBtn.addEventListener("click", async (event) => {
           event.stopPropagation();
-          active.entries = active.entries.filter((candidate) => candidate.id !== entry.id);
-          persistNotes();
-          render();
+          try {
+            const notes = await deleteNoteEntry(active.id, entry.id);
+            pending.delete(`${active.id}:${entry.id}`);
+            adopt(notes);
+          } catch (error) {
+            deps.toast(`\u5220\u9664\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\uFF1A${String(error)}`, "err");
+          }
         });
         row.appendChild(delBtn);
         item.appendChild(row);
@@ -3346,7 +3414,7 @@
       });
       r.list.scrollTop = r.list.scrollHeight;
     }
-    return { addEntry, render, persistNotes };
+    return { addEntry, render, adopt, setLoadError };
   }
 
   // src/ext/content/shot.ts
@@ -3378,15 +3446,16 @@
     r.modal.addEventListener("click", (event) => {
       if (event.target === r.modal) close();
     });
-    r.save.addEventListener("click", () => {
+    r.save.addEventListener("click", async () => {
       if (!previewUrl) return;
-      deps.addNoteEntry({
+      const saved = await deps.addNoteEntry({
         id: `screenshot_${Date.now()}`,
         type: "screenshot",
         at: Date.now(),
         imageUrl: previewUrl,
         text: "\u89C6\u9891\u622A\u56FE"
       });
+      if (!saved) return;
       r.save.disabled = true;
       r.save.textContent = "\u5DF2\u5B58\u5165\u7B14\u8BB0";
       deps.toast("\u622A\u56FE\u5DF2\u5B58\u5165\u7B14\u8BB0", "ok");
@@ -4330,11 +4399,14 @@
   }
   async function resolveSubtitles(deps) {
     try {
-      const rows = await deps.getTranscript();
-      if (Array.isArray(rows) && rows.length > 0) return rows;
+      const result = await deps.getTranscript();
+      if (result.complete) return result;
+      const byId = /* @__PURE__ */ new Map();
+      for (const [i, line] of [...result.subtitles, ...deps.getSession().subtitles].entries()) byId.set(line.id || `fallback:${i}`, line);
+      return { subtitles: [...byId.values()].sort((a, b) => (a.at || 0) - (b.at || 0)), complete: false };
     } catch {
+      return { subtitles: deps.getSession().subtitles, complete: false };
     }
-    return deps.getSession().subtitles;
   }
   function downloadZip(filename, files) {
     const blob = new Blob([buildZip(files)], { type: "application/zip" });
@@ -4348,7 +4420,8 @@
   function bindActions(deps) {
     const r = deps.refs;
     r.copy.addEventListener("click", async () => {
-      const text = getSubtitleText(await resolveSubtitles(deps));
+      const result = await resolveSubtitles(deps);
+      const text = getSubtitleText(result.subtitles);
       if (!text) {
         deps.toast("\u6CA1\u6709\u5B57\u5E55\u53EF\u590D\u5236", "err");
         return;
@@ -4356,24 +4429,26 @@
       const ok = await copyText(text);
       if (ok) {
         deps.flashChip(r.copy);
-        deps.toast("\u5DF2\u590D\u5236\u5168\u90E8\u5B57\u5E55", "ok");
+        deps.toast(result.complete ? "\u5DF2\u590D\u5236\u5168\u90E8\u5B57\u5E55" : "\u4EC5\u590D\u5236\u53EF\u7528\u5185\u5BB9\uFF0C\u5B8C\u6574\u6B63\u6587\u8BFB\u53D6\u5931\u8D25", result.complete ? "ok" : "err");
       } else {
         deps.toast("\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u8BBE\u7F6E\u4E2D\u5141\u8BB8\u526A\u8D34\u677F\u8BBF\u95EE", "err");
       }
     });
     r.exportTxt.addEventListener("click", async () => {
-      const text = getSubtitleText(await resolveSubtitles(deps));
+      const result = await resolveSubtitles(deps);
+      const text = getSubtitleText(result.subtitles);
       if (!text) {
         deps.toast("\u6CA1\u6709\u5B57\u5E55\u53EF\u5BFC\u51FA", "err");
         return;
       }
       downloadBlob(`snooper-subtitles-${Date.now()}.txt`, text);
       deps.flashChip(r.exportTxt);
-      deps.toast("TXT \u5DF2\u5BFC\u51FA", "ok");
+      deps.toast(result.complete ? "TXT \u5DF2\u5BFC\u51FA" : "\u4EC5\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9\uFF0C\u5B8C\u6574\u6B63\u6587\u8BFB\u53D6\u5931\u8D25", result.complete ? "ok" : "err");
     });
     r.exportMd.addEventListener("click", async () => {
       const session = deps.getSession();
-      const subtitles = await resolveSubtitles(deps);
+      const result = await resolveSubtitles(deps);
+      const subtitles = result.subtitles;
       const text = getSubtitleMarkdown({ ...session, subtitles, pageUrl: location.href, pageTitle: document.title });
       if (!text) {
         deps.toast("\u6CA1\u6709\u5185\u5BB9\u53EF\u5BFC\u51FA", "err");
@@ -4382,7 +4457,7 @@
       deps.flashChip(r.exportMd);
       if (!sessionHasAssets(session)) {
         downloadBlob(`snooper-notes-${Date.now()}.md`, text);
-        deps.toast("Markdown \u5DF2\u5BFC\u51FA", "ok");
+        deps.toast(result.complete ? "Markdown \u5DF2\u5BFC\u51FA" : "\u4EC5\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9\uFF0C\u5B8C\u6574\u6B63\u6587\u8BFB\u53D6\u5931\u8D25", result.complete ? "ok" : "err");
         return;
       }
       const assets = collectAssets(session.notes, session.messages);
@@ -4399,15 +4474,16 @@
         }
       }
       const markdown = getSubtitleMarkdown(
-        { ...session, pageUrl: location.href, pageTitle: document.title },
+        { ...session, subtitles, pageUrl: location.href, pageTitle: document.title },
         new Map([...names].map(([entryId, name]) => [entryId, name]))
       );
       files.unshift({ name: "record.md", bytes: new TextEncoder().encode(markdown) });
       downloadZip(`snooper-notes-${Date.now()}.zip`, files);
+      const partial = result.complete ? "" : "\uFF0C\u4EC5\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9\uFF08\u5B8C\u6574\u6B63\u6587\u8BFB\u53D6\u5931\u8D25\uFF09";
       const note = failed > 0 ? `\uFF0C${failed} \u5F20\u56FE\u7247\u65E0\u6CD5\u8BFB\u53D6\u5DF2\u7528\u5360\u4F4D\u8BF4\u660E` : "";
-      deps.toast(`\u5DF2\u5BFC\u51FA ZIP\uFF08${files.length} \u4E2A\u6587\u4EF6\uFF0C${formatBytes(files.reduce((sum, file) => sum + file.bytes.length, 0))}\uFF09${note}`, failed > 0 ? "err" : "ok");
+      deps.toast(`\u5DF2\u5BFC\u51FA ZIP\uFF08${files.length} \u4E2A\u6587\u4EF6\uFF0C${formatBytes(files.reduce((sum, file) => sum + file.bytes.length, 0))}\uFF09${note}${partial}`, failed > 0 || !result.complete ? "err" : "ok");
     });
-    r.note.addEventListener("click", () => {
+    r.note.addEventListener("click", async () => {
       const session = deps.getSession();
       const subs = session.subtitles;
       if (subs.length === 0) {
@@ -4415,7 +4491,7 @@
         return;
       }
       const last = subs[subs.length - 1];
-      deps.addNoteEntry({
+      const saved = await deps.addNoteEntry({
         id: `note_${Date.now()}`,
         type: "subtitle",
         at: Date.now(),
@@ -4427,6 +4503,7 @@
         videoTime: typeof last.videoTime === "number" ? last.videoTime : null,
         videoUrl: location.href
       });
+      if (!saved) return;
       deps.flashChip(r.note);
       deps.toast("\u5DF2\u8BB0\u5165\u7B14\u8BB0", "ok");
     });
@@ -4447,7 +4524,7 @@
           deps.toast(res.error || "\u751F\u6210\u7EAA\u8981\u5931\u8D25", "err");
           return;
         }
-        deps.addNoteEntry({
+        const saved = await deps.addNoteEntry({
           id: `summary_${Date.now()}`,
           type: "summary",
           at: Date.now(),
@@ -4456,6 +4533,7 @@
           videoUrl: location.href
         });
         deps.openNotes();
+        if (!saved) return;
         deps.flashChip(r.summary);
         deps.toast("\u7EAA\u8981\u5DF2\u8BB0\u5165\u7B14\u8BB0", "ok");
       } finally {
@@ -4472,14 +4550,15 @@
       r.screenshot.classList.add("busy");
       try {
         const shot = await deps.captureVideoFrame();
-        deps.addNoteEntry({
+        const saved = await deps.addNoteEntry({
           id: `screenshot_${Date.now()}`,
           type: "screenshot",
           at: Date.now(),
           imageUrl: shot.dataUrl,
           text: shot.cropped ? "\u89C6\u9891\u622A\u56FE" : "\u9875\u9762\u622A\u56FE"
         });
-        deps.openShotPreview(shot.dataUrl, true, true);
+        deps.openShotPreview(shot.dataUrl, saved, true);
+        if (!saved) return;
         deps.flashChip(r.screenshot);
         deps.toast(
           shot.cropped ? "\u5DF2\u622A\u53D6\u89C6\u9891\u753B\u9762\u5E76\u5B58\u5165\u7B14\u8BB0" : "\u5DF2\u622A\u53D6\u5F53\u524D\u753B\u9762\uFF08\u672A\u8BC6\u522B\u5230\u89C6\u9891\u533A\u57DF\uFF09\u5E76\u5B58\u5165\u7B14\u8BB0",
@@ -4701,7 +4780,7 @@
     async function saveToNotes() {
       try {
         const dataUrl = await ensureDataUrl();
-        deps.addNote(dataUrl, lastPrompt.slice(0, 80) || "\u751F\u6210\u914D\u56FE");
+        await deps.addNote(dataUrl, lastPrompt.slice(0, 80) || "\u751F\u6210\u914D\u56FE");
         deps.toast("\u5DF2\u5B58\u5165\u7B14\u8BB0", "ok");
         close();
       } catch (err) {
@@ -4786,14 +4865,15 @@ ${context}`;
         if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u65E0\u6CD5\u7F13\u5B58\u56FE\u7247");
         return res.dataUrl;
       },
-      addNote: (imageUrl, text) => {
-        deps.addNoteEntry({
+      addNote: async (imageUrl, text) => {
+        const saved = await deps.addNoteEntry({
           id: `image_${Date.now()}`,
           type: "image",
           at: Date.now(),
           imageUrl,
           text
         });
+        if (!saved) throw new Error("\u914D\u56FE\u672A\u4FDD\u5B58\uFF0C\u8BF7\u5728\u7B14\u8BB0\u4E2D\u91CD\u8BD5\u6216\u5BFC\u51FA");
       },
       insertChat: (imageUrl) => {
         const outcome = deps.addImage(imageUrl);
@@ -5358,6 +5438,7 @@ ${context}`;
       };
       if (!Array.isArray(session.messages)) session.messages = [];
       render();
+      renderSaveStatus(incoming.saveState);
       videoClock.sync();
     }
     let sessionSyncSerial = 0;
@@ -5378,6 +5459,32 @@ ${context}`;
         el.style.transition = "opacity 0.2s";
         setTimeout(() => el.remove(), 220);
       }, 3200);
+    }
+    const saveNotice = document.createElement("div");
+    saveNotice.className = "rtts-toast err";
+    saveNotice.style.cssText = "pointer-events:auto;overflow-wrap:anywhere";
+    saveNotice.setAttribute("role", "status");
+    saveNotice.hidden = true;
+    toasts.appendChild(saveNotice);
+    function renderSaveStatus(state) {
+      saveNotice.hidden = state?.status !== "error";
+      if (saveNotice.hidden) return;
+      saveNotice.textContent = state?.message || "\u6709\u5185\u5BB9\u672A\u4FDD\u5B58\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA";
+      const retry = document.createElement("button");
+      retry.textContent = "\u91CD\u8BD5\u4FDD\u5B58";
+      retry.className = "rtts-btn-ghost";
+      retry.addEventListener("click", async () => {
+        retry.disabled = true;
+        const res = await bg("RETRY_TRANSCRIPT");
+        retry.disabled = false;
+        if (!res.ok) toast(res.error || "\u4FDD\u5B58\u5931\u8D25\uFF0C\u8BF7\u5BFC\u51FA", "err");
+        await syncSessionFromBackground();
+      });
+      const exportBtn = document.createElement("button");
+      exportBtn.textContent = "\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9";
+      exportBtn.className = "rtts-btn-ghost";
+      exportBtn.addEventListener("click", () => exportTxtBtn.click());
+      saveNotice.append(retry, exportBtn);
     }
     function flashChip(btn, ms = 1600) {
       btn.classList.add("success");
@@ -5711,9 +5818,10 @@ ${context}`;
         list: notesList
       },
       getSession: () => session,
+      toast,
       openShotPreview: (url, saved, insertable) => openShotPreview(url, saved, insertable)
     });
-    const addNoteEntry = notesCtrl.addEntry;
+    const addNoteEntry2 = notesCtrl.addEntry;
     function renderNotes() {
       notesCtrl.render();
     }
@@ -5737,7 +5845,7 @@ ${context}`;
       },
       getSession: () => session,
       bg,
-      addNoteEntry,
+      addNoteEntry: addNoteEntry2,
       addImage: (url) => chatAttachmentsCtrl.addUrl(url),
       openDrawer,
       submitQuestion,
@@ -5763,7 +5871,7 @@ ${context}`;
         save: shotSave,
         insert: shotInsert
       },
-      addNoteEntry,
+      addNoteEntry: addNoteEntry2,
       addImage: (url) => chatAttachmentsCtrl.addUrl(url),
       openDrawer,
       toast
@@ -5787,11 +5895,11 @@ ${context}`;
       getSession: () => session,
       getTranscript: async () => {
         const res = await bg("GET_TRANSCRIPT");
-        return Array.isArray(res?.subtitles) ? res.subtitles : [];
+        return { subtitles: Array.isArray(res?.subtitles) ? res.subtitles : [], complete: res?.ok === true && res?.complete === true };
       },
       toast,
       flashChip,
-      addNoteEntry,
+      addNoteEntry: addNoteEntry2,
       openImagePanel,
       captureVideoFrame,
       openShotPreview,
@@ -5822,17 +5930,25 @@ ${context}`;
     shadow.getElementById("rtts-tab-notes").addEventListener("click", () => {
       companionSessions.close();
     });
-    function addQuickNote() {
+    let quickNote = null;
+    let quickNoteBusy = false;
+    async function addQuickNote() {
+      if (quickNoteBusy) return;
       if (isNotesPreviewing) toggleNotesPreview();
       const text = getEditorText(notesEditor);
       if (!text) return;
-      addNoteEntry({
-        id: `text_${Date.now()}`,
+      if (!quickNote || quickNote.text !== text) quickNote = { text, id: `text_${Date.now()}` };
+      quickNoteBusy = true;
+      const saved = await addNoteEntry2({
+        id: quickNote.id,
         type: "text",
         at: Date.now(),
         text
       });
-      notesEditor.innerHTML = "";
+      quickNoteBusy = false;
+      if (!saved) return;
+      quickNote = null;
+      if (getEditorText(notesEditor) === text) notesEditor.innerHTML = "";
       notesEditor.focus();
     }
     notesAdd.addEventListener("click", addQuickNote);
@@ -5912,21 +6028,17 @@ ${context}`;
         if (area !== "local" || !changes?.[NOTES_STORAGE_KEY]) return;
         const next = changes[NOTES_STORAGE_KEY].newValue;
         if (!Array.isArray(next)) return;
-        session.notes = next;
-        if (session.activeNoteId && !next.some((note) => note.id === session.activeNoteId)) {
-          session.activeNoteId = next[0]?.id ?? null;
-        }
-        renderNotes();
+        notesCtrl.adopt(next);
       });
     } catch {
     }
     buildLangPicker();
     initBarPosition();
     (async () => {
-      const savedNotes = await loadNotes();
-      session.notes = savedNotes;
-      if (savedNotes.length > 0) {
-        session.activeNoteId = savedNotes[0].id;
+      try {
+        notesCtrl.adopt(await loadNotes());
+      } catch (error) {
+        notesCtrl.setLoadError(error);
       }
       session.isDemoMode = false;
       await syncSessionFromBackground();

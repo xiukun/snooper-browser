@@ -261,146 +261,6 @@ async function forceResetOffscreenCapture() {
   return true;
 }
 
-// src/ext/session-state.ts
-function reconcileSessionWithCapture(session, liveGeneration) {
-  if (typeof liveGeneration !== "number" || session.state === "stopping") return session;
-  if (session.state === "running" && session.generation === liveGeneration) return session;
-  return {
-    ...session,
-    state: "running",
-    generation: liveGeneration
-  };
-}
-
-// src/ext/background/session-store.ts
-var SESSION_RECOVERY_KEY = "snooper.extension.sessions.v1";
-var LIVE_SUBTITLE_WINDOW = 200;
-var sessions = /* @__PURE__ */ new Map();
-var recoveryReady = Promise.resolve();
-function setRecoveryReady(promise) {
-  recoveryReady = promise;
-}
-var generationCounter = Date.now();
-function nextGeneration() {
-  return ++generationCounter;
-}
-function createSession(tabId) {
-  const s = {
-    tabId,
-    state: "idle",
-    sourceLang: "auto",
-    targetLang: "zh",
-    generation: 0,
-    createdAt: Date.now(),
-    configSnapshot: null,
-    subtitles: [],
-    messages: [],
-    streamId: "",
-    pendingAskRequestId: null,
-    agentSessionId: null,
-    transcriptId: null,
-    streamingSubtitle: null,
-    audioSilent: false,
-    lastScreenAt: 0,
-    screenCaption: "off",
-    screenCaptionError: ""
-  };
-  sessions.set(tabId, s);
-  return s;
-}
-function getOrCreateSession(tabId) {
-  let s = sessions.get(tabId);
-  if (!s) {
-    s = createSession(tabId);
-  }
-  return s;
-}
-async function reconcileSessionState(tabId) {
-  await recoveryReady;
-  const session = getOrCreateSession(tabId);
-  const liveGeneration = await getLiveCaptureGeneration(tabId);
-  const reconciled = reconcileSessionWithCapture(session, liveGeneration);
-  if (reconciled !== session) {
-    Object.assign(session, reconciled);
-    persistSessionsThrottled();
-  }
-  return session;
-}
-function safeSession(s) {
-  return {
-    state: s.state,
-    sourceLang: s.sourceLang,
-    targetLang: s.targetLang,
-    subtitles: s.subtitles,
-    messages: s.messages,
-    agentSessionId: s.agentSessionId ?? null,
-    transcriptId: s.transcriptId ?? null,
-    streamingSubtitle: s.streamingSubtitle,
-    audioSilent: s.audioSilent,
-    screenCaption: s.screenCaption,
-    screenCaptionError: s.screenCaptionError
-  };
-}
-function hasActiveSession() {
-  for (const s of sessions.values()) {
-    if (s.state === "running" || s.state === "starting" || s.state === "stopping") return true;
-  }
-  return false;
-}
-function maybeCloseOffscreen() {
-  if (hasActiveSession()) return;
-  closeOffscreenDocument().catch(() => {
-  });
-}
-function pushSession(tabId) {
-  const s = sessions.get(tabId);
-  if (!s) return;
-  chrome.tabs.sendMessage(tabId, {
-    type: "SESSION_UPDATE",
-    session: safeSession(s)
-  }).catch(() => {
-  });
-  persistSessionsThrottled();
-}
-function pushStreamingUpdate(tabId) {
-  const s = sessions.get(tabId);
-  if (!s) return;
-  chrome.tabs.sendMessage(tabId, {
-    type: "STREAMING_UPDATE",
-    streamingSubtitle: s.streamingSubtitle
-    // null clears the streaming state
-  }).catch(() => {
-  });
-}
-var lastPersistAt = 0;
-function persistSessionsThrottled() {
-  const now = Date.now();
-  if (now - lastPersistAt < 3e3) return;
-  lastPersistAt = now;
-  persistSessions();
-}
-function persistSessions() {
-  const obj = {};
-  for (const [tabId, s] of sessions.entries()) {
-    obj[String(tabId)] = {
-      tabId: s.tabId,
-      state: s.state,
-      sourceLang: s.sourceLang,
-      targetLang: s.targetLang,
-      generation: s.generation,
-      subtitles: s.subtitles,
-      messages: s.messages,
-      agentSessionId: s.agentSessionId ?? null,
-      transcriptId: s.transcriptId ?? null,
-      audioSilent: false
-    };
-  }
-  try {
-    chrome.storage.session.set({ [SESSION_RECOVERY_KEY]: JSON.stringify(obj) });
-  } catch {
-  }
-}
-
 // src/lib/subtitle-order.ts
 function startOf(item) {
   return typeof item.at === "number" && Number.isFinite(item.at) && item.at > 0 ? item.at : 0;
@@ -425,13 +285,7 @@ var TRANSCRIPT_INDEX_KEY = "snooper.extension.transcripts.v1";
 var TRANSCRIPT_CHUNK_PREFIX = "snooper.extension.transcript.v1.";
 var LEGACY_HISTORY_KEY = "snooper.extension.history.v1";
 var TRANSCRIPT_CHUNK_SIZE = 200;
-var MAX_COMPLETED_TRANSCRIPTS = 100;
-var active = /* @__PURE__ */ new Map();
-var appendQueues = /* @__PURE__ */ new Map();
-var beginAttempts = /* @__PURE__ */ new Map();
-var indexCache = null;
-var indexLoad = null;
-var indexWrite = Promise.resolve();
+var MAX_PENDING_TRANSCRIPT_LINES = 200;
 function toNumber(value, fallback = 0) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -442,6 +296,8 @@ function normalizeLine(raw) {
   if (!source && !target) return null;
   const videoTime = typeof raw.videoTime === "number" && Number.isFinite(raw.videoTime) && raw.videoTime >= 0 ? raw.videoTime : null;
   return {
+    ...raw.kind === "screen" ? { kind: "screen" } : {},
+    ...raw.sourceRef && typeof raw.sourceRef === "object" ? { sourceRef: raw.sourceRef } : {},
     ...typeof raw.id === "string" && raw.id ? { id: raw.id } : {},
     at: toNumber(raw.at),
     endedAt: raw.endedAt == null ? null : toNumber(raw.endedAt),
@@ -497,438 +353,481 @@ function toSummary(record) {
     lastAt: record.lastAt
   };
 }
-function chunkKey(id, chunkIndex) {
-  return `${TRANSCRIPT_CHUNK_PREFIX}${id}.${chunkIndex}`;
+var DELETE_JOURNAL_KEY = "snooper.extension.transcript-deletions.v1";
+var pending = /* @__PURE__ */ new Map();
+var knownIds = /* @__PURE__ */ new Map();
+var queue = Promise.resolve();
+function serial(operation) {
+  const run = queue.catch(() => {
+  }).then(operation);
+  queue = run.catch(() => {
+  });
+  return run;
+}
+function chunkKey(id, index) {
+  return `${TRANSCRIPT_CHUNK_PREFIX}${id}.${index}`;
 }
 function chunkKeys(record) {
-  const count = Math.max(record.chunkCount, Math.ceil(record.subtitleCount / TRANSCRIPT_CHUNK_SIZE));
-  return Array.from({ length: count }, (_, index) => chunkKey(record.id, index));
+  return Array.from({ length: record.chunkCount }, (_, i) => chunkKey(record.id, i));
 }
-async function loadIndexFromStorage() {
-  const got = await chrome.storage.local.get([TRANSCRIPT_INDEX_KEY, LEGACY_HISTORY_KEY]);
+function normalizeChunk(raw, id, index) {
+  if (!Array.isArray(raw)) throw new Error(`\u8F6C\u5199\u6B63\u6587\u7F3A\u5757\uFF1A${id} / ${index}\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9`);
+  return raw.flatMap((value, offset) => {
+    const line = normalizeLine(value);
+    return line ? [{ ...line, id: line.id || `${id}:${index}:${offset}` }] : [];
+  });
+}
+async function writeIndex(records) {
+  await chrome.storage.local.set({ [TRANSCRIPT_INDEX_KEY]: records });
+}
+async function loadIndex() {
+  const got = await chrome.storage.local.get([TRANSCRIPT_INDEX_KEY, LEGACY_HISTORY_KEY, DELETE_JOURNAL_KEY]);
   let records = normalizeIndex(got[TRANSCRIPT_INDEX_KEY]);
+  const deleting = normalizeIndex(got[DELETE_JOURNAL_KEY]);
+  if (deleting.length) {
+    await chrome.storage.local.remove(deleting.flatMap(chunkKeys));
+    records = records.filter((r) => !deleting.some((d) => d.id === r.id));
+    await writeIndex(records);
+    await chrome.storage.local.remove(DELETE_JOURNAL_KEY);
+  }
   const legacy = got[LEGACY_HISTORY_KEY];
-  if (Array.isArray(legacy) && legacy.length > 0) {
-    const existing = new Set(records.map((record) => record.id));
-    const migrated = await migrateLegacy(legacy, existing);
-    if (migrated.length > 0) {
-      records = [...migrated, ...records].sort((a, b) => b.startedAt - a.startedAt);
-      await writeIndexNow(records);
+  if (Array.isArray(legacy)) {
+    for (const raw of legacy) {
+      if (!raw?.id || records.some((r) => r.id === raw.id)) continue;
+      const lines = Array.isArray(raw.subtitles) ? raw.subtitles.map(normalizeLine).filter(Boolean) : [];
+      const record = normalizeRecord({ ...raw, tabId: -1, status: "completed", subtitleCount: lines.length, chunkCount: Math.ceil(lines.length / TRANSCRIPT_CHUNK_SIZE) });
+      for (let i = 0; i < record.chunkCount; i++) {
+        await chrome.storage.local.set({ [chunkKey(record.id, i)]: lines.slice(i * TRANSCRIPT_CHUNK_SIZE, (i + 1) * TRANSCRIPT_CHUNK_SIZE) });
+      }
+      records.push(record);
     }
+    await writeIndex(records);
     await chrome.storage.local.remove(LEGACY_HISTORY_KEY);
   }
-  indexCache = records;
-  return records;
+  return records.sort((a, b) => b.startedAt - a.startedAt);
 }
-async function getIndex() {
-  if (indexCache) return indexCache;
-  if (!indexLoad) {
-    indexLoad = loadIndexFromStorage().finally(() => {
-      indexLoad = null;
-    });
-  }
-  return indexLoad;
-}
-function writeIndexNow(records) {
-  const snapshot = records.map((record) => ({ ...record }));
-  indexWrite = indexWrite.then(() => chrome.storage.local.set({ [TRANSCRIPT_INDEX_KEY]: snapshot })).catch((err) => {
-    console.warn("[RTTS] transcript index write failed:", err);
-  });
-  return indexWrite;
-}
-async function persistRecord(record) {
-  const records = await getIndex();
-  if (!records.includes(record)) return;
-  await writeIndexNow(records);
-}
-async function removeChunks(records) {
-  const keys = records.flatMap(chunkKeys);
-  if (keys.length === 0) return;
-  try {
-    await chrome.storage.local.remove(keys);
-  } catch (err) {
-    console.warn("[RTTS] transcript chunk removal failed:", err);
-  }
-}
-async function migrateLegacy(legacy, existingIds) {
-  const records = [];
-  for (const raw of legacy) {
-    if (!raw || typeof raw.id !== "string" || !raw.id || existingIds.has(raw.id)) continue;
-    const lines = Array.isArray(raw.subtitles) ? raw.subtitles.map(normalizeLine).filter((line) => !!line) : [];
-    const startedAt = toNumber(raw.startedAt, Date.now());
-    const endedAt = toNumber(raw.endedAt, startedAt);
-    const record = {
-      id: raw.id,
-      tabId: -1,
-      generation: 0,
-      pageTitle: typeof raw.pageTitle === "string" ? raw.pageTitle.slice(0, 300) : "",
-      url: typeof raw.url === "string" ? raw.url.slice(0, 2048) : "",
-      startedAt,
-      endedAt,
-      sourceLang: typeof raw.sourceLang === "string" ? raw.sourceLang : "auto",
-      targetLang: typeof raw.targetLang === "string" ? raw.targetLang : "zh",
-      subtitleCount: Math.max(lines.length, Math.floor(toNumber(raw.subtitleCount, lines.length))),
-      chunkCount: Math.ceil(lines.length / TRANSCRIPT_CHUNK_SIZE),
-      status: "completed",
-      lastAt: lines.length > 0 ? lines[lines.length - 1].at : endedAt
-    };
-    for (let offset = 0; offset < lines.length; offset += TRANSCRIPT_CHUNK_SIZE) {
-      const chunkIndex = Math.floor(offset / TRANSCRIPT_CHUNK_SIZE);
-      await chrome.storage.local.set({
-        [chunkKey(record.id, chunkIndex)]: lines.slice(offset, offset + TRANSCRIPT_CHUNK_SIZE)
-      });
-    }
-    existingIds.add(record.id);
-    records.push(record);
-  }
-  return records;
-}
-async function hydrateActive(record) {
-  const chunkIndex = record.subtitleCount > 0 ? Math.floor((record.subtitleCount - 1) / TRANSCRIPT_CHUNK_SIZE) : 0;
-  const key = chunkKey(record.id, chunkIndex);
-  const got = await chrome.storage.local.get(key);
-  const lines = Array.isArray(got[key]) ? got[key].map(normalizeLine).filter((line) => !!line) : [];
-  const entry = {
-    record,
-    chunkIndex,
-    lines,
-    writing: false,
-    pending: false,
-    writePromise: null
-  };
-  active.set(record.id, entry);
-  return entry;
-}
-async function repairRecord(record) {
+async function repair(record, records) {
   if (record.status !== "recording") return;
-  const expected = Math.max(
-    1,
-    record.chunkCount,
-    Math.ceil(record.subtitleCount / TRANSCRIPT_CHUNK_SIZE)
-  );
-  const maxChunk = expected + 1;
-  const keys = Array.from({ length: maxChunk }, (_, index) => chunkKey(record.id, index));
+  const keys = Array.from({ length: Math.max(1, record.chunkCount) + 1 }, (_, i) => chunkKey(record.id, i));
   const got = await chrome.storage.local.get(keys);
-  let subtitleCount = 0;
-  let chunkCount = 0;
+  let count = 0;
+  let chunks = 0;
   let lastAt = record.lastAt;
-  for (let index = 0; index < maxChunk; index += 1) {
-    const chunk = got[keys[index]];
-    if (!Array.isArray(chunk) || chunk.length === 0) continue;
-    subtitleCount += chunk.length;
-    chunkCount = index + 1;
-    const last = chunk[chunk.length - 1];
-    if (last && typeof last.at === "number" && Number.isFinite(last.at)) {
-      lastAt = Math.max(lastAt, last.at);
-    }
+  for (let i = 0; i < keys.length; i++) {
+    if (got[keys[i]] === void 0 && i >= record.chunkCount) break;
+    const lines = normalizeChunk(got[keys[i]], record.id, i);
+    if (!lines.length) break;
+    count += lines.length;
+    chunks++;
+    for (const line of lines) lastAt = Math.max(lastAt, line.at);
   }
-  if (subtitleCount !== record.subtitleCount || chunkCount !== record.chunkCount) {
-    record.subtitleCount = subtitleCount;
-    record.chunkCount = chunkCount;
-    record.lastAt = lastAt;
-    await persistRecord(record);
+  if (count !== record.subtitleCount || chunks !== record.chunkCount) {
+    Object.assign(record, { subtitleCount: count, chunkCount: chunks, lastAt });
+    await writeIndex(records);
   }
 }
-async function flushActive(recordId) {
-  const entry = active.get(recordId);
-  if (!entry) return;
-  if (entry.writing) {
-    entry.pending = true;
-    if (entry.writePromise) await entry.writePromise;
+async function readBody(record) {
+  const got = await chrome.storage.local.get(chunkKeys(record));
+  return chunkKeys(record).flatMap((key, i) => normalizeChunk(got[key], record.id, i));
+}
+async function flushNow(id) {
+  const waiting = pending.get(id);
+  if (!waiting?.length) return;
+  const records = await loadIndex();
+  const record = records.find((r) => r.id === id);
+  if (!record) throw new Error("\u8F6C\u5199\u8BB0\u5F55\u4E0D\u5B58\u5728\uFF0C\u672A\u4FDD\u5B58\u5185\u5BB9\u4ECD\u53EF\u5BFC\u51FA");
+  if (record.status === "completed") {
+    pending.delete(id);
     return;
   }
-  entry.writing = true;
-  const run = (async () => {
-    try {
-      do {
-        entry.pending = false;
-        const key = chunkKey(recordId, entry.chunkIndex);
-        const lines = entry.lines.slice();
-        if (lines.length > 0) {
-          await chrome.storage.local.set({ [key]: lines });
-          entry.record.chunkCount = Math.max(entry.record.chunkCount, entry.chunkIndex + 1);
-        }
-        await persistRecord(entry.record);
-      } while (entry.pending);
-    } catch (err) {
-      console.warn("[RTTS] transcript chunk write failed:", err);
+  let seen = knownIds.get(id);
+  if (!seen) {
+    await repair(record, records);
+    seen = new Set((await readBody(record)).map((l) => l.id));
+    knownIds.set(id, seen);
+  }
+  while (waiting.length) {
+    const line = waiting[0];
+    if (line.id && seen.has(line.id)) {
+      waiting.shift();
+      continue;
     }
-  })();
-  entry.writePromise = run;
-  await run;
-  entry.writing = false;
-  entry.writePromise = null;
+    const chunkIndex = Math.floor(record.subtitleCount / TRANSCRIPT_CHUNK_SIZE);
+    const offset = record.subtitleCount % TRANSCRIPT_CHUNK_SIZE;
+    const key = chunkKey(id, chunkIndex);
+    const got = offset ? await chrome.storage.local.get(key) : {};
+    const lines = offset ? normalizeChunk(got[key], id, chunkIndex).slice(0, offset) : [];
+    const savedLine = { ...line, id: line.id || `${id}:${chunkIndex}:${offset}` };
+    await chrome.storage.local.set({ [key]: [...lines, savedLine] });
+    const next = { ...record, subtitleCount: record.subtitleCount + 1, chunkCount: chunkIndex + 1, lastAt: Math.max(record.lastAt, line.at) };
+    await writeIndex(records.map((r) => r.id === id ? next : r));
+    Object.assign(record, next);
+    seen.add(savedLine.id);
+    waiting.shift();
+  }
+  pending.delete(id);
 }
-async function appendNow(recordId, line) {
-  let entry = active.get(recordId);
-  if (!entry) {
-    const records = await getIndex();
-    const record = records.find((item) => item.id === recordId);
-    if (!record || record.status !== "recording") return;
-    entry = await hydrateActive(record);
+async function deleteNow(ids) {
+  const records = await loadIndex();
+  const selected = records.filter((r) => ids.includes(r.id));
+  const removable = selected.filter((r) => r.status !== "recording" || r.subtitleCount === 0);
+  if (removable.length) {
+    await chrome.storage.local.set({ [DELETE_JOURNAL_KEY]: removable });
+    await chrome.storage.local.remove(removable.flatMap(chunkKeys));
+    await writeIndex(records.filter((r) => !removable.some((d) => d.id === r.id)));
+    await chrome.storage.local.remove(DELETE_JOURNAL_KEY);
+    removable.forEach((r) => {
+      pending.delete(r.id);
+      knownIds.delete(r.id);
+    });
   }
-  const nextChunk = Math.floor(entry.record.subtitleCount / TRANSCRIPT_CHUNK_SIZE);
-  if (nextChunk !== entry.chunkIndex) {
-    await flushActive(recordId);
-    entry.chunkIndex = nextChunk;
-    entry.lines = [];
-  }
-  entry.lines.push(line);
-  entry.record.subtitleCount += 1;
-  entry.record.lastAt = line.at || Date.now();
-  entry.record.chunkCount = Math.max(entry.record.chunkCount, entry.chunkIndex + 1);
-  void flushActive(recordId);
+  return { deleted: removable.length, skipped: selected.length - removable.length };
 }
-async function beginNow(input) {
-  const records = await getIndex();
-  const existing = records.find(
-    (record2) => record2.status === "recording" && record2.tabId === input.tabId && record2.generation === input.generation
-  );
-  if (existing) return existing;
-  for (const stale of records.filter(
-    (record2) => record2.status === "recording" && record2.tabId === input.tabId
-  )) {
-    await finalizeTranscript(stale.id);
+async function finalizeNow(id) {
+  await flushNow(id);
+  const records = await loadIndex();
+  const record = records.find((r) => r.id === id);
+  if (!record) return false;
+  if (record.status === "completed") return record.subtitleCount > 0;
+  await repair(record, records);
+  if (!record.subtitleCount) {
+    await deleteNow([id]);
+    return false;
   }
-  const now = input.startedAt ?? Date.now();
-  const record = {
-    id: `tr_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-    tabId: input.tabId,
-    generation: input.generation,
-    pageTitle: (input.pageTitle || "").slice(0, 300),
-    url: (input.url || "").slice(0, 2048),
-    startedAt: now,
-    endedAt: null,
-    sourceLang: input.sourceLang || "auto",
-    targetLang: input.targetLang || "zh",
-    subtitleCount: 0,
-    chunkCount: 0,
-    status: "recording",
-    lastAt: now
-  };
-  records.unshift(record);
-  active.set(record.id, {
-    record,
-    chunkIndex: 0,
-    lines: [],
-    writing: false,
-    pending: false,
-    writePromise: null
-  });
-  const evicted = pruneCompleted(records);
-  await writeIndexNow(records);
-  if (evicted.length > 0) await removeChunks(evicted);
-  return record;
+  await writeIndex(records.map((r) => r.id === id ? { ...r, status: "completed", endedAt: Date.now() } : r));
+  knownIds.delete(id);
+  return true;
 }
 function beginTranscript(input) {
-  const key = `${input.tabId}:${input.generation}`;
-  const pending = beginAttempts.get(key);
-  if (pending) return pending;
-  const run = beginNow(input).finally(() => {
-    if (beginAttempts.get(key) === run) beginAttempts.delete(key);
+  return serial(async () => {
+    let records = await loadIndex();
+    const existing = records.find((r) => r.status === "recording" && r.tabId === input.tabId && r.generation === input.generation);
+    if (existing) return existing;
+    for (const stale of records.filter((r) => r.status === "recording" && r.tabId === input.tabId)) await finalizeNow(stale.id);
+    records = await loadIndex();
+    const now = input.startedAt ?? Date.now();
+    const record = normalizeRecord({ ...input, id: `tr_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`, startedAt: now, status: "recording" });
+    await writeIndex([record, ...records]);
+    return record;
   });
-  beginAttempts.set(key, run);
-  return run;
 }
 async function ensureTranscript(session, meta = {}) {
   if (session.transcriptId) return session.transcriptId;
-  try {
-    const record = await beginTranscript({
-      tabId: session.tabId,
-      generation: session.generation,
-      sourceLang: meta.sourceLang || session.sourceLang,
-      targetLang: meta.targetLang || session.targetLang,
-      pageTitle: meta.pageTitle,
-      url: meta.url,
-      startedAt: meta.startedAt
-    });
-    session.transcriptId = record.id;
-    return record.id;
-  } catch (err) {
-    console.warn("[RTTS] transcript creation failed:", err);
-    return null;
-  }
+  const record = await beginTranscript({ ...session, ...meta });
+  session.transcriptId = record.id;
+  return record.id;
 }
-function appendTranscriptLine(recordId, line) {
-  if (!recordId) return Promise.resolve();
-  const previous = appendQueues.get(recordId) || Promise.resolve();
-  const next = previous.then(() => appendNow(recordId, line)).catch((err) => {
-    console.warn("[RTTS] transcript append failed:", err);
-  });
-  appendQueues.set(recordId, next);
-  void next.finally(() => {
-    if (appendQueues.get(recordId) === next) appendQueues.delete(recordId);
-  });
-  return next;
+function appendTranscriptLine(id, line) {
+  if (!id) return Promise.reject(new Error("\u7F3A\u5C11\u8F6C\u5199\u8BB0\u5F55 ID"));
+  const waiting = pending.get(id) || [];
+  if (!line.id || !waiting.some((l) => l.id === line.id)) {
+    if (waiting.length >= MAX_PENDING_TRANSCRIPT_LINES) return Promise.reject(new Error("\u672A\u4FDD\u5B58\u5185\u5BB9\u5DF2\u8FBE\u5230\u7F13\u5B58\u4E0A\u9650\uFF0C\u8BF7\u505C\u6B62\u91C7\u96C6\u5E76\u91CD\u8BD5\u6216\u5BFC\u51FA"));
+    waiting.push(structuredClone(line));
+    pending.set(id, waiting);
+  }
+  return serial(() => flushNow(id));
 }
-function pruneCompleted(records) {
-  const completed = records.filter((record) => record.status === "completed");
-  if (completed.length <= MAX_COMPLETED_TRANSCRIPTS) return [];
-  const keep = new Set(
-    [...completed].sort((a, b) => b.startedAt - a.startedAt).slice(0, MAX_COMPLETED_TRANSCRIPTS).map((record) => record.id)
-  );
-  const evicted = completed.filter((record) => !keep.has(record.id));
-  for (const record of evicted) {
-    const index = records.indexOf(record);
-    if (index >= 0) records.splice(index, 1);
-  }
-  return evicted;
+function flushTranscript(id) {
+  return serial(() => flushNow(id));
 }
-async function deleteRecord(record) {
-  active.delete(record.id);
-  const records = await getIndex();
-  const index = records.indexOf(record);
-  if (index >= 0) records.splice(index, 1);
-  await removeChunks([record]);
-  await writeIndexNow(records);
-}
-async function finalizeTranscript(recordId) {
-  if (!recordId) return false;
-  const pending = appendQueues.get(recordId);
-  if (pending) await pending.catch(() => {
-  });
-  const records = await getIndex();
-  const record = records.find((item) => item.id === recordId);
-  if (!record) {
-    active.delete(recordId);
-    return false;
-  }
-  if (record.status === "completed") return record.subtitleCount > 0;
-  const entry = active.get(recordId);
-  if (entry) {
-    await flushActive(recordId);
-    active.delete(recordId);
-  } else {
-    await repairRecord(record);
-  }
-  if (record.subtitleCount === 0) {
-    await deleteRecord(record);
-    return false;
-  }
-  record.status = "completed";
-  record.endedAt = Date.now();
-  record.lastAt = record.lastAt || record.endedAt;
-  const evicted = pruneCompleted(records);
-  await writeIndexNow(records);
-  if (evicted.length > 0) await removeChunks(evicted);
-  return true;
+function finalizeTranscript(id) {
+  return serial(() => finalizeNow(id));
 }
 async function finalizeSessionTranscript(session) {
-  let recordId = session.transcriptId;
-  if (!recordId) {
-    if (!Array.isArray(session.subtitles) || session.subtitles.length === 0) return false;
-    const record = await beginTranscript({
-      tabId: session.tabId,
-      generation: session.generation,
-      sourceLang: session.sourceLang,
-      targetLang: session.targetLang
-    });
-    recordId = record.id;
-    session.transcriptId = recordId;
-    for (const subtitle of session.subtitles) {
-      await appendTranscriptLine(recordId, subtitle);
-    }
+  if (!session.transcriptId) {
+    if (!session.subtitles.length) return false;
+    await ensureTranscript(session);
+    for (const line of session.subtitles) await appendTranscriptLine(session.transcriptId, line);
   }
-  const kept = await finalizeTranscript(recordId);
+  const kept = await finalizeTranscript(session.transcriptId);
   if (!kept) session.transcriptId = null;
   return kept;
 }
-async function listTranscripts() {
-  const records = await getIndex();
-  return records.map(toSummary);
+function listTranscripts() {
+  return serial(async () => (await loadIndex()).map(toSummary));
 }
-async function getTranscriptRecord(id) {
-  const records = await getIndex();
-  return records.find((record) => record.id === id) ?? null;
+function getTranscriptRecord(id) {
+  return serial(async () => (await loadIndex()).find((r) => r.id === id) ?? null);
 }
 async function findLatestTranscriptIdForTab(tabId) {
-  const records = await getIndex();
-  const record = [...records].sort((a, b) => b.startedAt - a.startedAt).find((item) => item.tabId === tabId);
-  return record?.id ?? null;
+  return serial(async () => (await loadIndex()).find((r) => r.tabId === tabId)?.id ?? null);
 }
-async function readTranscript(id) {
-  if (!id) return [];
-  const pending = appendQueues.get(id);
-  if (pending) await pending.catch(() => {
+function readTranscriptPage(id, chunkIndex) {
+  return serial(async () => {
+    const record = (await loadIndex()).find((r) => r.id === id);
+    if (!record) throw new Error("\u8F6C\u5199\u8BB0\u5F55\u4E0D\u5B58\u5728");
+    if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= Math.max(1, record.chunkCount)) throw new Error("\u65E0\u6548\u7684\u8F6C\u5199\u5757\u7D22\u5F15");
+    const key = chunkKey(id, chunkIndex);
+    const got = record.chunkCount ? await chrome.storage.local.get(key) : {};
+    return { record, chunkIndex, lines: record.chunkCount ? normalizeChunk(got[key], id, chunkIndex) : [], nextChunkIndex: chunkIndex + 1 < record.chunkCount ? chunkIndex + 1 : null };
   });
-  await flushActive(id);
-  const record = await getTranscriptRecord(id);
-  if (!record) return [];
-  const keys = chunkKeys(record);
-  if (keys.length === 0) return [];
-  const got = await chrome.storage.local.get(keys);
-  const lines = [];
-  for (const key of keys) {
-    const chunk = got[key];
-    if (!Array.isArray(chunk)) continue;
-    for (const raw of chunk) {
-      const line = normalizeLine(raw);
-      if (line) lines.push(line);
-    }
-  }
-  return sortByStart(lines);
 }
-async function deleteTranscripts(ids) {
-  const records = await getIndex();
-  const wanted = new Set(ids.filter(Boolean));
-  const removable = records.filter(
-    (record) => wanted.has(record.id) && record.status !== "recording"
-  );
-  const skipped = records.filter(
-    (record) => wanted.has(record.id) && record.status === "recording"
-  ).length;
-  if (removable.length === 0) return { deleted: 0, skipped };
-  await removeChunks(removable);
-  for (const record of removable) {
-    active.delete(record.id);
-    const index = records.indexOf(record);
-    if (index >= 0) records.splice(index, 1);
-  }
-  await writeIndexNow(records);
-  return { deleted: removable.length, skipped };
+function readTranscript(id) {
+  return serial(async () => {
+    await flushNow(id);
+    const record = (await loadIndex()).find((r) => r.id === id);
+    return record ? sortByStart(await readBody(record)) : [];
+  });
+}
+function readAvailableTranscript(id) {
+  return serial(async () => {
+    let lines = [];
+    let error = "";
+    try {
+      const record = (await loadIndex()).find((r) => r.id === id);
+      if (!record) throw new Error("\u8F6C\u5199\u8BB0\u5F55\u4E0D\u5B58\u5728\uFF0C\u4EC5\u80FD\u5BFC\u51FA\u5F53\u524D\u53EF\u7528\u5185\u5BB9");
+      if (record) {
+        for (let i = 0; i < record.chunkCount; i++) {
+          try {
+            const key = chunkKey(id, i);
+            const got = await chrome.storage.local.get(key);
+            lines.push(...normalizeChunk(got[key], id, i));
+          } catch (err) {
+            error = String(err);
+          }
+        }
+      }
+    } catch (err) {
+      error = String(err);
+    }
+    const seen = new Set(lines.map((l) => l.id));
+    lines.push(...(pending.get(id) || []).filter((l) => !l.id || !seen.has(l.id)));
+    return { lines: sortByStart(lines), complete: !error, ...error ? { error } : {} };
+  });
+}
+function deleteTranscripts(ids) {
+  return serial(async () => {
+    const records = await loadIndex();
+    const protectedIds = new Set(records.filter((r) => r.status === "recording").map((r) => r.id));
+    const result = await deleteNow(ids.filter((id) => !protectedIds.has(id)));
+    return { ...result, skipped: ids.filter((id) => protectedIds.has(id)).length };
+  });
 }
 async function clearTranscripts() {
-  const records = await getIndex();
-  const removable = records.filter((record) => record.status !== "recording");
-  const skipped = records.length - removable.length;
-  if (removable.length === 0) return { deleted: 0, skipped };
-  await removeChunks(removable);
-  for (const record of removable) {
-    active.delete(record.id);
-    const index = records.indexOf(record);
-    if (index >= 0) records.splice(index, 1);
-  }
-  await writeIndexNow(records);
-  return { deleted: removable.length, skipped };
+  return deleteTranscripts((await listTranscripts()).map((r) => r.id));
 }
-async function recoverTranscripts(liveGenerations = {}) {
-  const records = await getIndex();
-  const liveByTab = /* @__PURE__ */ new Map();
+function recoverTranscripts(liveGenerations = {}, pendingRecordIds = []) {
+  return serial(async () => {
+    const records = await loadIndex();
+    const live = /* @__PURE__ */ new Map();
+    for (const record of records.filter((r) => r.status === "recording")) {
+      if (liveGenerations[String(record.tabId)] === record.generation || pendingRecordIds.includes(record.id)) {
+        const current = await loadIndex();
+        await repair(current.find((r) => r.id === record.id), current);
+        live.set(record.tabId, record.id);
+      } else await finalizeNow(record.id);
+    }
+    return live;
+  });
+}
+
+// src/ext/session-state.ts
+function reconcileSessionWithCapture(session, liveGeneration) {
+  if (typeof liveGeneration !== "number" || session.state === "stopping") return session;
+  if (session.state === "running" && session.generation === liveGeneration) return session;
+  return {
+    ...session,
+    state: "running",
+    generation: liveGeneration
+  };
+}
+
+// src/ext/background/session-store.ts
+var SESSION_RECOVERY_KEY = "snooper.extension.sessions.v1";
+var LIVE_SUBTITLE_WINDOW = 200;
+var sessions = /* @__PURE__ */ new Map();
+var recoveryReady = Promise.resolve();
+function setRecoveryReady(promise) {
+  recoveryReady = promise;
+}
+var generationCounter = Date.now();
+function nextGeneration() {
+  return ++generationCounter;
+}
+function createSession(tabId) {
+  const s = {
+    tabId,
+    state: "idle",
+    sourceLang: "auto",
+    targetLang: "zh",
+    generation: 0,
+    createdAt: Date.now(),
+    configSnapshot: null,
+    subtitles: [],
+    messages: [],
+    streamId: "",
+    pendingAskRequestId: null,
+    agentSessionId: null,
+    transcriptId: null,
+    streamingSubtitle: null,
+    audioSilent: false,
+    lastScreenAt: 0,
+    screenCaption: "off",
+    screenCaptionError: "",
+    saveState: { status: "saved" },
+    pendingTranscriptLines: []
+  };
+  sessions.set(tabId, s);
+  return s;
+}
+function getOrCreateSession(tabId) {
+  let s = sessions.get(tabId);
+  if (!s) {
+    s = createSession(tabId);
+  }
+  return s;
+}
+async function reconcileSessionState(tabId) {
+  await recoveryReady;
+  const session = getOrCreateSession(tabId);
+  const liveGeneration = await getLiveCaptureGeneration(tabId);
+  const reconciled = reconcileSessionWithCapture(session, liveGeneration);
+  if (reconciled !== session) {
+    Object.assign(session, reconciled);
+    persistSessionsThrottled();
+  }
+  return session;
+}
+function safeSession(s) {
+  return {
+    state: s.state,
+    sourceLang: s.sourceLang,
+    targetLang: s.targetLang,
+    subtitles: s.subtitles,
+    messages: s.messages,
+    agentSessionId: s.agentSessionId ?? null,
+    transcriptId: s.transcriptId ?? null,
+    streamingSubtitle: s.streamingSubtitle,
+    audioSilent: s.audioSilent,
+    screenCaption: s.screenCaption,
+    screenCaptionError: s.screenCaptionError,
+    saveState: s.saveState || { status: "saved" },
+    pendingTranscriptCount: s.pendingTranscriptLines?.length || 0
+  };
+}
+function hasActiveSession() {
+  for (const s of sessions.values()) {
+    if (s.state === "running" || s.state === "starting" || s.state === "stopping") return true;
+  }
+  return false;
+}
+function maybeCloseOffscreen() {
+  if (hasActiveSession()) return;
+  closeOffscreenDocument().catch(() => {
+  });
+}
+function pushSession(tabId) {
+  const s = sessions.get(tabId);
+  if (!s) return;
+  chrome.tabs.sendMessage(tabId, {
+    type: "SESSION_UPDATE",
+    session: safeSession(s)
+  }).catch(() => {
+  });
+  persistSessionsThrottled();
+}
+function pushStreamingUpdate(tabId) {
+  const s = sessions.get(tabId);
+  if (!s) return;
+  chrome.tabs.sendMessage(tabId, {
+    type: "STREAMING_UPDATE",
+    streamingSubtitle: s.streamingSubtitle
+    // null clears the streaming state
+  }).catch(() => {
+  });
+}
+var lastPersistAt = 0;
+function persistSessionsThrottled() {
   const now = Date.now();
-  for (const record of [...records]) {
-    if (record.status !== "recording") continue;
-    const live = liveGenerations[String(record.tabId)];
-    if (typeof live === "number" && live === record.generation) {
-      await repairRecord(record);
-      await hydrateActive(record);
-      liveByTab.set(record.tabId, record.id);
-      continue;
-    }
-    await repairRecord(record);
-    if (record.subtitleCount === 0) {
-      await deleteRecord(record);
-      continue;
-    }
-    record.status = "completed";
-    record.endedAt = record.lastAt || now;
-    await persistRecord(record);
+  if (now - lastPersistAt < 3e3) return;
+  lastPersistAt = now;
+  persistSessions();
+}
+function persistSessions() {
+  const obj = {};
+  for (const [tabId, s] of sessions.entries()) {
+    obj[String(tabId)] = {
+      tabId: s.tabId,
+      state: s.state,
+      sourceLang: s.sourceLang,
+      targetLang: s.targetLang,
+      generation: s.generation,
+      stoppedGeneration: s.stoppedGeneration,
+      subtitles: s.subtitles,
+      messages: s.messages,
+      agentSessionId: s.agentSessionId ?? null,
+      transcriptId: s.transcriptId ?? null,
+      audioSilent: false,
+      saveState: s.saveState,
+      pendingTranscriptLines: s.pendingTranscriptLines
+    };
   }
-  const evicted = pruneCompleted(records);
-  if (evicted.length > 0) {
-    await writeIndexNow(records);
-    await removeChunks(evicted);
+  try {
+    void chrome.storage.session.set({ [SESSION_RECOVERY_KEY]: JSON.stringify(obj) }).catch(() => {
+    });
+  } catch {
   }
-  return liveByTab;
+}
+var MAX_UNSAVED_SESSION_LINES = 180;
+var saveAttempts = /* @__PURE__ */ new Map();
+function markTranscriptSaveError(s, error) {
+  s.saveState = { status: "error", message: `\u6709\u5185\u5BB9\u672A\u4FDD\u5B58\uFF1A${error instanceof Error ? error.message : String(error)}\u3002\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA\uFF0C\u52FF\u5173\u95ED\u9875\u9762` };
+  pushSession(s.tabId);
+  persistSessions();
+}
+function retrySessionTranscript(s) {
+  const existing = saveAttempts.get(s.tabId);
+  if (existing) return existing;
+  const run = (async () => {
+    s.pendingTranscriptLines ||= [];
+    const id = await ensureTranscript(s);
+    while (s.pendingTranscriptLines.length) {
+      await appendTranscriptLine(id, s.pendingTranscriptLines[0]);
+      s.pendingTranscriptLines.shift();
+    }
+    await flushTranscript(id);
+    s.saveState = { status: "saved" };
+    pushSession(s.tabId);
+    persistSessions();
+  })().catch((error) => {
+    markTranscriptSaveError(s, error);
+    throw error;
+  });
+  saveAttempts.set(s.tabId, run);
+  void run.finally(() => {
+    if (saveAttempts.get(s.tabId) === run) saveAttempts.delete(s.tabId);
+  }).catch(() => {
+  });
+  return run;
+}
+function saveSessionSubtitle(s, entry) {
+  s.pendingTranscriptLines ||= [];
+  if (!s.pendingTranscriptLines.some((line) => line.id === entry.id)) s.pendingTranscriptLines.push(entry);
+  if (s.saveState?.status !== "error") s.saveState = { status: "pending" };
+  if (s.pendingTranscriptLines.length >= MAX_UNSAVED_SESSION_LINES && (s.state === "running" || s.state === "starting")) {
+    s.state = "stopping";
+    s.stoppedGeneration = s.generation;
+    markTranscriptSaveError(s, "\u672A\u4FDD\u5B58\u7F13\u5B58\u5DF2\u6EE1\uFF0C\u5DF2\u505C\u6B62\u65B0\u91C7\u96C6");
+    void sendToOffscreen({ type: "STOP_CAPTURE", tabId: s.tabId, generation: s.generation, drain: true }).catch((error) => markTranscriptSaveError(s, error)).finally(() => {
+      s.state = "idle";
+      s.stoppedGeneration = void 0;
+      pushSession(s.tabId);
+      maybeCloseOffscreen();
+    });
+  }
+  void retrySessionTranscript(s).catch(() => {
+  });
+}
+async function finishSessionTranscript(s) {
+  try {
+    if (s.pendingTranscriptLines?.length) await retrySessionTranscript(s);
+    const kept = await finalizeSessionTranscript(s);
+    s.saveState = { status: "saved" };
+    return kept;
+  } catch (error) {
+    markTranscriptSaveError(s, error);
+    throw error;
+  }
 }
 
 // src/lib/video-clock.ts
@@ -1043,13 +942,18 @@ function closeOffscreenAfterStop(stop) {
 }
 function removeSession(tabId) {
   const s = sessions.get(tabId);
-  sessions.delete(tabId);
   resetVideoClock(tabId);
   if (s) {
     const stop = sendToOffscreen({ type: "STOP_CAPTURE", tabId, generation: s.generation }).catch(() => {
     });
     closeOffscreenAfterStop(stop);
-    void finalizeSessionTranscript(s).catch(() => {
+    s.state = "idle";
+    s.configSnapshot = null;
+    s.streamId = "";
+    void finishSessionTranscript(s).then(() => {
+      sessions.delete(tabId);
+      persistSessions();
+    }).catch(() => {
     });
   } else {
     closeOffscreenAfterStop(sendToOffscreen({ type: "STOP_CAPTURE", tabId }).catch(() => {
@@ -1065,16 +969,19 @@ function stopSessionForTab(tabId) {
   });
   s.state = "idle";
   s.generation = nextGeneration();
+  const endingGeneration = s.generation;
   s.stoppedGeneration = void 0;
   s.streamId = "";
   s.configSnapshot = null;
   s.streamingSubtitle = null;
   s.audioSilent = false;
   pushSession(tabId);
-  void finalizeSessionTranscript(s).finally(() => {
+  void finishSessionTranscript(s).then(() => {
+    if (s.generation !== endingGeneration) return;
     s.transcriptId = null;
     s.subtitles = [];
     pushSession(tabId);
+  }).catch(() => {
   });
   closeOffscreenAfterStop(stop);
 }
@@ -1144,10 +1051,21 @@ async function readLiveGenerations() {
 async function recoverSessions() {
   try {
     const liveGenerations = await readLiveGenerations();
-    const liveTranscripts = await recoverTranscripts(liveGenerations);
     const result = await chrome.storage.session.get(SESSION_RECOVERY_KEY);
-    if (!result[SESSION_RECOVERY_KEY]) return;
-    const recovered = JSON.parse(result[SESSION_RECOVERY_KEY]);
+    const recovered = result[SESSION_RECOVERY_KEY] ? JSON.parse(result[SESSION_RECOVERY_KEY]) : {};
+    const recoveryGenerations = { ...liveGenerations };
+    for (const [tab, stored] of Object.entries(recovered)) {
+      const s = stored;
+      if (s.pendingTranscriptLines?.length) recoveryGenerations[tab] = s.stoppedGeneration ?? s.generation;
+    }
+    let recoveryError;
+    const liveTranscripts = await recoverTranscripts(recoveryGenerations, Object.values(recovered).flatMap((stored) => {
+      const s = stored;
+      return s.pendingTranscriptLines?.length && s.transcriptId ? [s.transcriptId] : [];
+    })).catch((error) => {
+      recoveryError = error;
+      return /* @__PURE__ */ new Map();
+    });
     for (const [tabIdStr, stored] of Object.entries(recovered)) {
       const tabId = Number(tabIdStr);
       const s = stored;
@@ -1158,21 +1076,26 @@ async function recoverSessions() {
         s.generation = liveGeneration;
         s.stoppedGeneration = void 0;
         s.streamId = "";
-        s.transcriptId = liveTranscriptId;
+        s.transcriptId = liveTranscriptId || s.transcriptId;
       } else if (s.state === "running" || s.state === "starting" || s.state === "stopping") {
         s.state = "idle";
         s.stoppedGeneration = void 0;
         s.streamId = "";
         s.configSnapshot = null;
         s.streamingSubtitle = null;
-        s.transcriptId = null;
+        if (!recoveryError && !s.pendingTranscriptLines?.length) s.transcriptId = null;
       } else if (liveTranscriptId) {
         s.transcriptId = liveTranscriptId;
       }
+      s.pendingTranscriptLines ||= [];
+      s.saveState ||= { status: "saved" };
       sessions.set(tabId, s);
+      if (recoveryError) markTranscriptSaveError(s, recoveryError);
+      else if (s.pendingTranscriptLines.length) markTranscriptSaveError(s, "\u4E0A\u6B21\u4FDD\u5B58\u4E2D\u65AD");
       pushSession(tabId);
     }
-  } catch {
+  } catch (error) {
+    console.warn("[RTTS] session recovery failed:", error);
   }
 }
 
@@ -1226,7 +1149,8 @@ function registerOffscreenEventRouter() {
           s.screenCaption = "off";
           s.screenCaptionError = "";
           if (s.transcriptId || s.subtitles.length > 0) {
-            void finalizeSessionTranscript(s);
+            void finishSessionTranscript(s).catch(() => {
+            });
           }
           pushSession(message.tabId);
           maybeCloseOffscreen();
@@ -1265,6 +1189,7 @@ function registerOffscreenEventRouter() {
         if (!s || s.generation !== message.generation && !isStoppingGeneration(s, message.generation)) {
           return false;
         }
+        if (s.state !== "running" && s.state !== "starting" && s.state !== "stopping") return false;
         if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
           return false;
         }
@@ -1286,13 +1211,7 @@ function registerOffscreenEventRouter() {
         if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
           s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
         }
-        if (s.transcriptId) {
-          void appendTranscriptLine(s.transcriptId, entry);
-        } else if (!tail) {
-          void ensureTranscript(s).then((id) => {
-            if (id) void appendTranscriptLine(id, entry);
-          });
-        }
+        saveSessionSubtitle(s, entry);
         if (!tail) pushSession(message.tabId);
         return false;
       }
@@ -1321,13 +1240,7 @@ function registerOffscreenEventRouter() {
         if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
           s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
         }
-        if (s.transcriptId) {
-          void appendTranscriptLine(s.transcriptId, entry);
-        } else {
-          void ensureTranscript(s).then((id) => {
-            if (id) void appendTranscriptLine(id, entry);
-          });
-        }
+        saveSessionSubtitle(s, entry);
         pushSession(message.tabId);
         return false;
       }
@@ -1345,7 +1258,8 @@ function registerOffscreenEventRouter() {
         s.state = "error";
         s.streamingSubtitle = null;
         if (s.transcriptId || s.subtitles.length > 0) {
-          void finalizeSessionTranscript(s);
+          void finishSessionTranscript(s).catch(() => {
+          });
         }
         pushStreamingUpdate(message.tabId);
         pushSession(message.tabId);
@@ -1459,8 +1373,111 @@ var configHandlers = {
   }
 };
 
+// src/ext/background/notes-store.ts
+var NOTES_STORAGE_KEY = "snooper.notes.v1";
+var INITIALIZED_KEY = "snooper.notes.initialized.v1";
+var MIGRATION_KEY = "snooper.notes.migration.v1";
+var queue2 = Promise.resolve();
+function serial2(operation) {
+  const run = queue2.catch(() => {
+  }).then(operation);
+  queue2 = run.catch(() => {
+  });
+  return run;
+}
+function validDocuments(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((note) => !!note && typeof note.id === "string" && Array.isArray(note.entries));
+}
+async function read(legacy) {
+  const got = await chrome.storage.local.get([NOTES_STORAGE_KEY, INITIALIZED_KEY, MIGRATION_KEY]);
+  if (got[INITIALIZED_KEY]) {
+    if (got[MIGRATION_KEY]) await chrome.storage.local.remove(MIGRATION_KEY);
+    return validDocuments(got[NOTES_STORAGE_KEY]);
+  }
+  const notes = Array.isArray(got[NOTES_STORAGE_KEY]) ? validDocuments(got[NOTES_STORAGE_KEY]) : validDocuments(got[MIGRATION_KEY] ?? legacy);
+  if (notes.length) await chrome.storage.local.set({ [MIGRATION_KEY]: notes });
+  await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
+  if (notes.length) await chrome.storage.local.remove(MIGRATION_KEY);
+  return notes;
+}
+function listNotes(legacy) {
+  return serial2(() => read(legacy));
+}
+function addNoteEntry(input) {
+  return serial2(async () => {
+    if (!input || typeof input.noteId !== "string" || !input.noteId || typeof input.entry?.id !== "string" || !input.entry.id) throw new Error("\u7B14\u8BB0\u7F3A\u5C11\u7A33\u5B9A ID");
+    const entry = input.entry;
+    if (!["subtitle", "image", "svg", "screenshot", "text", "summary"].includes(entry.type) || !Number.isFinite(entry.at)) throw new Error("\u7B14\u8BB0\u7C7B\u578B\u6216\u65F6\u95F4\u65E0\u6548");
+    for (const field of ["source", "target", "text", "imageUrl", "svg", "speaker", "sourceLang", "targetLang", "videoUrl"]) {
+      if (entry[field] !== void 0 && typeof entry[field] !== "string") throw new Error("\u7B14\u8BB0\u6B63\u6587\u683C\u5F0F\u65E0\u6548");
+    }
+    if (entry.videoTime != null && (!Number.isFinite(entry.videoTime) || entry.videoTime < 0)) throw new Error("\u7B14\u8BB0\u89C6\u9891\u65F6\u95F4\u65E0\u6548");
+    const notes = await read();
+    let note = notes.find((n) => n.id === input.noteId);
+    if (!note) {
+      const now = Date.now();
+      note = { id: input.noteId, title: input.title || "\u7B14\u8BB0", createdAt: input.createdAt ?? now, updatedAt: now, entries: [], sessionInfo: input.sessionInfo };
+      notes.push(note);
+    }
+    if (note.entries.some((e) => e.id === input.entry.id)) return notes;
+    note.entries.push(structuredClone(input.entry));
+    note.updatedAt = Date.now();
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes });
+    return notes;
+  });
+}
+function deleteNoteEntry(noteId, entryId) {
+  return serial2(async () => {
+    const notes = await read();
+    const note = notes.find((n) => n.id === noteId);
+    if (note) {
+      note.entries = note.entries.filter((e) => e.id !== entryId);
+      note.updatedAt = Date.now();
+      await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes });
+    }
+    return notes;
+  });
+}
+function deleteNoteDocuments(ids) {
+  return serial2(async () => {
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) throw new Error("\u7B14\u8BB0 ID \u65E0\u6548");
+    const notes = (await read()).filter((n) => !ids.includes(n.id));
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes });
+    return notes;
+  });
+}
+
+// src/ext/background/router/notes.ts
+var notesHandlers = {
+  NOTES_LIST: (message, { sendResponse }) => {
+    listNotes(message.legacy).then((notes) => sendResponse({ ok: true, notes })).catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
+    return true;
+  },
+  NOTES_ADD_ENTRY: (message, { sendResponse }) => {
+    addNoteEntry(message.input).then((notes) => sendResponse({ ok: true, notes })).catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
+    return true;
+  },
+  NOTES_DELETE_ENTRY: (message, { sendResponse }) => {
+    deleteNoteEntry(String(message.noteId || ""), String(message.entryId || "")).then((notes) => sendResponse({ ok: true, notes })).catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
+    return true;
+  },
+  NOTES_DELETE_DOCUMENTS: (message, { sendResponse }) => {
+    deleteNoteDocuments(message.ids).then((notes) => sendResponse({ ok: true, notes })).catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
+    return true;
+  }
+};
+
 // src/ext/background/router/history.ts
 var historyHandlers = {
+  GET_SAVE_FAILURES: (_message, { tabId, sendResponse }) => {
+    if (tabId != null) {
+      sendResponse({ ok: false, error: "\u8BF7\u5728\u4FA7\u680F\u67E5\u770B\u5168\u90E8\u4FDD\u5B58\u72B6\u6001" });
+      return false;
+    }
+    sendResponse({ ok: true, failures: [...sessions.values()].filter((s) => s.saveState?.status === "error").map((s) => ({ tabId: s.tabId, transcriptId: s.transcriptId, pendingCount: s.pendingTranscriptLines?.length || 0, saveState: s.saveState })) });
+    return false;
+  },
   /** Summaries only; subtitle bodies stay on disk until requested. */
   GET_HISTORY: (_message, { sendResponse }) => {
     listTranscripts().then((history) => {
@@ -1480,19 +1497,42 @@ var historyHandlers = {
     });
     return true;
   },
-  /** Full body for the active tab's current transcript (copy/export). */
-  GET_TRANSCRIPT: (_message, { tabId, sendResponse }) => {
-    const s = sessions.get(tabId);
+  GET_TRANSCRIPT_PAGE: (message, { sendResponse }) => {
+    readTranscriptPage(String(message.id || ""), Number(message.chunkIndex)).then((page) => sendResponse({ ok: true, ...page })).catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  },
+  RETRY_TRANSCRIPT: (message, { tabId, sendResponse }) => {
+    const targetTab = tabId ?? Number(message.tabId);
+    const s = sessions.get(targetTab);
+    if (!s) {
+      sendResponse({ ok: false, error: "\u6CA1\u6709\u53EF\u91CD\u8BD5\u7684\u8F6C\u5199" });
+      return false;
+    }
+    void retrySessionTranscript(s).then(async () => {
+      if (s.state === "idle" || s.state === "error") await finishSessionTranscript(s);
+      sendResponse({ ok: true });
+    }).catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  },
+  /** Reads durable bodies and failed buffers; completeness is explicit. */
+  GET_TRANSCRIPT: (message, { tabId, sendResponse }) => {
+    const targetTab = tabId ?? Number(message.tabId);
+    const s = sessions.get(targetTab);
     void (async () => {
-      const id = s?.transcriptId || await findLatestTranscriptIdForTab(tabId);
-      if (!id) {
-        sendResponse({ ok: true, subtitles: [], record: null });
-        return;
+      const id = s?.transcriptId || await findLatestTranscriptIdForTab(targetTab);
+      const result = id ? await readAvailableTranscript(id) : { lines: [], complete: !s?.subtitles.length };
+      const lines = [...result.lines];
+      const seen = new Set(lines.map((l) => l.id));
+      for (const line of s?.pendingTranscriptLines || []) {
+        if (!seen.has(line.id)) {
+          lines.push(line);
+          seen.add(line.id);
+        }
       }
-      const [subtitles, record] = await Promise.all([readTranscript(id), getTranscriptRecord(id)]);
-      sendResponse({ ok: true, subtitles, record });
+      lines.sort((a, b) => a.at - b.at);
+      sendResponse({ ok: true, subtitles: lines, complete: result.complete, error: result.error, saveState: s?.saveState });
     })().catch((err) => {
-      sendResponse({ ok: false, error: err.message || "\u65E0\u6CD5\u8BFB\u53D6\u5B8C\u6574\u8F6C\u5199" });
+      sendResponse({ ok: false, error: err.message || "\u65E0\u6CD5\u8BFB\u53D6\u5B8C\u6574\u8F6C\u5199", subtitles: s?.pendingTranscriptLines || [], complete: false });
     });
     return true;
   },
@@ -1500,16 +1540,16 @@ var historyHandlers = {
     const ids = Array.isArray(message.ids) ? message.ids.map((id) => String(id)) : [String(message.id || "")];
     deleteTranscripts(ids).then((result) => {
       sendResponse({ ok: true, ...result });
-    }).catch(() => {
-      sendResponse({ ok: false });
+    }).catch((err) => {
+      sendResponse({ ok: false, error: err.message || "\u5220\u9664\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
     });
     return true;
   },
   DELETE_ALL_HISTORY: (_message, { sendResponse }) => {
     clearTranscripts().then((result) => {
       sendResponse({ ok: true, ...result });
-    }).catch(() => {
-      sendResponse({ ok: false });
+    }).catch((err) => {
+      sendResponse({ ok: false, error: err.message || "\u5220\u9664\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
     });
     return true;
   }
@@ -2233,16 +2273,16 @@ async function saveAgentStoreInternal(store) {
 async function resolveCurrentSession(store, video, preferNew = false) {
   const videoKey = video.videoKey || "page:unknown";
   const activeId = store.activeByVideo[videoKey];
-  const active2 = activeId ? store.sessions.find((s) => s.id === activeId) : void 0;
-  if (active2 && !preferNew) {
-    syncVideoMeta(active2, video);
-    return active2;
+  const active = activeId ? store.sessions.find((s) => s.id === activeId) : void 0;
+  if (active && !preferNew) {
+    syncVideoMeta(active, video);
+    return active;
   }
-  if (active2 && preferNew && active2.turns.length === 0) {
-    syncVideoMeta(active2, video);
-    return active2;
+  if (active && preferNew && active.turns.length === 0) {
+    syncVideoMeta(active, video);
+    return active;
   }
-  if (!active2 && !preferNew) {
+  if (!active && !preferNew) {
     const legacy = store.sessions.filter((s) => !s.videoKey && s.turns.length > 0).sort((a, b) => b.updatedAt - a.updatedAt)[0];
     if (legacy) {
       legacy.videoKey = videoKey;
@@ -2534,6 +2574,14 @@ async function runStart(message, tabId, startVersion) {
     s.streamingSubtitle = null;
     pushSession(tabId);
   }
+  if (s.saveState?.status === "error" || s.pendingTranscriptLines?.length) {
+    try {
+      await retrySessionTranscript(s);
+      await finishSessionTranscript(s);
+    } catch {
+      return { ok: false, error: "\u4E0A\u4E00\u573A\u6709\u5185\u5BB9\u672A\u4FDD\u5B58\uFF0C\u8BF7\u5148\u91CD\u8BD5\u6216\u5BFC\u51FA" };
+    }
+  }
   const config = await loadConfig();
   if (currentStartVersion(tabId) !== startVersion) return { ok: true, cancelled: true };
   const hasKey = config.providers.some((p) => p.apiKey && p.apiKey.trim().length > 0);
@@ -2569,6 +2617,8 @@ async function runStart(message, tabId, startVersion) {
   s.generation = nextGeneration();
   s.stoppedGeneration = void 0;
   s.subtitles = [];
+  s.pendingTranscriptLines = [];
+  s.saveState = { status: "saved" };
   s.transcriptId = null;
   s.streamingSubtitle = null;
   s.audioSilent = false;
@@ -2589,13 +2639,13 @@ async function runStart(message, tabId, startVersion) {
         targetLang: s.targetLang
       });
       if (!isCurrent()) {
-        void finalizeTranscript(record.id);
+        void finalizeTranscript(record.id).catch((error) => markTranscriptSaveError(s, error));
         return { ok: true, cancelled: true };
       }
       s.transcriptId = record.id;
       pushSession(tabId);
     } catch (err) {
-      console.warn("[RTTS] transcript begin failed:", err);
+      markTranscriptSaveError(s, err);
     }
     console.log("[RTTS] START:", tabId, "gen:", generation, "lang:", s.sourceLang, "\u2192", s.targetLang);
     await stopOrphanCapture(tabId);
@@ -2643,7 +2693,7 @@ async function runStart(message, tabId, startVersion) {
     if (!isCurrent()) {
       console.info("[RTTS] START cancelled during startup");
       try {
-        await finalizeSessionTranscript(s);
+        await finishSessionTranscript(s);
       } catch {
       }
       return { ok: true, cancelled: true };
@@ -2655,7 +2705,7 @@ async function runStart(message, tabId, startVersion) {
     s.streamId = "";
     s.streamingSubtitle = null;
     try {
-      await finalizeSessionTranscript(s);
+      await finishSessionTranscript(s);
     } catch {
     }
     pushSession(tabId);
@@ -2783,7 +2833,7 @@ var sessionHandlers = {
       s.streamingSubtitle = null;
       s.audioSilent = false;
       try {
-        await finalizeSessionTranscript(s);
+        await finishSessionTranscript(s);
       } catch (err) {
         console.warn("[RTTS] transcript finalize failed:", err);
       }
@@ -2964,12 +3014,12 @@ var sessionHandlers = {
     void loadAgentStore().then(async (store) => {
       await deleteSession(store, String(message.id || ""));
       const activeId = videoKey ? store.activeByVideo[videoKey] : void 0;
-      const active2 = activeId ? store.sessions.find((session) => session.id === activeId) ?? null : null;
-      showSessionInTab(tabId, active2);
+      const active = activeId ? store.sessions.find((session) => session.id === activeId) ?? null : null;
+      showSessionInTab(tabId, active);
       sendResponse({
         ok: true,
-        currentId: active2?.id ?? null,
-        turns: active2?.turns ?? [],
+        currentId: active?.id ?? null,
+        turns: active?.turns ?? [],
         session: safeSession(getOrCreateSession(tabId))
       });
     });
@@ -3002,8 +3052,8 @@ var MAX_SAMPLE_SKEW_MS = 12e4;
 var videoClockHandlers = {
   VIDEO_CLOCK: (message, { tabId, sendResponse }) => {
     const session = sessions.get(tabId);
-    const active2 = session && (session.state === "running" || session.state === "starting" || session.state === "stopping");
-    if (!active2) {
+    const active = session && (session.state === "running" || session.state === "starting" || session.state === "stopping");
+    if (!active) {
       sendResponse({ ok: true, ignored: true });
       return false;
     }
@@ -3027,6 +3077,7 @@ var backgroundHandlers = {
   ...captureHandlers,
   ...obsidianHandlers,
   ...historyHandlers,
+  ...notesHandlers,
   ...videoClockHandlers
 };
 function registerBackgroundRouters() {

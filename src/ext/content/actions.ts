@@ -23,10 +23,10 @@ export interface ActionDeps {
   refs: ActionRefs
   getSession: () => SessionState
   /** Full-session rows from transcript-store; the visible window is only a preview. */
-  getTranscript: () => Promise<Array<Partial<SubtitleLine>>>
+  getTranscript: () => Promise<{ subtitles: Array<Partial<SubtitleLine>>; complete: boolean }>
   toast: (message: string, tone?: 'info' | 'ok' | 'err') => void
   flashChip: (button: HTMLElement, ms?: number) => void
-  addNoteEntry: (entry: NoteEntry) => void
+  addNoteEntry: (entry: NoteEntry) => Promise<boolean>
   openImagePanel: (prompt?: string) => void
   captureVideoFrame: () => Promise<{ dataUrl: string; cropped: boolean }>
   openShotPreview: (url: string, saved: boolean, insertable?: boolean) => void
@@ -68,14 +68,16 @@ function sessionHasAssets(session: SessionState): boolean {
  * failure or a session created before the record existed), fall back to the
  * visible window so copy/export still returns what the user can see.
  */
-async function resolveSubtitles(deps: ActionDeps): Promise<Array<Partial<SubtitleLine>>> {
+async function resolveSubtitles(deps: ActionDeps): Promise<{ subtitles: Array<Partial<SubtitleLine>>; complete: boolean }> {
   try {
-    const rows = await deps.getTranscript()
-    if (Array.isArray(rows) && rows.length > 0) return rows
+    const result = await deps.getTranscript()
+    if (result.complete) return result
+    const byId = new Map<string, Partial<SubtitleLine>>()
+    for (const [i, line] of [...result.subtitles, ...deps.getSession().subtitles].entries()) byId.set(line.id || `fallback:${i}`, line)
+    return { subtitles: [...byId.values()].sort((a, b) => (a.at || 0) - (b.at || 0)), complete: false }
   } catch {
-    // Fall through to the window.
+    return { subtitles: deps.getSession().subtitles, complete: false }
   }
-  return deps.getSession().subtitles
 }
 
 function downloadZip(filename: string, files: Array<{ name: string; bytes: Uint8Array }>): void {
@@ -92,28 +94,31 @@ export function bindActions(deps: ActionDeps) {
   const r = deps.refs
 
   r.copy.addEventListener('click', async () => {
-    const text = getSubtitleText(await resolveSubtitles(deps))
+    const result = await resolveSubtitles(deps)
+    const text = getSubtitleText(result.subtitles)
     if (!text) { deps.toast('没有字幕可复制', 'err'); return }
     const ok = await copyText(text)
     if (ok) {
       deps.flashChip(r.copy)
-      deps.toast('已复制全部字幕', 'ok')
+      deps.toast(result.complete ? '已复制全部字幕' : '仅复制可用内容，完整正文读取失败', result.complete ? 'ok' : 'err')
     } else {
       deps.toast('复制失败，请在浏览器设置中允许剪贴板访问', 'err')
     }
   })
 
   r.exportTxt.addEventListener('click', async () => {
-    const text = getSubtitleText(await resolveSubtitles(deps))
+    const result = await resolveSubtitles(deps)
+    const text = getSubtitleText(result.subtitles)
     if (!text) { deps.toast('没有字幕可导出', 'err'); return }
     downloadBlob(`snooper-subtitles-${Date.now()}.txt`, text)
     deps.flashChip(r.exportTxt)
-    deps.toast('TXT 已导出', 'ok')
+    deps.toast(result.complete ? 'TXT 已导出' : '仅导出可用内容，完整正文读取失败', result.complete ? 'ok' : 'err')
   })
 
   r.exportMd.addEventListener('click', async () => {
     const session = deps.getSession()
-    const subtitles = await resolveSubtitles(deps)
+    const result = await resolveSubtitles(deps)
+    const subtitles = result.subtitles
     // ADR-035: the current page is the session's video for deep links.
     const text = getSubtitleMarkdown({ ...session, subtitles, pageUrl: location.href, pageTitle: document.title })
     if (!text) { deps.toast('没有内容可导出', 'err'); return }
@@ -121,7 +126,7 @@ export function bindActions(deps: ActionDeps) {
 
     if (!sessionHasAssets(session)) {
       downloadBlob(`snooper-notes-${Date.now()}.md`, text)
-      deps.toast('Markdown 已导出', 'ok')
+      deps.toast(result.complete ? 'Markdown 已导出' : '仅导出可用内容，完整正文读取失败', result.complete ? 'ok' : 'err')
       return
     }
 
@@ -142,22 +147,23 @@ export function bindActions(deps: ActionDeps) {
       }
     }
     const markdown = getSubtitleMarkdown(
-      { ...session, pageUrl: location.href, pageTitle: document.title },
+      { ...session, subtitles, pageUrl: location.href, pageTitle: document.title },
       new Map([...names].map(([entryId, name]) => [entryId, name])),
     )
     files.unshift({ name: 'record.md', bytes: new TextEncoder().encode(markdown) })
     downloadZip(`snooper-notes-${Date.now()}.zip`, files)
+    const partial = result.complete ? '' : '，仅导出可用内容（完整正文读取失败）'
     const note = failed > 0 ? `，${failed} 张图片无法读取已用占位说明` : ''
-    deps.toast(`已导出 ZIP（${files.length} 个文件，${formatBytes(files.reduce((sum, file) => sum + file.bytes.length, 0))}）${note}`, failed > 0 ? 'err' : 'ok')
+    deps.toast(`已导出 ZIP（${files.length} 个文件，${formatBytes(files.reduce((sum, file) => sum + file.bytes.length, 0))}）${note}${partial}`, failed > 0 || !result.complete ? 'err' : 'ok')
   })
 
   // Capture the current subtitle as a note.
-  r.note.addEventListener('click', () => {
+  r.note.addEventListener('click', async () => {
     const session = deps.getSession()
     const subs = session.subtitles
     if (subs.length === 0) { deps.toast('没有字幕可记录', 'err'); return }
     const last = subs[subs.length - 1]!
-    deps.addNoteEntry({
+    const saved = await deps.addNoteEntry({
       id: `note_${Date.now()}`,
       type: 'subtitle',
       at: Date.now(),
@@ -169,6 +175,7 @@ export function bindActions(deps: ActionDeps) {
       videoTime: typeof last.videoTime === 'number' ? last.videoTime : null,
       videoUrl: location.href,
     })
+    if (!saved) return
     deps.flashChip(r.note)
     deps.toast('已记入笔记', 'ok')
   })
@@ -192,7 +199,7 @@ export function bindActions(deps: ActionDeps) {
         deps.toast(res.error || '生成纪要失败', 'err')
         return
       }
-      deps.addNoteEntry({
+      const saved = await deps.addNoteEntry({
         id: `summary_${Date.now()}`,
         type: 'summary',
         at: Date.now(),
@@ -201,6 +208,7 @@ export function bindActions(deps: ActionDeps) {
         videoUrl: location.href,
       })
       deps.openNotes()
+      if (!saved) return
       deps.flashChip(r.summary)
       deps.toast('纪要已记入笔记', 'ok')
     } finally {
@@ -222,14 +230,15 @@ export function bindActions(deps: ActionDeps) {
     r.screenshot.classList.add('busy')
     try {
       const shot = await deps.captureVideoFrame()
-      deps.addNoteEntry({
+      const saved = await deps.addNoteEntry({
         id: `screenshot_${Date.now()}`,
         type: 'screenshot',
         at: Date.now(),
         imageUrl: shot.dataUrl,
         text: shot.cropped ? '视频截图' : '页面截图',
       })
-      deps.openShotPreview(shot.dataUrl, true, true)
+      deps.openShotPreview(shot.dataUrl, saved, true)
+      if (!saved) return
       deps.flashChip(r.screenshot)
       deps.toast(
         shot.cropped

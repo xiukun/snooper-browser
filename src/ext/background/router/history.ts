@@ -1,6 +1,6 @@
 /** Transcript history read/delete handlers (ADR-031). */
 
-import { sessions } from '../session-store'
+import { sessions, retrySessionTranscript, finishSessionTranscript } from '../session-store'
 import {
   clearTranscripts,
   deleteTranscripts,
@@ -8,10 +8,17 @@ import {
   getTranscriptRecord,
   listTranscripts,
   readTranscript,
+  readAvailableTranscript,
+  readTranscriptPage,
 } from '../transcript-store'
 import type { MessageHandlerMap } from './types'
 
 export const historyHandlers: MessageHandlerMap = {
+  GET_SAVE_FAILURES: (_message, { tabId, sendResponse }) => {
+    if (tabId != null) { sendResponse({ ok: false, error: '请在侧栏查看全部保存状态' }); return false }
+    sendResponse({ ok: true, failures: [...sessions.values()].filter(s => s.saveState?.status === 'error').map(s => ({ tabId: s.tabId, transcriptId: s.transcriptId, pendingCount: s.pendingTranscriptLines?.length || 0, saveState: s.saveState })) })
+    return false
+  },
   /** Summaries only; subtitle bodies stay on disk until requested. */
   GET_HISTORY: (_message, { sendResponse }) => {
     listTranscripts().then((history) => {
@@ -33,19 +40,36 @@ export const historyHandlers: MessageHandlerMap = {
     return true
   },
 
-  /** Full body for the active tab's current transcript (copy/export). */
-  GET_TRANSCRIPT: (_message, { tabId, sendResponse }) => {
-    const s = sessions.get(tabId)
+  GET_TRANSCRIPT_PAGE: (message, { sendResponse }) => {
+    readTranscriptPage(String(message.id || ''), Number(message.chunkIndex)).then(page => sendResponse({ ok: true, ...page })).catch(err => sendResponse({ ok: false, error: err.message }))
+    return true
+  },
+  RETRY_TRANSCRIPT: (message, { tabId, sendResponse }) => {
+    const targetTab = tabId ?? Number(message.tabId)
+    const s = sessions.get(targetTab)
+    if (!s) { sendResponse({ ok: false, error: '没有可重试的转写' }); return false }
+    void retrySessionTranscript(s).then(async () => {
+      if (s.state === 'idle' || s.state === 'error') await finishSessionTranscript(s)
+      sendResponse({ ok: true })
+    }).catch(err => sendResponse({ ok: false, error: err.message }))
+    return true
+  },
+  /** Reads durable bodies and failed buffers; completeness is explicit. */
+  GET_TRANSCRIPT: (message, { tabId, sendResponse }) => {
+    const targetTab = tabId ?? Number(message.tabId)
+    const s = sessions.get(targetTab)
     void (async () => {
-      const id = s?.transcriptId || await findLatestTranscriptIdForTab(tabId)
-      if (!id) {
-        sendResponse({ ok: true, subtitles: [], record: null })
-        return
+      const id = s?.transcriptId || await findLatestTranscriptIdForTab(targetTab)
+      const result = id ? await readAvailableTranscript(id) : { lines: [], complete: !s?.subtitles.length }
+      const lines = [...result.lines]
+      const seen = new Set(lines.map(l => l.id))
+      for (const line of s?.pendingTranscriptLines || []) {
+        if (!seen.has(line.id)) { lines.push(line); seen.add(line.id) }
       }
-      const [subtitles, record] = await Promise.all([readTranscript(id), getTranscriptRecord(id)])
-      sendResponse({ ok: true, subtitles, record })
+      lines.sort((a, b) => a.at - b.at)
+      sendResponse({ ok: true, subtitles: lines, complete: result.complete, error: result.error, saveState: s?.saveState })
     })().catch((err) => {
-      sendResponse({ ok: false, error: err.message || '无法读取完整转写' })
+      sendResponse({ ok: false, error: err.message || '无法读取完整转写', subtitles: s?.pendingTranscriptLines || [], complete: false })
     })
     return true
   },
@@ -56,8 +80,8 @@ export const historyHandlers: MessageHandlerMap = {
       : [String(message.id || '')]
     deleteTranscripts(ids).then((result) => {
       sendResponse({ ok: true, ...result })
-    }).catch(() => {
-      sendResponse({ ok: false })
+    }).catch((err) => {
+      sendResponse({ ok: false, error: err.message || '删除失败，请重试' })
     })
     return true
   },
@@ -65,8 +89,8 @@ export const historyHandlers: MessageHandlerMap = {
   DELETE_ALL_HISTORY: (_message, { sendResponse }) => {
     clearTranscripts().then((result) => {
       sendResponse({ ok: true, ...result })
-    }).catch(() => {
-      sendResponse({ ok: false })
+    }).catch((err) => {
+      sendResponse({ ok: false, error: err.message || '删除失败，请重试' })
     })
     return true
   },

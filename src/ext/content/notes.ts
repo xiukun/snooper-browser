@@ -6,7 +6,7 @@
  */
 
 import type { NoteDocument, NoteEntry } from '../../lib/types'
-import { createNoteDocument, saveNotes } from './notes-store'
+import { createNoteDocument, addNoteEntry, deleteNoteEntry, loadNotes } from './notes-store'
 import { renderMarkdownLite } from './markdown'
 import { seekTo } from './video-seek'
 import type { SessionState } from './types'
@@ -21,6 +21,7 @@ export interface NotesRefs {
 export interface NotesDeps {
   refs: NotesRefs
   getSession: () => SessionState
+  toast: (message: string, tone?: 'info' | 'ok' | 'err') => void
   openShotPreview: (url: string, saved: boolean, insertable?: boolean) => void
 }
 
@@ -36,8 +37,40 @@ export function createNotes(deps: NotesDeps) {
     if (Number.isFinite(seconds)) seekTo(seconds)
   })
 
-  function persistNotes() {
-    saveNotes(deps.getSession().notes)
+  let loadError = ''
+  function setLoadError(error: unknown): void { loadError = String(error); render() }
+  const pending = new Map<string, { note: NoteDocument; entry: NoteEntry; error: string }>()
+  const saving = new Map<string, Promise<boolean>>()
+  function adopt(notes: NoteDocument[]): void {
+    loadError = ''
+    const merged = structuredClone(notes)
+    for (const item of pending.values()) {
+      let note = merged.find(n => n.id === item.note.id)
+      if (!note) { note = { ...item.note, entries: [] }; merged.push(note) }
+      if (!note.entries.some(e => e.id === item.entry.id)) note.entries.push(item.entry)
+    }
+    const session = deps.getSession()
+    session.notes = merged
+    if (!merged.some(n => n.id === session.activeNoteId)) session.activeNoteId = merged[0]?.id ?? null
+    render()
+  }
+  function persistEntry(key: string): Promise<boolean> {
+    const current = saving.get(key)
+    if (current) return current
+    const item = pending.get(key)
+    if (!item) return Promise.resolve(true)
+    const run = addNoteEntry(item.note, item.entry).then(notes => {
+      pending.delete(key)
+      adopt(notes)
+      return true
+    }).catch(error => {
+      item.error = error.message || String(error)
+      deps.toast('有笔记未保存，请在笔记中重试或导出', 'err')
+      render()
+      return false
+    }).finally(() => saving.delete(key))
+    saving.set(key, run)
+    return run
   }
 
   function getOrCreateActiveNote(): NoteDocument {
@@ -52,16 +85,17 @@ export function createNotes(deps: NotesDeps) {
     )
     session.notes.push(note)
     session.activeNoteId = note.id
-    persistNotes()
     return note
   }
 
-  function addEntry(entry: NoteEntry) {
+  function addEntry(entry: NoteEntry): Promise<boolean> {
     const note = getOrCreateActiveNote()
-    note.entries.push(entry)
+    const key = `${note.id}:${entry.id}`
+    if (!note.entries.some(e => e.id === entry.id)) note.entries.push(entry)
+    pending.set(key, { note, entry, error: '' })
     note.updatedAt = Date.now()
-    persistNotes()
     render()
+    return persistEntry(key)
   }
 
   function render() {
@@ -77,8 +111,18 @@ export function createNotes(deps: NotesDeps) {
     r.badge.hidden = count === 0
 
     r.list.textContent = ''
+    if (loadError) {
+      const error = document.createElement('p')
+      error.textContent = `笔记读取失败：${loadError}`
+      const retry = document.createElement('button')
+      retry.textContent = '重试读取'
+      retry.className = 'rtts-btn-ghost'
+      retry.addEventListener('click', () => { void loadNotes().then(adopt).catch(setLoadError) })
+      error.appendChild(retry)
+      r.list.appendChild(error)
+    }
     const hasEntries = !!(active && active.entries.length > 0)
-    if (!hasEntries) {
+    if (!hasEntries && !loadError) {
       const empty = document.createElement('p')
       empty.id = 'rtts-notes-empty'
       empty.textContent = '还没有笔记，点击右侧的「记入笔记」开始记录。'
@@ -86,6 +130,32 @@ export function createNotes(deps: NotesDeps) {
     }
     if (!hasEntries || !active) return
 
+    if (pending.size) {
+      const status = document.createElement('p')
+      const cause = [...pending.values()].find(item => item.error)?.error
+      status.textContent = `有 ${pending.size} 条笔记未保存，请重试或导出。${cause ? `原因：${cause}。` : ''}关闭页面可能丢失未保存内容。`
+      const retry = document.createElement('button')
+      retry.textContent = '重试保存'
+      retry.className = 'rtts-btn-ghost'
+      retry.addEventListener('click', () => { for (const key of pending.keys()) void persistEntry(key) })
+      const exportBtn = document.createElement('button')
+      exportBtn.textContent = '导出未保存笔记'
+      exportBtn.className = 'rtts-btn-ghost'
+      exportBtn.addEventListener('click', () => {
+        const url = URL.createObjectURL(new Blob([JSON.stringify([...pending.values()].map(p => ({ ...p.note, entries: [p.entry] })), null, 2)], { type: 'application/json' }))
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = 'snooper-unsaved-notes.json'
+        anchor.click()
+        setTimeout(() => URL.revokeObjectURL(url), 2000)
+      })
+      status.setAttribute('role', 'status')
+      const actions = document.createElement('div')
+      actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-top:6px'
+      actions.append(retry, exportBtn)
+      status.appendChild(actions)
+      r.list.appendChild(status)
+    }
     active.entries.slice(-10).forEach((entry) => {
       const item = document.createElement('div')
       item.className = 'note-item'
@@ -100,7 +170,7 @@ export function createNotes(deps: NotesDeps) {
         img.className = 'note-img-preview'
         img.alt = '笔记图片'
         img.style.cssText = 'max-width:100%;max-height:80px;border-radius:4px;object-fit:cover;cursor:pointer'
-        img.addEventListener('click', () => deps.openShotPreview(entry.imageUrl!, true, true))
+        img.addEventListener('click', () => deps.openShotPreview(entry.imageUrl!, !pending.has(`${active.id}:${entry.id}`), true))
         item.appendChild(img)
       }
 
@@ -154,11 +224,13 @@ export function createNotes(deps: NotesDeps) {
       delBtn.className = 'note-del'
       delBtn.setAttribute('aria-label', '删除笔记条目')
       delBtn.innerHTML = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'
-      delBtn.addEventListener('click', (event) => {
+      delBtn.addEventListener('click', async (event) => {
         event.stopPropagation()
-        active.entries = active.entries.filter((candidate) => candidate.id !== entry.id)
-        persistNotes()
-        render()
+        try {
+          const notes = await deleteNoteEntry(active.id, entry.id)
+          pending.delete(`${active.id}:${entry.id}`)
+          adopt(notes)
+        } catch (error) { deps.toast(`删除失败，请重试：${String(error)}`, 'err') }
       })
       row.appendChild(delBtn)
 
@@ -170,5 +242,5 @@ export function createNotes(deps: NotesDeps) {
     r.list.scrollTop = r.list.scrollHeight
   }
 
-  return { addEntry, render, persistNotes }
+  return { addEntry, render, adopt, setLoadError }
 }

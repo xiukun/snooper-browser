@@ -15,13 +15,13 @@ import { DEFAULT_CONFIG, loadConfig, saveConfig } from './config'
 import { sendToOffscreen } from './offscreen'
 import {
   maybeCloseOffscreen,
+  finishSessionTranscript,
   nextGeneration,
   persistSessions,
   pushSession,
   reconcileSessionState,
   sessions,
 } from './session-store'
-import { finalizeSessionTranscript } from './transcript-store'
 import { resetVideoClock } from './video-clock'
 
 const FS_BRIDGE_FILE = 'fullscreen-bridge.js'
@@ -37,14 +37,19 @@ function closeOffscreenAfterStop(stop: Promise<unknown>): void {
 
 function removeSession(tabId: number): void {
   const s = sessions.get(tabId)
-  sessions.delete(tabId)
   resetVideoClock(tabId)
   if (s) {
     const stop = sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {})
     // Each subtitle is already on disk; finalization closes the record and
     // keeps the prefix readable. Recovery repeats this if the worker dies.
     closeOffscreenAfterStop(stop)
-    void finalizeSessionTranscript(s).catch(() => {})
+    s.state = 'idle'
+    s.configSnapshot = null
+    s.streamId = ''
+    void finishSessionTranscript(s).then(() => {
+      sessions.delete(tabId)
+      persistSessions()
+    }).catch(() => { /* Retain failed drafts for sidepanel retry/export. */ })
   } else {
     closeOffscreenAfterStop(sendToOffscreen({ type: 'STOP_CAPTURE', tabId }).catch(() => {}))
   }
@@ -58,6 +63,7 @@ function stopSessionForTab(tabId: number): void {
   const stop = sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {})
   s.state = 'idle'
   s.generation = nextGeneration()
+  const endingGeneration = s.generation
   s.stoppedGeneration = undefined
   s.streamId = ''
   s.configSnapshot = null
@@ -65,13 +71,14 @@ function stopSessionForTab(tabId: number): void {
   s.audioSilent = false
   // Keep messages across navigation
   pushSession(tabId)
-  void finalizeSessionTranscript(s).finally(() => {
+  void finishSessionTranscript(s).then(() => {
+    if (s.generation !== endingGeneration) return
     // The next document is a different page: copy/export must not read the
     // previous page's transcript through the new tab session.
     s.transcriptId = null
     s.subtitles = []
     pushSession(tabId)
-  })
+  }).catch(() => { /* Keep failed body and record ID across navigation. */ })
   closeOffscreenAfterStop(stop)
 }
 

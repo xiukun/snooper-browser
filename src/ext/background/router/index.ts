@@ -8,6 +8,7 @@
 import { registerOffscreenEventRouter } from './offscreen-events'
 import { captureHandlers } from './capture'
 import { configHandlers } from './config'
+import { notesHandlers } from './notes'
 import { historyHandlers } from './history'
 import { imageHandlers } from './image'
 import { obsidianHandlers } from './obsidian'
@@ -24,6 +25,7 @@ export const backgroundHandlers: MessageHandlerMap = {
   ...captureHandlers,
   ...obsidianHandlers,
   ...historyHandlers,
+  ...notesHandlers,
   ...videoClockHandlers,
 }
 

@@ -9,17 +9,14 @@
 import { OFFSCREEN_PATH } from '../offscreen'
 import {
   LIVE_SUBTITLE_WINDOW,
+  saveSessionSubtitle,
+  finishSessionTranscript,
   maybeCloseOffscreen,
   pushSession,
   pushStreamingUpdate,
   sessions,
   type SubtitleEntry,
 } from '../session-store'
-import {
-  appendTranscriptLine,
-  ensureTranscript,
-  finalizeSessionTranscript,
-} from '../transcript-store'
 import { resolveVideoTimeAt } from '../video-clock'
 import { insertByStart } from '../../../lib/subtitle-order'
 import { shouldYieldAudio } from '../../../lib/screen-caption'
@@ -90,7 +87,7 @@ export function registerOffscreenEventRouter(): void {
           // The track ended outside the STOP path. Finalize the full record
           // so a crashed or externally-ended capture still reaches history.
           if (s.transcriptId || s.subtitles.length > 0) {
-            void finalizeSessionTranscript(s)
+            void finishSessionTranscript(s).catch(() => {})
           }
           pushSession(message.tabId)
           maybeCloseOffscreen()
@@ -146,6 +143,7 @@ export function registerOffscreenEventRouter(): void {
           // the user just stopped (ADR-031 tail drain).
           return false
         }
+        if (s.state !== 'running' && s.state !== 'starting' && s.state !== 'stopping') return false
         // ADR-043: burned-in subtitles win while they are fresh. The audio
         // line is dropped, not queued: a delayed duplicate adds nothing.
         if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
@@ -183,16 +181,7 @@ export function registerOffscreenEventRouter(): void {
           s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW)
         }
 
-        if (s.transcriptId) {
-          void appendTranscriptLine(s.transcriptId, entry)
-        } else if (!tail) {
-          // Only the live generation may open a record lazily. A tail line
-          // without a record means the begin failed; finalization falls back
-          // to the visible window.
-          void ensureTranscript(s).then((id) => {
-            if (id) void appendTranscriptLine(id, entry)
-          })
-        }
+        saveSessionSubtitle(s, entry)
 
         // A tail line is not pushed: the panel already shows the stopped
         // state and must not flash back to "recording" for its last row.
@@ -229,13 +218,7 @@ export function registerOffscreenEventRouter(): void {
         if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
           s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW)
         }
-        if (s.transcriptId) {
-          void appendTranscriptLine(s.transcriptId, entry)
-        } else {
-          void ensureTranscript(s).then((id) => {
-            if (id) void appendTranscriptLine(id, entry)
-          })
-        }
+        saveSessionSubtitle(s, entry)
         pushSession(message.tabId)
         return false
       }
@@ -261,7 +244,7 @@ export function registerOffscreenEventRouter(): void {
         s.streamingSubtitle = null
         // The capture is over; keep whatever was recorded before the error.
         if (s.transcriptId || s.subtitles.length > 0) {
-          void finalizeSessionTranscript(s)
+          void finishSessionTranscript(s).catch(() => {})
         }
         pushStreamingUpdate(message.tabId)
         pushSession(message.tabId)

@@ -14,6 +14,7 @@
 import { hasOffscreenDocument } from './offscreen'
 import {
   pushSession,
+  markTranscriptSaveError,
   SESSION_RECOVERY_KEY,
   sessions,
   type SessionState,
@@ -39,13 +40,20 @@ async function readLiveGenerations(): Promise<Record<string, number>> {
 export async function recoverSessions(): Promise<void> {
   try {
     const liveGenerations = await readLiveGenerations()
-    // Finalize orphaned recordings even when the session snapshot is gone.
-    const liveTranscripts = await recoverTranscripts(liveGenerations)
-
     const result = await chrome.storage.session.get(SESSION_RECOVERY_KEY)
-    if (!result[SESSION_RECOVERY_KEY]) return
-
-    const recovered = JSON.parse(result[SESSION_RECOVERY_KEY])
+    const recovered = result[SESSION_RECOVERY_KEY] ? JSON.parse(result[SESSION_RECOVERY_KEY]) : {}
+    const recoveryGenerations = { ...liveGenerations }
+    for (const [tab, stored] of Object.entries(recovered)) {
+      const s = stored as SessionState
+      // Failed rows in the recovery snapshot must be replayed BEFORE closing
+      // their recording; otherwise retry would look like a late append.
+      if (s.pendingTranscriptLines?.length) recoveryGenerations[tab] = s.stoppedGeneration ?? s.generation
+    }
+    let recoveryError: unknown
+    const liveTranscripts = await recoverTranscripts(recoveryGenerations, Object.values(recovered).flatMap(stored => {
+      const s = stored as SessionState
+      return s.pendingTranscriptLines?.length && s.transcriptId ? [s.transcriptId] : []
+    })).catch(error => { recoveryError = error; return new Map<number, string>() })
 
     for (const [tabIdStr, stored] of Object.entries(recovered)) {
       const tabId = Number(tabIdStr)
@@ -60,7 +68,7 @@ export async function recoverSessions(): Promise<void> {
         s.generation = liveGeneration
         s.stoppedGeneration = undefined
         s.streamId = ''
-        s.transcriptId = liveTranscriptId
+        s.transcriptId = liveTranscriptId || s.transcriptId
       } else if (s.state === 'running' || s.state === 'starting' || s.state === 'stopping') {
         // A `stopping` session without a live capture was mid-teardown when
         // the worker died: the record is already finalized by
@@ -70,14 +78,18 @@ export async function recoverSessions(): Promise<void> {
         s.streamId = ''
         s.configSnapshot = null
         s.streamingSubtitle = null
-        s.transcriptId = null
+        if (!recoveryError && !s.pendingTranscriptLines?.length) s.transcriptId = null
       } else if (liveTranscriptId) {
         s.transcriptId = liveTranscriptId
       }
+      s.pendingTranscriptLines ||= []
+      s.saveState ||= { status: 'saved' }
       sessions.set(tabId, s)
+      if (recoveryError) markTranscriptSaveError(s, recoveryError)
+      else if (s.pendingTranscriptLines.length) markTranscriptSaveError(s, '上次保存中断')
       pushSession(tabId)
     }
-  } catch {
-    // ignore
+  } catch (error) {
+    console.warn('[RTTS] session recovery failed:', error)
   }
 }

@@ -1,3 +1,5 @@
+import type { NoteDocument } from '../../lib/types'
+import { loadNotes, deleteNoteDocuments } from '../content/notes-store'
 /**
  * snooper-browser Side Panel — notes history + Obsidian integration.
  *
@@ -12,29 +14,6 @@ import { videoDeepLink } from '../../lib/deep-link'
 
 (() => {
   /* ===== Types ===== */
-  interface NoteEntry {
-    id: string
-    type: 'subtitle' | 'image' | 'svg' | 'screenshot' | 'text' | 'summary'
-    at: number
-    source?: string
-    target?: string
-    imageUrl?: string
-    svg?: string
-    text?: string
-    speaker?: string
-    sourceLang?: string
-    targetLang?: string
-  }
-
-  interface NoteDocument {
-    id: string
-    title: string
-    createdAt: number
-    updatedAt: number
-    entries: NoteEntry[]
-    sessionInfo?: { source: string; mediaName?: string; duration?: number }
-  }
-
   interface ObsidianConfig {
     enabled: boolean
     vaultPath: string
@@ -77,36 +56,7 @@ import { videoDeepLink } from '../../lib/deep-link'
   }
 
   /* ===== Persistence ===== */
-  const NOTES_KEY = 'snooper.notes.v1'
   const OBSIDIAN_KEY = 'snooper.obsidian-config.v1'
-
-  function loadNotes(): Promise<NoteDocument[]> {
-    return (async () => {
-      // 1. Shared store — same key the in-page drawer writes to
-      try {
-        const got = await chrome.storage.local.get(NOTES_KEY)
-        const stored = got?.[NOTES_KEY]
-        if (Array.isArray(stored)) return stored as NoteDocument[]
-      } catch { /* ignore */ }
-      // 2. Legacy panel localStorage -> migrate into the shared store
-      try {
-        const raw = localStorage.getItem(NOTES_KEY)
-        if (raw) {
-          const parsed = JSON.parse(raw)
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            try { await chrome.storage.local.set({ [NOTES_KEY]: parsed }) } catch { /* ignore */ }
-            return parsed as NoteDocument[]
-          }
-        }
-      } catch { /* ignore */ }
-      return []
-    })()
-  }
-
-  async function saveNotes(next: NoteDocument[]) {
-    try { await chrome.storage.local.set({ [NOTES_KEY]: next }) } catch { /* ignore */ }
-    try { localStorage.setItem(NOTES_KEY, JSON.stringify(next)) } catch { /* ignore */ }
-  }
 
   function normalizeObsidianConfig(raw: any): ObsidianConfig {
     const r = raw && typeof raw === 'object' ? raw : {}
@@ -245,8 +195,61 @@ import { videoDeepLink } from '../../lib/deep-link'
     notesSelectAll.disabled = all.length === 0
   }
 
+  const saveFailures = document.createElement('div')
+  saveFailures.setAttribute('role', 'status')
+  notesList.before(saveFailures)
+  async function renderSaveFailures(): Promise<void> {
+    try {
+      const result = await chrome.runtime.sendMessage({ target: 'background', type: 'GET_SAVE_FAILURES' })
+      if (!result?.ok) return
+      saveFailures.textContent = ''
+      for (const failure of result.failures || []) {
+        const item = document.createElement('p')
+        item.className = 'empty-hint'
+        item.textContent = `有内容未保存（${failure.pendingCount} 条待保存）：${failure.saveState.message}`
+        const retry = document.createElement('button')
+        retry.textContent = '重试保存'
+        retry.className = 'btn btn-sm btn-secondary'
+        retry.addEventListener('click', async () => {
+          retry.disabled = true
+          try {
+            const res = await chrome.runtime.sendMessage({ target: 'background', type: 'RETRY_TRANSCRIPT', tabId: failure.tabId })
+            if (!res?.ok) showNotice(res?.error || '保存失败，请导出')
+          } catch (error) { showNotice(`保存失败：${String(error)}`) }
+          await renderSaveFailures()
+        })
+        const exportBtn = document.createElement('button')
+        exportBtn.textContent = '导出可用内容'
+        exportBtn.className = 'btn btn-sm btn-secondary'
+        exportBtn.addEventListener('click', async () => {
+          try {
+            const res = await chrome.runtime.sendMessage({ target: 'background', type: 'GET_TRANSCRIPT', tabId: failure.tabId })
+            const lines = Array.isArray(res?.subtitles) ? res.subtitles : []
+            if (!lines.length) { showNotice(res?.error || '暂无可导出内容，请重试读取'); return }
+            const text = lines.map((line: HistorySubtitle) => `${line.source}\n${line.target}`).join('\n\n')
+            const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
+            const a = document.createElement('a')
+            a.href = url
+            a.download = 'snooper-unsaved-transcript.txt'
+            a.click()
+            setTimeout(() => URL.revokeObjectURL(url), 2000)
+            showNotice(res.complete ? '已导出当前转写（含未保存内容）' : '仅导出可用内容，部分正文读取失败')
+          } catch (error) { showNotice(`导出失败：${String(error)}`) }
+        })
+        item.style.overflowWrap = 'anywhere'
+        const actions = document.createElement('div')
+        actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-top:6px'
+        actions.append(retry, exportBtn)
+        item.appendChild(actions)
+        saveFailures.appendChild(item)
+      }
+    } catch (error) { showNotice(`保存状态读取失败：${String(error)}`) }
+  }
+
   async function loadAndRenderNotes() {
-    notes = await loadNotes()
+    await renderSaveFailures()
+    try { notes = await loadNotes() }
+    catch (error) { showNotice(`笔记读取失败，请点刷新重试：${String(error)}`); return }
 
     notesList.textContent = ''
     if (notes.length === 0) {
@@ -327,12 +330,11 @@ import { videoDeepLink } from '../../lib/deep-link'
       delBtn.addEventListener('click', async (e) => {
         e.stopPropagation()
         if (!confirm('确定删除这篇笔记？')) return
-        // Re-read first so notes added by the page since the last render are
-        // preserved instead of being overwritten by this panel's snapshot.
-        notes = (await loadNotes()).filter((n) => n.id !== note.id)
-        await saveNotes(notes)
-        await loadAndRenderNotes()
-        showNotice('笔记已删除')
+        try {
+          notes = await deleteNoteDocuments([note.id])
+          await loadAndRenderNotes()
+          showNotice('笔记已删除')
+        } catch (error) { showNotice(`删除失败，请重试：${String(error)}`) }
       })
       actions.appendChild(delBtn)
 
@@ -458,10 +460,11 @@ import { videoDeepLink } from '../../lib/deep-link'
     const ids = getSelectedNoteIds()
     if (ids.length === 0) return
     if (!confirm(`确定删除选中的 ${ids.length} 篇笔记？此操作不可恢复。`)) return
-    notes = (await loadNotes()).filter((note) => !ids.includes(note.id))
-    await saveNotes(notes)
-    await loadAndRenderNotes()
-    showNotice(`已删除 ${ids.length} 篇笔记`)
+    try {
+      notes = await deleteNoteDocuments(ids)
+      await loadAndRenderNotes()
+      showNotice(`已删除 ${ids.length} 篇笔记`)
+    } catch (error) { showNotice(`删除失败，请重试：${String(error)}`) }
   })
 
   /* ===== History ===== */

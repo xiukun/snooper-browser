@@ -23,7 +23,6 @@ import { loadConfig } from '../config'
 import { askLLM } from '../llm'
 import {
   beginTranscript,
-  finalizeSessionTranscript,
   finalizeTranscript,
 } from '../transcript-store'
 import {
@@ -34,6 +33,9 @@ import {
 } from '../offscreen'
 import {
   getOrCreateSession,
+  finishSessionTranscript,
+  markTranscriptSaveError,
+  retrySessionTranscript,
   maybeCloseOffscreen,
   nextGeneration,
   pushSession,
@@ -128,6 +130,11 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     pushSession(tabId)
   }
 
+  if (s.saveState?.status === 'error' || s.pendingTranscriptLines?.length) {
+    try { await retrySessionTranscript(s); await finishSessionTranscript(s) }
+    catch { return { ok: false, error: '上一场有内容未保存，请先重试或导出' } }
+  }
+
   const config: AppConfig = await loadConfig()
   if (currentStartVersion(tabId) !== startVersion) return { ok: true, cancelled: true }
 
@@ -167,6 +174,8 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
   s.generation = nextGeneration()
   s.stoppedGeneration = undefined
   s.subtitles = []
+  s.pendingTranscriptLines = []
+  s.saveState = { status: 'saved' }
   s.transcriptId = null
   s.streamingSubtitle = null
   s.audioSilent = false
@@ -202,13 +211,13 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
         targetLang: s.targetLang,
       })
       if (!isCurrent()) {
-        void finalizeTranscript(record.id)
+        void finalizeTranscript(record.id).catch(error => markTranscriptSaveError(s, error))
         return { ok: true, cancelled: true }
       }
       s.transcriptId = record.id
       pushSession(tabId)
     } catch (err) {
-      console.warn('[RTTS] transcript begin failed:', err)
+      markTranscriptSaveError(s, err)
     }
 
     console.log('[RTTS] START:', tabId, 'gen:', generation, 'lang:', s.sourceLang, '→', s.targetLang)
@@ -274,7 +283,7 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     if (!isCurrent()) {
       console.info('[RTTS] START cancelled during startup')
       // A STOP may have raced the record creation; finalize whatever exists.
-      try { await finalizeSessionTranscript(s) } catch { /* ignore */ }
+      try { await finishSessionTranscript(s) } catch { /* ignore */ }
       return { ok: true, cancelled: true }
     }
 
@@ -285,7 +294,7 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     s.streamId = ''
     s.streamingSubtitle = null
     // An empty record is removed by finalization; a partial one is kept.
-    try { await finalizeSessionTranscript(s) } catch { /* ignore */ }
+    try { await finishSessionTranscript(s) } catch { /* ignore */ }
     pushSession(tabId)
     const msg = (err && err.message) || String(err)
     let friendly = msg
@@ -446,7 +455,7 @@ export const sessionHandlers: MessageHandlerMap = {
       // Flush the final chunk and close the record. Keeping transcriptId
       // lets copy/export read the full session after stop (ADR-031).
       try {
-        await finalizeSessionTranscript(s)
+        await finishSessionTranscript(s)
       } catch (err) {
         console.warn('[RTTS] transcript finalize failed:', err)
       }

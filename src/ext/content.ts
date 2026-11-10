@@ -8,7 +8,6 @@
  * the object wholesale.
  */
 
-import type { NoteDocument } from '../lib/types'
 import { CONTENT_CSS } from './content/styles'
 import { CONTENT_HTML } from './content/template'
 import { loadNotes, NOTES_STORAGE_KEY } from './content/notes-store'
@@ -433,6 +432,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     };
     if (!Array.isArray(session.messages)) session.messages = [];
     render();
+    renderSaveStatus(incoming.saveState);
     videoClock.sync();
   }
 
@@ -456,6 +456,33 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
       el.style.transition = 'opacity 0.2s';
       setTimeout(() => el.remove(), 220);
     }, 3200);
+  }
+
+  const saveNotice = document.createElement('div')
+  saveNotice.className = 'rtts-toast err'
+  saveNotice.style.cssText = 'pointer-events:auto;overflow-wrap:anywhere'
+  saveNotice.setAttribute('role', 'status')
+  saveNotice.hidden = true
+  toasts.appendChild(saveNotice)
+  function renderSaveStatus(state: { status: string; message?: string } | undefined) {
+    saveNotice.hidden = state?.status !== 'error'
+    if (saveNotice.hidden) return
+    saveNotice.textContent = state?.message || '有内容未保存，请重试或导出'
+    const retry = document.createElement('button')
+    retry.textContent = '重试保存'
+      retry.className = 'rtts-btn-ghost'
+    retry.addEventListener('click', async () => {
+      retry.disabled = true
+      const res = await bg('RETRY_TRANSCRIPT')
+      retry.disabled = false
+      if (!res.ok) toast(res.error || '保存失败，请导出', 'err')
+      await syncSessionFromBackground()
+    })
+    const exportBtn = document.createElement('button')
+    exportBtn.textContent = '导出可用内容'
+    exportBtn.className = 'rtts-btn-ghost'
+    exportBtn.addEventListener('click', () => exportTxtBtn.click())
+    saveNotice.append(retry, exportBtn)
   }
 
   function flashChip(btn: HTMLElement, ms = 1600) {
@@ -848,6 +875,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
       list: notesList,
     },
     getSession: () => session,
+    toast,
     openShotPreview: (url, saved, insertable) => openShotPreview(url, saved, insertable),
   });
   const addNoteEntry = notesCtrl.addEntry;
@@ -933,7 +961,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     getSession: () => session,
     getTranscript: async () => {
       const res = await bg('GET_TRANSCRIPT')
-      return Array.isArray(res?.subtitles) ? res.subtitles : []
+      return { subtitles: Array.isArray(res?.subtitles) ? res.subtitles : [], complete: res?.ok === true && res?.complete === true }
     },
     toast,
     flashChip,
@@ -970,18 +998,26 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
   })
 
   // Add a Markdown note
-  function addQuickNote() {
+  let quickNote: { text: string; id: string } | null = null
+  let quickNoteBusy = false
+  async function addQuickNote() {
+    if (quickNoteBusy) return
     // A hidden editor reports '' from innerText, so leave preview first.
     if (isNotesPreviewing) toggleNotesPreview()
     const text = getEditorText(notesEditor)
     if (!text) return
-    addNoteEntry({
-      id: `text_${Date.now()}`,
+    if (!quickNote || quickNote.text !== text) quickNote = { text, id: `text_${Date.now()}` }
+    quickNoteBusy = true
+    const saved = await addNoteEntry({
+      id: quickNote.id,
       type: 'text',
       at: Date.now(),
       text,
     })
-    notesEditor.innerHTML = ''
+    quickNoteBusy = false
+    if (!saved) return
+    quickNote = null
+    if (getEditorText(notesEditor) === text) notesEditor.innerHTML = ''
     notesEditor.focus()
   }
 
@@ -1089,11 +1125,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
       if (area !== 'local' || !changes?.[NOTES_STORAGE_KEY]) return;
       const next = changes[NOTES_STORAGE_KEY].newValue;
       if (!Array.isArray(next)) return;
-      session.notes = next;
-      if (session.activeNoteId && !next.some((note: NoteDocument) => note.id === session.activeNoteId)) {
-        session.activeNoteId = next[0]?.id ?? null;
-      }
-      renderNotes();
+      notesCtrl.adopt(next);
     });
   } catch { /* ignore */ }
 
@@ -1103,11 +1135,8 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
 
   (async () => {
     // Load notes from shared chrome.storage.local (syncs with side panel)
-    const savedNotes = await loadNotes()
-    session.notes = savedNotes
-    if (savedNotes.length > 0) {
-      session.activeNoteId = savedNotes[0]!.id
-    }
+    try { notesCtrl.adopt(await loadNotes()) }
+    catch (error) { notesCtrl.setLoadError(error) }
 
     session.isDemoMode = false;
     await syncSessionFromBackground();

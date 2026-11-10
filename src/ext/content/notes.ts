@@ -1,3 +1,4 @@
+import { createFavoriteButton, favoriteState } from './favorite-control'
 /**
  * Notes: active-note lifecycle, persistence, and the drawer list.
  *
@@ -29,6 +30,7 @@ export interface NotesDeps {
 
 export function createNotes(deps: NotesDeps) {
   const r = deps.refs
+  const favorites = favoriteState()
 
   // ADR-037: summaries and notes render `[mm:ss]` stamps as buttons (ADR-036
   // renderer); clicking one seeks the video the same way chat does.
@@ -260,6 +262,9 @@ export function createNotes(deps: NotesDeps) {
           adopt(notes)
         } catch (error) { deps.toast(`删除失败，请重试：${String(error)}`, 'err') }
       })
+      const favorite = createFavoriteButton(pending.has(`${active.id}:${entry.id}`) ? null : { kind: 'note', noteId: active.id, entryId: entry.id }, message => deps.toast(message, 'err'), favorites)
+      favorite.className = 'library-favorite rtts-btn-ghost'
+      row.appendChild(favorite)
       row.appendChild(delBtn)
 
       item.appendChild(row)

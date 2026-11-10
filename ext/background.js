@@ -805,6 +805,7 @@ function safeSession(s) {
     screenCaption: s.screenCaption,
     screenCaptionError: s.screenCaptionError,
     saveState: allSourceSessions(s).find((epoch) => epoch.saveState?.status === "error")?.saveState || s.saveState || { status: "saved" },
+    currentTranscriptSaveState: s.saveState || { status: "pending" },
     pendingTranscriptCount: allSourceSessions(s).reduce((sum, epoch) => sum + (epoch.pendingTranscriptLines?.length || 0), 0)
   };
 }
@@ -1405,6 +1406,9 @@ function affected(ref, target) {
 }
 async function assertAvailable(ref) {
   if ((await operations()).some((op) => op.pending.some((p) => affected(ref, p.target)))) throw new LibraryError("DELETE_PENDING", "\u6761\u76EE\u6B63\u5728\u5220\u9664\uFF0C\u8BF7\u5B8C\u6210\u6216\u91CD\u8BD5\u5220\u9664");
+}
+function listFavorites() {
+  return withLibraryOperation(favoritesUnderLibraryLock);
 }
 async function resolveEntry(ref) {
   await assertAvailable(ref);
@@ -2098,6 +2102,9 @@ var configHandlers = {
 // src/ext/background/library-search.ts
 var PREFIX = "snooper.library.search.v1.";
 var WORK_UNITS = 4;
+function scopeSignature(scopes) {
+  return JSON.stringify(scopes.map((scope) => scope.kind === "note" ? [scope.kind, scope.id, scope.title, scope.count, scope.entryIds, scope.updatedAt] : [scope.kind, scope.id, scope.title, scope.count]));
+}
 function parseCursor(cursor) {
   if (typeof cursor !== "string") throw new LibraryError("INVALID_INPUT", "\u67E5\u8BE2\u6E38\u6807\u5FC5\u987B\u662F\u6587\u672C");
   const match = /^([a-f\d-]{36}):(\d+)$/.exec(cursor);
@@ -2125,7 +2132,7 @@ function searchLibrary(input) {
       state = (await chrome.storage.session.get(PREFIX + id))[PREFIX + id];
       if (!state || state.step !== parsed.step || state.expiresAt < Date.now()) throw new LibraryError("CURSOR_EXPIRED", "\u67E5\u8BE2\u5DF2\u53D6\u6D88\u6216\u6E38\u6807\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u67E5\u8BE2");
       if (state.query !== query || state.favoritesOnly !== input.favoritesOnly) throw new LibraryError("CURSOR_MISMATCH", "\u67E5\u8BE2\u6761\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u67E5\u8BE2");
-      state.changed ||= JSON.stringify(state.scopes) !== JSON.stringify(scopes) || JSON.stringify(state.favorites) !== JSON.stringify(favorites);
+      state.changed ||= scopeSignature(state.scopes) !== scopeSignature(scopes) || JSON.stringify(state.favorites) !== JSON.stringify(favorites);
     } else {
       id = crypto.randomUUID();
       state = { query, favoritesOnly: input.favoritesOnly, favorites, scopes, scopeIndex: 0, offset: 0, scanned: 0, step: 0, changed: false, expiresAt: Date.now() + 30 * 6e4 };
@@ -2219,6 +2226,7 @@ var libraryHandlers = {
     return { cancelled: true };
   }),
   LIBRARY_CONTEXT: handler((message) => libraryContext(message.ref)),
+  LIBRARY_FAVORITES: handler(async () => ({ refs: (await listFavorites()).map((item) => item.ref) })),
   LIBRARY_FAVORITE: handler((message) => setFavorite(message.ref, message.favorite)),
   LIBRARY_PREPARE_DELETE: handler((message) => prepareDelete({ transcriptIds: message.transcriptIds, noteIds: message.noteIds, noteEntries: message.noteEntries })),
   LIBRARY_DELETE: handler((message) => confirmDelete(message.token)),

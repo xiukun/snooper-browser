@@ -33,6 +33,9 @@ declare namespace chrome {
     }): Promise<any[]>
   }
   namespace storage {
+    namespace onChanged {
+      function addListener(callback: (changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) => void): void
+    }
     namespace local {
       function getBytesInUse(keys: null | string | string[]): Promise<number>
       function get(keys: string | string[] | Record<string, any>): Promise<Record<string, any>>

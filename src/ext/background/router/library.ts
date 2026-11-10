@@ -1,5 +1,5 @@
 import { cancelSearch, searchLibrary } from '../library-search'
-import { confirmDelete, libraryContext, libraryUsage, openLibrarySource, prepareDelete, retryDelete, setFavorite, LibraryError } from '../library-store'
+import { listFavorites, confirmDelete, libraryContext, libraryUsage, openLibrarySource, prepareDelete, retryDelete, setFavorite, LibraryError } from '../library-store'
 import { waitForRecovery } from '../session-store'
 import type { MessageHandler, MessageHandlerMap, RouterContext } from './types'
 
@@ -13,6 +13,7 @@ export const libraryHandlers: MessageHandlerMap = {
   LIBRARY_SEARCH: handler(message=>searchLibrary({query:message.query,favoritesOnly:message.favoritesOnly,cursor:message.cursor})),
   LIBRARY_CANCEL_SEARCH: handler(async message=>{await cancelSearch(message.cursor);return {cancelled:true}}),
   LIBRARY_CONTEXT: handler(message=>libraryContext(message.ref)),
+  LIBRARY_FAVORITES: handler(async () => ({ refs: (await listFavorites()).map(item => item.ref) })),
   LIBRARY_FAVORITE: handler(message=>setFavorite(message.ref,message.favorite)),
   LIBRARY_PREPARE_DELETE: handler(message=>prepareDelete({transcriptIds:message.transcriptIds,noteIds:message.noteIds,noteEntries:message.noteEntries})),
   LIBRARY_DELETE: handler(message=>confirmDelete(message.token)),

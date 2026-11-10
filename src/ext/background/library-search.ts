@@ -15,6 +15,12 @@ interface Snapshot {
   scopes:(TranscriptScope|NoteScope)[]
   scopeIndex:number; offset:number; scanned:number; step:number; changed:boolean; expiresAt:number
 }
+/** Chrome storage may reorder object properties; compare semantic fields only. */
+function scopeSignature(scopes: (TranscriptScope | NoteScope)[]): string {
+  return JSON.stringify(scopes.map(scope => scope.kind === 'note'
+    ? [scope.kind, scope.id, scope.title, scope.count, scope.entryIds, scope.updatedAt]
+    : [scope.kind, scope.id, scope.title, scope.count]))
+}
 function parseCursor(cursor:unknown):{id:string;step:number} {
   if(typeof cursor!=='string') throw new LibraryError('INVALID_INPUT','查询游标必须是文本')
   const match=/^([a-f\d-]{36}):(\d+)$/.exec(cursor)
@@ -38,7 +44,7 @@ export function searchLibrary(input:{query:string;favoritesOnly:boolean;cursor?:
       state=(await chrome.storage.session.get(PREFIX+id))[PREFIX+id] as Snapshot
       if(!state || state.step!==parsed.step || state.expiresAt<Date.now()) throw new LibraryError('CURSOR_EXPIRED','查询已取消或游标过期，请重新查询')
       if(state.query!==query || state.favoritesOnly!==input.favoritesOnly) throw new LibraryError('CURSOR_MISMATCH','查询条件已变化，请重新查询')
-      state.changed ||= JSON.stringify(state.scopes)!==JSON.stringify(scopes) || JSON.stringify(state.favorites)!==JSON.stringify(favorites)
+      state.changed ||= scopeSignature(state.scopes)!==scopeSignature(scopes) || JSON.stringify(state.favorites)!==JSON.stringify(favorites)
     } else {
       id=crypto.randomUUID()
       state={query,favoritesOnly:input.favoritesOnly,favorites,scopes,scopeIndex:0,offset:0,scanned:0,step:0,changed:false,expiresAt:Date.now()+30*60_000}

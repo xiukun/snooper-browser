@@ -2,13 +2,18 @@ import assert from 'node:assert/strict'
 import { harness, modules, noteEntry, recording } from './library-test-harness.mjs'
 const h=harness(modules)
 try {
+// Chromium stores dictionary keys in canonical order. structuredClone alone
+// preserves insertion order and previously hid false snapshot-change warnings.
+const reorder = value => Array.isArray(value) ? value.map(reorder) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key,reorder(value[key])])) : value
+const sessionGet = chrome.storage.session.get
+chrome.storage.session.get = async keys => reorder(await sessionGet(keys))
 let a=await h.load()
 const ids=[]
 for(let i=1;i<=150;i++) ids.push(await recording(a,i,i===1?451:1))
 await a.notes.addNoteEntry({noteId:'n',entry:noteEntry('e','我的电脑',{imageUrl:'data:image/png;base64,SECRET_IMAGE'})})
 async function collect(query,favoritesOnly=false) {
  let cursor, hits=[],scanned=0, batches=0,result
- do { result=await a.search.searchLibrary({query,favoritesOnly,cursor}); assert.deepEqual(result.errors,[]); hits.push(...result.hits); scanned=result.scanned; cursor=result.cursor; a=await h.load(); batches++; assert.ok(batches<300) } while(cursor)
+ do { result=await a.search.searchLibrary({query,favoritesOnly,cursor}); assert.deepEqual(result.errors,[]); assert.equal(result.changed,false,'unchanged persisted scopes must ignore dictionary key ordering'); hits.push(...result.hits); scanned=result.scanned; cursor=result.cursor; a=await h.load(); batches++; assert.ok(batches<300) } while(cursor)
  assert.equal(result.complete,true); assert.equal(new Set(hits.map(h=>JSON.stringify(h.ref))).size,hits.length)
  return {hits,scanned,batches}
 }
@@ -28,6 +33,27 @@ const noteSource=await collect('note-source')
 assert.equal(noteSource.hits.length,450)
 for(const i of [0,199,200]) assert.ok(noteSource.hits.some(h=>h.ref.entryId===`n-${i}`))
 assert.equal((await collect('尾译文')).hits[0].ref.entryId,'n-450')
+// Stable serialization must still detect each meaningful note-scope field,
+// including same-count entry replacement and content-version timestamps.
+async function detectsNoteChange(change) {
+ const original=structuredClone(h.local[a.notes.NOTES_STORAGE_KEY])
+ const first=await a.search.searchLibrary({query:'电脑',favoritesOnly:false})
+ change(h.local[a.notes.NOTES_STORAGE_KEY].find(n=>n.id==='n'))
+ const next=await a.search.searchLibrary({query:'电脑',favoritesOnly:false,cursor:first.cursor})
+ assert.equal(next.changed,true)
+ if(next.cursor)await a.search.cancelSearch(next.cursor)
+ h.local[a.notes.NOTES_STORAGE_KEY]=original
+}
+await detectsNoteChange(note=>{note.title+=' changed'})
+await detectsNoteChange(note=>{note.entries[0].id='replacement-same-count'})
+await detectsNoteChange(note=>{note.updatedAt+=100})
+await detectsNoteChange(note=>{note.entries.push(noteEntry('new-entry'))})
+const beforeFavorite=await a.search.searchLibrary({query:'电脑',favoritesOnly:false})
+await a.library.setFavorite({kind:'note',noteId:'n',entryId:'e'},true)
+const favoriteChanged=await a.search.searchLibrary({query:'电脑',favoritesOnly:false,cursor:beforeFavorite.cursor})
+assert.equal(favoriteChanged.changed,true)
+if(favoriteChanged.cursor)await a.search.cancelSearch(favoriteChanged.cursor)
+await a.library.setFavorite({kind:'note',noteId:'n',entryId:'e'},false)
 const scope=await a.search.searchLibrary({query:'',favoritesOnly:false})
 assert.equal(scope.hits.length,0); assert.equal(scope.scopes.length,152)
 let first=await a.search.searchLibrary({query:'电脑',favoritesOnly:false})

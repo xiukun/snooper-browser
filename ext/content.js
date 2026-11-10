@@ -1,6 +1,12 @@
 (() => {
   // src/ext/content/styles/panels.ts
-  var PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
+  var PANELS_CSS = `
+    .sub-favorite { grid-column: 2; justify-self: start; background: transparent; color: inherit; border: 1px solid currentColor; border-radius: 6px; padding: 3px 7px; font-size: 11px; cursor: pointer; }
+    .sub-row:not(.has-time) .sub-favorite { grid-column: 1; }
+    .library-favorite:disabled { opacity: .5; cursor: default; }
+    .library-favorite[aria-pressed="true"] { font-weight: 700; }
+    .library-favorite:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+/* === Unified side drawer: chat + notes tabs === */
     #rtts-drawer-tabs {
       display: flex; align-items: center; gap: 4px;
       background: rgba(255,255,255,0.04);
@@ -1658,17 +1664,206 @@
     <div id="rtts-toasts" aria-live="polite"></div>
   `;
 
+  // src/lib/knowledge-search.ts
+  function refKey(ref) {
+    return ref.kind === "transcript" ? JSON.stringify(["transcript", ref.recordId, ref.lineId]) : JSON.stringify(["note", ref.noteId, ref.entryId]);
+  }
+
+  // src/ext/content/favorite-control.ts
+  var libraryRequest = (type, fields = {}) => chrome.runtime.sendMessage({ target: "background", type, ...fields });
+  function requireSuccess(result) {
+    if (!result?.ok) {
+      const messages = { CURSOR_EXPIRED: "\u8FD9\u6B21\u641C\u7D22\u5DF2\u5931\u6548\uFF0C\u8BF7\u5237\u65B0\u7ED3\u679C", CURSOR_MISMATCH: "\u641C\u7D22\u6761\u4EF6\u5DF2\u66F4\u6539\uFF0C\u8BF7\u5237\u65B0\u7ED3\u679C", CONFIRMATION_STALE: "\u8D44\u6599\u6216\u6536\u85CF\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9884\u89C8\u5220\u9664\u8303\u56F4" };
+      throw Object.assign(new Error(messages[result?.code || ""] || result?.error || "\u8BF7\u6C42\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5"), { code: result?.code });
+    }
+  }
+  function createFavoriteState(request2 = libraryRequest) {
+    let refs = /* @__PURE__ */ new Set();
+    let status = "loading";
+    let error = "";
+    let serial = 0;
+    const busy = /* @__PURE__ */ new Set();
+    const listeners = /* @__PURE__ */ new Set();
+    const emit = () => listeners.forEach((fn) => fn());
+    async function refresh() {
+      const sequence = ++serial;
+      try {
+        const result = await request2("LIBRARY_FAVORITES");
+        requireSuccess(result);
+        if (sequence !== serial) return;
+        refs = new Set(result.refs.map(refKey));
+        status = "ready";
+        error = "";
+      } catch (cause) {
+        if (sequence !== serial) return;
+        status = "error";
+        error = String(cause);
+      }
+      emit();
+    }
+    async function toggle(ref) {
+      const key = refKey(ref);
+      if (status !== "ready") throw new Error("\u6536\u85CF\u72B6\u6001\u5C1A\u672A\u8BFB\u53D6\uFF0C\u8BF7\u91CD\u8BD5");
+      if (busy.has(key)) return refs.has(key);
+      busy.add(key);
+      emit();
+      try {
+        const result = await request2("LIBRARY_FAVORITE", { ref, favorite: !refs.has(key) });
+        requireSuccess(result);
+        serial++;
+        const favorite = result.favorite === true;
+        if (favorite) refs.add(key);
+        else refs.delete(key);
+        return favorite;
+      } finally {
+        busy.delete(key);
+        emit();
+      }
+    }
+    return { refresh, toggle, get status() {
+      return status;
+    }, get error() {
+      return error;
+    }, has: (ref) => refs.has(refKey(ref)), busy: (ref) => busy.has(refKey(ref)), subscribe(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    } };
+  }
+  var shared;
+  function favoriteState() {
+    if (!shared) {
+      shared = createFavoriteState();
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === "local" && changes["snooper.library.favorites.v1"]) void shared?.refresh();
+      });
+      void shared.refresh();
+    }
+    return shared;
+  }
+  function subtitleFavoriteRef(session, line) {
+    return !session.isDemoMode && session.saveState?.status === "saved" && session.transcriptId && line.id ? { kind: "transcript", recordId: session.transcriptId, lineId: line.id } : null;
+  }
+  function createFavoriteButton(ref, notify, state = favoriteState()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "library-favorite btn btn-sm btn-secondary";
+    button.dataset.action = "favorite";
+    const update = () => {
+      button.disabled = !ref || state.busy(ref) || state.status === "loading";
+      button.textContent = !ref ? "\u4FDD\u5B58\u540E\u53EF\u6536\u85CF" : state.status === "loading" ? "\u8BFB\u53D6\u6536\u85CF\u2026" : state.status === "error" ? "\u91CD\u8BD5\u8BFB\u53D6\u6536\u85CF" : state.has(ref) ? "\u2605 \u5DF2\u6536\u85CF" : "\u2606 \u6536\u85CF";
+      button.setAttribute("aria-pressed", String(!!ref && state.has(ref)));
+      button.title = !ref ? "\u6B63\u6587\u6210\u529F\u4FDD\u5B58\u540E\u624D\u80FD\u6536\u85CF" : state.status === "error" ? state.error : "\u6536\u85CF\u6B64\u6761\u539F\u6587\u4E0E\u8BD1\u6587";
+    };
+    update();
+    let unsubscribe = () => {
+    };
+    unsubscribe = state.subscribe(() => {
+      if (!button.isConnected) {
+        unsubscribe();
+        return;
+      }
+      ;
+      update();
+    });
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (!ref) return;
+      if (state.status === "error") {
+        await state.refresh();
+        return;
+      }
+      try {
+        await state.toggle(ref);
+      } catch (error) {
+        notify(`\u6536\u85CF\u672A\u66F4\u6539\uFF1A${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+    return button;
+  }
+
   // src/ext/content/library-client.ts
   async function confirmLibraryDelete(selection) {
-    const preview = await chrome.runtime.sendMessage({ target: "background", type: "LIBRARY_PREPARE_DELETE", ...selection });
-    if (!preview?.ok) throw new Error(preview?.error || "\u65E0\u6CD5\u9884\u89C8\u5220\u9664\u8303\u56F4\uFF0C\u8BF7\u91CD\u8BD5");
-    const count = preview.targets.length;
-    if (!count) throw new Error(preview.skipped[0]?.reason || "\u6CA1\u6709\u53EF\u5220\u9664\u7684\u8D44\u6599");
-    if (!confirm(`\u786E\u5B9A\u5220\u9664 ${count} \u9879\u8D44\u6599\uFF1F\u5C06\u540C\u65F6\u79FB\u9664 ${preview.favoriteCount} \u6761\u6536\u85CF\u3002\u72EC\u7ACB\u53E6\u5B58\u7684\u7B14\u8BB0\u4F1A\u4FDD\u7559\u3002\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002`)) return null;
-    const result = await chrome.runtime.sendMessage({ target: "background", type: "LIBRARY_DELETE", token: preview.token });
-    if (!result?.ok) throw new Error(result?.error || "\u5220\u9664\u672A\u5B8C\u6210\uFF0C\u8BF7\u91CD\u8BD5");
-    if (result.pending.length) throw new Error(`\u90E8\u5206\u5220\u9664\u672A\u5B8C\u6210\uFF1A${result.pending[0].error}\u3002\u64CD\u4F5C ID\uFF1A${result.operationId}\uFF0C\u53EF\u5728\u8D44\u6599\u5E93\u91CD\u8BD5`);
-    return result;
+    const preview = await libraryRequest("LIBRARY_PREPARE_DELETE", selection);
+    requireSuccess(preview);
+    const targets = preview.targets;
+    const skipped = preview.skipped;
+    if (!targets.length) throw new Error(skipped[0]?.reason || "\u6CA1\u6709\u53EF\u5220\u9664\u7684\u8D44\u6599");
+    const transcripts = targets.filter((t) => t.kind === "transcript").length;
+    const notes = targets.filter((t) => t.kind === "note");
+    const noteEntries = notes.reduce((sum, t) => sum + (t.kind === "note" ? t.entryIds.length : 0), 0);
+    const previousFocus = document.activeElement;
+    const dialog = document.createElement("dialog");
+    dialog.className = "library-delete-dialog";
+    dialog.setAttribute("aria-label", "\u786E\u8BA4\u5220\u9664\u8D44\u6599");
+    dialog.style.cssText = "max-width:min(440px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;padding:20px;border-radius:12px;border:1px solid var(--border-color,GrayText);background:var(--bg-secondary,Canvas);color:var(--text-main,CanvasText);margin:auto;line-height:1.7";
+    const heading = document.createElement("h2");
+    heading.textContent = "\u786E\u8BA4\u5220\u9664\u8D44\u6599";
+    heading.style.fontSize = "18px";
+    const summary = document.createElement("p");
+    summary.dataset.testid = "delete-impact";
+    summary.textContent = `\u5C06\u5220\u9664 ${transcripts} \u6761\u8F6C\u5199\u8BB0\u5F55\u3001${noteEntries} \u6761\u7B14\u8BB0\u5185\u5BB9\uFF0C\u540C\u65F6\u79FB\u9664 ${preview.favoriteCount} \u6761\u6536\u85CF\u3002\u72EC\u7ACB\u53E6\u5B58\u7684\u7B14\u8BB0\u4F1A\u4FDD\u7559\u3002\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002`;
+    const status = document.createElement("p");
+    status.setAttribute("role", "alert");
+    status.style.overflowWrap = "anywhere";
+    if (skipped.length) status.textContent = `${skipped.length} \u9879\u5DF2\u8DF3\u8FC7\uFF1A${skipped.map((s) => s.reason).join("\uFF1B")}`;
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;margin-top:14px";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "btn btn-secondary";
+    cancel.textContent = "\u53D6\u6D88";
+    cancel.dataset.action = "cancel-delete";
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "btn btn-danger";
+    confirm.textContent = "\u786E\u8BA4\u5220\u9664";
+    confirm.dataset.action = "confirm-delete";
+    actions.append(cancel, confirm);
+    dialog.append(heading, summary, status, actions);
+    document.body.append(dialog);
+    return new Promise((resolve) => {
+      let result = null;
+      let busy = false;
+      let stale = false;
+      dialog.addEventListener("cancel", (event) => {
+        if (busy) event.preventDefault();
+      });
+      dialog.addEventListener("close", () => {
+        dialog.remove();
+        previousFocus?.focus();
+        resolve(result);
+      }, { once: true });
+      cancel.addEventListener("click", () => dialog.close());
+      confirm.addEventListener("click", async () => {
+        busy = true;
+        confirm.disabled = true;
+        cancel.disabled = true;
+        status.textContent = "\u6B63\u5728\u5220\u9664\u2026";
+        try {
+          const response = await libraryRequest("LIBRARY_DELETE", { token: preview.token });
+          requireSuccess(response);
+          const deletion = response;
+          if (deletion.pending.length) {
+            status.textContent = `\u5DF2\u5B8C\u6210 ${deletion.completed.length} \u9879\uFF0C${deletion.pending.length} \u9879\u5C1A\u672A\u5B8C\u6210\uFF1A${deletion.pending.map((p) => p.error).join("\uFF1B")}\u3002\u53EF\u91CD\u8BD5\uFF0C\u6216\u7A0D\u540E\u5728\u641C\u7D22\u9875\u7684\u5B58\u50A8\u72B6\u6001\u4E2D\u5904\u7406\u3002`;
+          } else {
+            result = deletion;
+            dialog.close();
+            return;
+          }
+        } catch (error) {
+          stale = !!error && typeof error === "object" && "code" in error && error.code === "CONFIRMATION_STALE";
+          status.textContent = `\u5220\u9664\u672A\u5B8C\u6210\uFF1A${error instanceof Error ? error.message : String(error)}${stale ? "\u3002\u8BF7\u5173\u95ED\u540E\u91CD\u65B0\u9009\u62E9\uFF0C\u6838\u5BF9\u6700\u65B0\u5F71\u54CD\u6570\u91CF\u3002" : ""}`;
+        } finally {
+          busy = false;
+          confirm.disabled = stale;
+          cancel.disabled = false;
+        }
+        confirm.textContent = stale ? "\u8BF7\u91CD\u65B0\u9884\u89C8" : "\u91CD\u8BD5\u5220\u9664";
+        cancel.textContent = "\u7A0D\u540E\u5904\u7406";
+      });
+      dialog.showModal();
+      cancel.focus();
+    });
   }
 
   // src/ext/content/notes-store.ts
@@ -2435,6 +2630,7 @@
   var SUB_BOX_IDLE_MS = 6500;
   function createSubtitleView(deps) {
     const r = deps.refs;
+    const favorites = favoriteState();
     let subBoxAutoPosition = true;
     let subBoxCompact = false;
     let subIdleTimer = null;
@@ -2473,7 +2669,7 @@
         if (s !== "running" && s !== "starting") {
           markSubtitleActivity();
         }
-        const rowsSignature = subs.map((sub) => `${sub.id ?? ""}${sub.at ?? ""}${sub.videoTime ?? ""}${sub.target ?? ""}${sub.source ?? ""}${sub.kind ?? ""}`).join("");
+        const rowsSignature = `${session.transcriptId || ""}:${session.currentTranscriptSaveState?.status || session.saveState?.status || ""}:${session.isDemoMode}:` + subs.map((sub) => `${sub.id ?? ""}${sub.at ?? ""}${sub.videoTime ?? ""}${sub.target ?? ""}${sub.source ?? ""}${sub.kind ?? ""}`).join("");
         const rowsChanged = rowsSignature !== lastRowsSignature;
         const wasAtBottom = r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 40;
         if (rowsChanged) {
@@ -2531,6 +2727,13 @@
             if (isFillerOnly(sub.target || sub.source || "")) {
               row.classList.add("filler");
             }
+            const ref = subtitleFavoriteRef({ ...session, saveState: session.currentTranscriptSaveState || session.saveState }, sub);
+            const favorite = createFavoriteButton(ref, (message) => {
+              favorite.title = message;
+              deps.notify?.(message);
+            }, favorites);
+            favorite.classList.add("sub-favorite");
+            row.appendChild(favorite);
             r.subRows.appendChild(row);
           });
           const lastRow = r.subRows.lastElementChild;
@@ -3362,6 +3565,7 @@
   // src/ext/content/notes.ts
   function createNotes(deps) {
     const r = deps.refs;
+    const favorites = favoriteState();
     r.list.addEventListener("click", async (event) => {
       const target = event.target?.closest?.(".chat-time-ref");
       if (!target) return;
@@ -3584,6 +3788,9 @@
             deps.toast(`\u5220\u9664\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\uFF1A${String(error)}`, "err");
           }
         });
+        const favorite = createFavoriteButton(pending.has(`${active.id}:${entry.id}`) ? null : { kind: "note", noteId: active.id, entryId: entry.id }, (message) => deps.toast(message, "err"), favorites);
+        favorite.className = "library-favorite rtts-btn-ghost";
+        row.appendChild(favorite);
         row.appendChild(delBtn);
         item.appendChild(row);
         r.list.appendChild(item);
@@ -5672,6 +5879,7 @@ ${context}`;
       openSettings
     });
     const subtitleView = createSubtitleView({
+      notify: (message) => toast(message, "err"),
       refs: {
         recordBtn,
         recordLabelEl,

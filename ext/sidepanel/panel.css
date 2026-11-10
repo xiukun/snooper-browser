@@ -880,3 +880,33 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Local library: native controls, append-only groups and readable full text. */
+[hidden] { display: none !important; }
+.tab-bar { gap: 4px; }
+.tab-btn { min-width: 0; padding-inline: 6px; }
+.tab-btn svg { flex-shrink: 0; }
+.library-search-controls { position: sticky; top: 0; z-index: 2; background: var(--bg-primary); padding-block: 8px 12px; border-bottom: 1px solid var(--border-color); }
+.library-search-controls .field-label { margin-bottom: -6px; }
+.library-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+#library-status, #library-warning, #library-message, #library-usage { overflow-wrap: anywhere; }
+.library-warning { color: var(--warning); white-space: pre-wrap; }
+.library-group { margin-block: 18px; border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden; padding: 12px; background: var(--bg-card); }
+.library-group-heading { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }
+.library-group-heading h3 { font-size: 14px; min-width: 0; overflow-wrap: anywhere; }
+.library-group-heading .section-badge { flex-shrink: 0; }
+.library-provenance, .library-entry-meta { font-size: 11px; color: var(--text-muted); margin-block: 6px; overflow-wrap: anywhere; }
+.library-entry { min-width: 0; padding-block: 12px; border-top: 1px solid var(--border-color); overflow-wrap: anywhere; }
+.library-entry p { white-space: pre-wrap; margin-block: 6px; }
+.library-field-label { display: inline-block; color: var(--text-muted); font-size: 11px; padding-right: 8px; }
+.library-entry mark { color: var(--text-main); background: var(--accent-glow); border-bottom: 1px solid var(--accent-primary); }
+.library-entry .library-actions { margin-top: 10px; }
+.library-favorite[aria-pressed="true"] { color: var(--warning); border-color: var(--warning); }
+.library-context { margin-top: 10px; padding: 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-primary); }
+.library-neighbor { color: var(--text-muted); }
+.library-storage { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-color); }
+.library-pending-delete { padding-block: 8px; color: var(--warning); }
+.library-delete-dialog::backdrop { background: var(--bg-card); backdrop-filter: blur(4px); }
+.note-entry-detail, .history-item-detail { min-width: 0; width: 100%; }
+button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 3px; }
+@media (max-width: 420px) { .tab-btn { font-size: 11px; } .tab-btn svg { display: none; } .library-group { padding: 10px; } }

@@ -533,6 +533,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
 
   /* ===== Subtitle overlay ===== */
   const subtitleView = createSubtitleView({
+    notify: message => toast(message, 'err'),
     refs: {
       recordBtn,
       recordLabelEl,

@@ -39,6 +39,7 @@ assert.equal(session.saveState.status, 'error')
 assert.equal(session.state, 'idle')
 assert.equal(stopCount, 1)
 assert.equal(mod.safeSession(session).pendingTranscriptCount, 180)
+assert.equal(mod.safeSession(session).currentTranscriptSaveState.status, 'error')
 assert.ok(messages.some(m => m.session?.saveState.status === 'error'))
 assert.equal(JSON.parse(snapshot[mod.SESSION_RECOVERY_KEY])['1'].pendingTranscriptLines.length, 180)
 // Explicit STOP increments generation before a failed tail is saved.
@@ -58,6 +59,11 @@ assert.equal(lines[0].id, 'line-0')
 assert.equal(lines.at(-1).id, 'line-179')
 assert.equal(recovered.saveState.status, 'saved')
 assert.equal(recovered.pendingTranscriptLines.length, 0)
+assert.equal(restarted.safeSession(recovered).currentTranscriptSaveState.status, 'saved')
+recovered.retiringSources = [{ ...recovered, retiringSources: [], saveState: { status: 'error', message: 'old source pending' } }]
+assert.equal(restarted.safeSession(recovered).saveState.status, 'error')
+assert.equal(restarted.safeSession(recovered).currentTranscriptSaveState.status, 'saved')
+recovered.retiringSources = []
 // Closing a tab during a storage failure must retain its rescue draft.
 restarted.registerLifecycleListeners()
 const closing = restarted.createSession(2)

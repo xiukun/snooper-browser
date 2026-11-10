@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>snooper-browser 笔记与集成</title>
+  <title>snooper-browser 本地资料库</title>
   <link rel="stylesheet" href="panel.css">
 </head>
 <body>
@@ -18,16 +18,17 @@
         </div>
         <div class="brand-info">
           <h1 class="brand-title">snooper</h1>
-          <p class="brand-subtitle">笔记历史 · Obsidian 集成</p>
+          <p class="brand-subtitle">本地检索 · 笔记与转写</p>
         </div>
       </div>
       <div id="noticeBanner" class="notice-banner" role="status" aria-live="polite" hidden></div>
     </header>
 
     <div class="tab-bar" role="tablist" aria-label="侧栏分区">
-      <button id="tab-notes" type="button" class="tab-btn active" data-tab="notes" role="tab" aria-selected="true">
+      <button id="tab-search" type="button" class="tab-btn active" data-tab="search" role="tab" aria-selected="true">搜索</button>
+      <button id="tab-notes" type="button" class="tab-btn" data-tab="notes" role="tab" aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-        笔记历史
+        笔记
       </button>
       <button id="tab-obsidian" type="button" class="tab-btn" data-tab="obsidian" role="tab" aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
@@ -40,8 +41,34 @@
     </div>
 
     <main class="panel-main">
+      <div id="panel-search" class="tab-content active" role="tabpanel" aria-labelledby="tab-search">
+        <section class="config-section library-search-controls">
+          <h2 class="section-title">搜索已保存的课程内容</h2>
+          <label for="library-query" class="field-label">关键词</label>
+          <input id="library-query" class="field-input" type="search" placeholder="搜索手机、电脑或原文片段" autocomplete="off">
+          <label class="field-checkbox-label"><input id="library-favorites-only" type="checkbox"> 只看收藏</label>
+          <p class="section-desc">默认搜索全部已保存的字幕原文、译文与笔记。关键词按包含匹配，仅在本机处理。</p>
+          <p id="library-status" role="status" aria-live="polite">正在读取资料…</p>
+          <p id="library-warning" class="library-warning" role="status"></p>
+          <div class="library-actions">
+            <button id="library-cancel" class="btn btn-sm btn-secondary" type="button" hidden>停止搜索</button>
+            <button id="library-retry" class="btn btn-sm btn-secondary" type="button" hidden>重试读取</button>
+            <button id="library-restart" class="btn btn-sm btn-secondary" type="button" hidden>刷新结果</button>
+          </div>
+          <p id="library-message" role="status" aria-live="polite"></p>
+        </section>
+        <div id="library-results" aria-label="搜索结果"></div>
+        <section class="config-section library-storage">
+          <div class="section-header"><h2 class="section-title">本地存储与清理</h2><button id="library-refresh-usage" class="btn btn-sm btn-secondary" type="button">刷新状态</button></div>
+          <div id="library-usage" role="status"></div>
+          <div class="library-actions">
+            <button id="library-manage-history" class="btn btn-sm btn-secondary" type="button">转写导出与清理</button>
+            <button id="library-manage-notes" class="btn btn-sm btn-secondary" type="button">笔记导出与清理</button>
+          </div>
+        </section>
+      </div>
       <!-- Tab: Notes -->
-      <div id="panel-notes" class="tab-content active">
+      <div id="panel-notes" class="tab-content">
         <section class="config-section">
           <div class="config-callout">
             <div class="callout-head">
@@ -138,7 +165,7 @@
             </h2>
             <span class="section-badge" id="history-count">0</span>
           </div>
-           <p class="section-desc">开始转写后实时保存，停止、关闭页面或浏览器崩溃都不会丢失已记录的内容。展开记录可查看完整原文、译文与时间戳，复制和导出按需读取全文。</p>
+           <p class="section-desc">字幕成功写入后保存在本机。写入失败时请重试或导出可用内容；未保存草稿不保证在浏览器退出后保留。展开记录可查看全文、收藏具体条目，或导出后手动清理。</p>
           <div id="history-toolbar" class="history-toolbar">
             <label class="history-select-all">
               <input id="history-select-all" type="checkbox">
@@ -153,7 +180,7 @@
       </div>
     </main>
 
-    <footer class="panel-footer">
+    <footer class="panel-footer" hidden>
       <div class="footer-actions">
         <button id="saveConfigBtn" type="button" class="btn btn-primary btn-save">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>

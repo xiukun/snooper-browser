@@ -1,3 +1,4 @@
+import { installDOM, until } from './library-dom-fixture.mjs'
 import assert from 'node:assert/strict'
 import { harness, modules, noteEntry, recording } from './library-test-harness.mjs'
 const h=harness([...modules,['router','src/ext/background/router/index.ts'],['client','src/ext/content/library-client.ts']])
@@ -25,13 +26,21 @@ await a.notes.addNoteEntry({noteId:'n',entry:noteEntry('e','电脑')})
 await a.library.setFavorite({kind:'note',noteId:'n',entryId:'e'},true)
 for(const [type,fields] of [['DELETE_HISTORY',{id}],['DELETE_ALL_HISTORY',{}],['NOTES_DELETE_ENTRY',{noteId:'n',entryId:'e'}],['NOTES_DELETE_DOCUMENTS',{ids:['n']}]]) assert.equal((await rpc(type,fields)).code,'CONFIRMATION_REQUIRED')
 assert.equal((await a.transcripts.readTranscript(id)).length,1)
+const dom=installDOM()
+assert.deepEqual(await rpc('LIBRARY_FAVORITES'), {ok:true,refs:[{kind:'note',noteId:'n',entryId:'e'}]})
+assert.equal((await rpc('LIBRARY_FAVORITES',{}, {url:'https://untrusted.example'})).ok,false)
 let prompt=''
-globalThis.confirm=text=>{prompt=text;return false}
-assert.equal(await a.client.confirmLibraryDelete({noteIds:['n']}),null)
+const cancelled = a.client.confirmLibraryDelete({noteIds:['n']})
+await until(()=>dom.dialog())
+prompt=dom.dialog().textContent
+await dom.action(dom.dialog(),'cancel-delete').click()
+assert.equal(await cancelled,null)
 assert.ok(prompt.includes('1 条收藏'))
 assert.equal((await a.notes.listNotes()).length,1)
-globalThis.confirm=()=>true
-assert.equal((await a.client.confirmLibraryDelete({noteIds:['n']})).pending.length,0)
+const confirmed=a.client.confirmLibraryDelete({noteIds:['n']})
+await until(()=>dom.dialog())
+await dom.action(dom.dialog(),'confirm-delete').click()
+assert.equal((await confirmed).pending.length,0)
 assert.equal((await a.notes.listNotes()).length,0)
 assert.equal((await rpc('LIBRARY_OPEN_SOURCE',{recordId:id,tabId:-1})).code,'INVALID_INPUT','invalid tab IDs are input errors')
 let opened=[];chrome.tabs.create=async input=>{opened.push(input.url);return input}

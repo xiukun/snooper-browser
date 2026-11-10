@@ -64,6 +64,17 @@ jobs:
           npm run test:image-material
           npm run test:ext-provider-env
           npm run test:ext-globals
+          npm run test:notes-store
+          npm run test:session-persistence
+          npm run test:transcript-export
+          npm run test:source-identity
+          npm run test:source-transition
+          npm run test:source-recovery
+          npm run test:knowledge-search
+          npm run test:library-store
+          npm run test:library-search
+          npm run test:library-router
+          npm run test:library-ui
           node scripts/test-agent.mjs
           node scripts/test-languages.mjs
           node scripts/test-transcription-request.mjs

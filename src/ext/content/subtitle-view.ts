@@ -1,4 +1,5 @@
-import type { SourceRef } from '../../lib/knowledge-types'
+import { createFavoriteButton, favoriteState, subtitleFavoriteRef } from './favorite-control'
+import type { SaveState, SourceRef } from '../../lib/knowledge-types'
 /**
  * Subtitle overlay: history rows, streaming row, auto-idle collapse, sizing,
  * positioning and drag/resize handles.
@@ -37,6 +38,9 @@ export interface SubtitleViewRefs {
 export interface SubtitleViewSession {
   sourceRef?: SourceRef
   chatSourceRef?: SourceRef
+  transcriptId?: string | null
+  saveState?: SaveState
+  currentTranscriptSaveState?: SaveState
   state: string
   isDemoMode: boolean
   subtitles: Array<{ kind?: 'screen'; sourceRef?: SourceRef; target?: string; source?: string; id?: string; at?: number; videoTime?: number | null }>
@@ -47,6 +51,7 @@ export interface SubtitleViewSession {
 
 export interface SubtitleViewDeps {
   refs: SubtitleViewRefs
+  notify?: (message: string) => void
   getSession: () => SubtitleViewSession
   isUiHidden: () => boolean
   applyUiHidden: () => void
@@ -57,6 +62,7 @@ export interface SubtitleViewDeps {
 
 export function createSubtitleView(deps: SubtitleViewDeps) {
   const r = deps.refs
+  const favorites = favoriteState()
   let subBoxAutoPosition = true
   let subBoxCompact = false
   let subIdleTimer: number | null = null
@@ -130,7 +136,7 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
       // ADR-041: a full rebuild on every session update was the visible
       // jitter — a long transcript was recreated just because the audio
       // silence flag flipped. Rebuild only when the rendered content changed.
-      const rowsSignature = subs
+      const rowsSignature = `${session.transcriptId || ''}:${session.currentTranscriptSaveState?.status || session.saveState?.status || ''}:${session.isDemoMode}:` + subs
         .map((sub) => `${sub.id ?? ''}\u0001${sub.at ?? ''}\u0001${sub.videoTime ?? ''}\u0001${sub.target ?? ''}\u0001${sub.source ?? ''}\u0001${(sub as { kind?: string }).kind ?? ''}`)
         .join('\u0002')
       const rowsChanged = rowsSignature !== lastRowsSignature
@@ -205,6 +211,10 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
             row.classList.add('filler')
           }
 
+          const ref = subtitleFavoriteRef({ ...session, saveState: session.currentTranscriptSaveState || session.saveState }, sub)
+          const favorite = createFavoriteButton(ref, message => { favorite.title = message; deps.notify?.(message) }, favorites)
+          favorite.classList.add('sub-favorite')
+          row.appendChild(favorite)
           r.subRows.appendChild(row)
         })
 

@@ -103,6 +103,8 @@ export interface SafeSession {
   screenCaptionError: string
   saveState: SaveState
   pendingTranscriptCount: number
+  /** Current displayed source only; aggregate saveState also includes retired sources. */
+  currentTranscriptSaveState: SaveState
 }
 
 export const sessions = new Map<number, SessionState>()
@@ -190,6 +192,7 @@ export function safeSession(s: SessionState): SafeSession {
     screenCaption: s.screenCaption,
     screenCaptionError: s.screenCaptionError,
     saveState: allSourceSessions(s).find(epoch => epoch.saveState?.status === 'error')?.saveState || s.saveState || { status: 'saved' },
+    currentTranscriptSaveState: s.saveState || { status: 'pending' },
     pendingTranscriptCount: allSourceSessions(s).reduce((sum, epoch) => sum + (epoch.pendingTranscriptLines?.length || 0), 0),
   }
 }

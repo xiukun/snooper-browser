@@ -1,3 +1,4 @@
+import { readVideoContext, type VideoContext } from './video-context'
 /**
  * Screenshot preview modal: show a captured frame, download it, save it as a
  * note entry, or cite it in the chat composer.
@@ -26,9 +27,11 @@ export interface ShotDeps {
 export function createShotPreview(deps: ShotDeps) {
   const r = deps.refs
   let previewUrl = ''
+  let origin: VideoContext | null = null
 
-  function open(dataUrl: string, saved: boolean, insertable = false) {
+  function open(dataUrl: string, saved: boolean, insertable = false, source?: VideoContext) {
     previewUrl = dataUrl
+    origin = source || readVideoContext()
     r.image.src = dataUrl
     r.save.disabled = saved
     r.save.textContent = saved ? '已存入笔记' : '存入笔记'
@@ -60,6 +63,9 @@ export function createShotPreview(deps: ShotDeps) {
     const saved = await deps.addNoteEntry({
       id: `screenshot_${Date.now()}`,
       type: 'screenshot',
+      sourceRef: origin?.sourceRef,
+      videoUrl: origin?.videoUrl,
+      videoTime: origin?.videoTime,
       at: Date.now(),
       imageUrl: previewUrl,
       text: '视频截图',

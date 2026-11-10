@@ -108,10 +108,10 @@ export function getSubtitleMarkdown(
         ? formatVideoTime(sub.videoTime)
         : ''
       // ADR-035: deep-link the timestamp when the site supports ?t= seeks.
-      const link = typeof sub.videoTime === 'number' && Number.isFinite(sub.videoTime)
-        ? videoDeepLink(session.pageUrl, sub.videoTime)
+      const link = sub.sourceRef?.confidence === 'exact' && typeof sub.videoTime === 'number' && Number.isFinite(sub.videoTime)
+        ? videoDeepLink(sub.sourceRef.url, sub.videoTime)
         : null
-      const cell = link ? `[\`${video}\`](${link})` : video
+      const cell = link ? `[\`${video}\`](${link})` : sub.sourceRef?.url ? `${video} [来源](${sub.sourceRef.url})` : video
       lines.push(`| ${cell} | ${wall} | ${t} | ${s} |`)
     } else {
       lines.push(`| ${wall} | ${t} | ${s} |`)
@@ -136,6 +136,10 @@ export function getSubtitleMarkdown(
     lines.push('', '---', '', `## 笔记：${note.title || '未命名笔记'}`, '')
     note.entries.forEach((entry) => {
       const label = entry.text || entry.target || '笔记'
+      if (entry.sourceRef?.url) {
+        const link = entry.sourceRef.confidence === 'exact' && typeof entry.videoTime === 'number' ? videoDeepLink(entry.sourceRef.url, entry.videoTime) : null
+        lines.push(`[${link ? '视频锚点' : '来源'}](${link || entry.sourceRef.url})`, '')
+      }
       const isVisual = entry.type === 'image' || entry.type === 'screenshot' || entry.type === 'svg'
       if (isVisual) {
         const uploaded = assetNames?.get(`note:${note.id}:${entry.id}`)

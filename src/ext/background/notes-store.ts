@@ -1,3 +1,4 @@
+import { legacySourceRef } from '../../lib/video-key'
 /** Single writer for notes. Callers submit entry operations, never snapshots. */
 import type { NoteDocument, NoteEntry } from '../../lib/types'
 
@@ -39,6 +40,9 @@ export interface NotesListResult {
   /** True only when the supplied legacy document/entry bodies are present. */
   legacyAcknowledged: boolean
 }
+function withProvenance(notes: NoteDocument[]): NoteDocument[] {
+  return notes.map(note => ({ ...note, entries: note.entries.map(entry => ({ ...entry, sourceRef: entry.sourceRef || legacySourceRef(entry.videoUrl || '', note.title, note.id) })) }))
+}
 function includesLegacySnapshot(notes: NoteDocument[], legacy: unknown): boolean {
   if (!Array.isArray(legacy) || legacy.length === 0 || validDocuments(legacy).length !== legacy.length) return false
   return (legacy as NoteDocument[]).every(old => {
@@ -55,7 +59,7 @@ function includesLegacySnapshot(notes: NoteDocument[], legacy: unknown): boolean
 export function listNotesWithMigration(legacy?: NoteDocument[]): Promise<NotesListResult> {
   return serial(async () => {
     const notes = await read(legacy)
-    return { notes, legacyAcknowledged: includesLegacySnapshot(notes, legacy) }
+    return { notes: withProvenance(notes), legacyAcknowledged: includesLegacySnapshot(notes, legacy) }
   })
 }
 /** Always returns authoritative saved data; retained page mirrors stay separate. */
@@ -85,11 +89,11 @@ export function addNoteEntry(input: AddNoteEntryInput): Promise<NoteDocument[]> 
       note = { id: input.noteId, title: input.title || '笔记', createdAt: input.createdAt ?? now, updatedAt: now, entries: [], sessionInfo: input.sessionInfo }
       notes.push(note)
     }
-    if (note.entries.some(e => e.id === input.entry.id)) return notes
+    if (note.entries.some(e => e.id === input.entry.id)) return withProvenance(notes)
     note.entries.push(structuredClone(input.entry))
     note.updatedAt = Date.now()
     await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true })
-    return notes
+    return withProvenance(notes)
   })
 }
 export function deleteNoteEntry(noteId: string, entryId: string): Promise<NoteDocument[]> {
@@ -101,7 +105,7 @@ export function deleteNoteEntry(noteId: string, entryId: string): Promise<NoteDo
       note.updatedAt = Date.now()
     }
     await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true })
-    return notes
+    return withProvenance(notes)
   })
 }
 export function deleteNoteDocuments(ids: string[]): Promise<NoteDocument[]> {
@@ -110,6 +114,6 @@ export function deleteNoteDocuments(ids: string[]): Promise<NoteDocument[]> {
     const notes = (await read()).filter(n => !ids.includes(n.id))
     // Keep an empty authoritative array plus the migration marker.
     await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true })
-    return notes
+    return withProvenance(notes)
   })
 }

@@ -48,6 +48,11 @@ export interface StreamingSubtitle {
 }
 
 export interface SessionState {
+  sourceEpoch?: string
+  sourceRef?: SourceRef
+  sourceIdentity?: string
+  sourceDrained?: boolean
+  retiringSources?: SessionState[]
   tabId: number
   state: 'idle' | 'starting' | 'running' | 'stopping' | 'error'
   sourceLang: string
@@ -65,6 +70,7 @@ export interface SessionState {
   streamId: string
   pendingAskRequestId: string | null
   /** Active companion session for this tab's video (ADR-030). */
+  chatSourceRef?: SourceRef
   agentSessionId: string | null
   /** Full transcript record for this capture (ADR-031). */
   transcriptId: string | null
@@ -81,11 +87,14 @@ export interface SessionState {
 }
 
 export interface SafeSession {
+  sourceEpoch?: string
+  sourceRef?: SourceRef
   state: SessionState['state']
   sourceLang: string
   targetLang: string
   subtitles: SubtitleEntry[]
   messages: MessageEntry[]
+  chatSourceRef?: SourceRef
   agentSessionId: string | null
   transcriptId: string | null
   streamingSubtitle: StreamingSubtitle | null
@@ -102,6 +111,8 @@ export const sessions = new Map<number, SessionState>()
 // barrier, a tab can ask for GET_SESSION while recoverSessions() is still
 // hydrating and temporarily receive a fresh idle session.
 let recoveryReady: Promise<void> = Promise.resolve()
+
+export function waitForRecovery(): Promise<void> { return recoveryReady }
 
 export function setRecoveryReady(promise: Promise<void>): void {
   recoveryReady = promise
@@ -164,19 +175,22 @@ export async function reconcileSessionState(tabId: number): Promise<SessionState
 
 export function safeSession(s: SessionState): SafeSession {
   return {
+    sourceEpoch: s.sourceEpoch,
+    sourceRef: s.sourceRef,
     state: s.state,
     sourceLang: s.sourceLang,
     targetLang: s.targetLang,
     subtitles: s.subtitles,
     messages: s.messages,
+    chatSourceRef: s.chatSourceRef,
     agentSessionId: s.agentSessionId ?? null,
     transcriptId: s.transcriptId ?? null,
     streamingSubtitle: s.streamingSubtitle,
     audioSilent: s.audioSilent,
     screenCaption: s.screenCaption,
     screenCaptionError: s.screenCaptionError,
-    saveState: s.saveState || { status: 'saved' },
-    pendingTranscriptCount: s.pendingTranscriptLines?.length || 0,
+    saveState: allSourceSessions(s).find(epoch => epoch.saveState?.status === 'error')?.saveState || s.saveState || { status: 'saved' },
+    pendingTranscriptCount: allSourceSessions(s).reduce((sum, epoch) => sum + (epoch.pendingTranscriptLines?.length || 0), 0),
   }
 }
 
@@ -232,6 +246,7 @@ export function pushStreamingUpdate(tabId: number): void {
 // Streaming updates fire often; keep the recovery snapshot fresh without
 // writing to chrome.storage.session on every delta.
 let lastPersistAt = 0
+let snapshotWrite: Promise<void> = Promise.resolve()
 
 export function persistSessionsThrottled(): void {
   const now = Date.now()
@@ -242,9 +257,17 @@ export function persistSessionsThrottled(): void {
 
 // Periodically persist sessions for recovery
 export function persistSessions(): void {
+  void persistSessionsStrict().catch(() => {})
+}
+
+export function persistSessionsStrict(): Promise<void> {
   const obj: Record<string, any> = {}
   for (const [tabId, s] of sessions.entries()) {
     obj[String(tabId)] = {
+      sourceEpoch: s.sourceEpoch,
+      sourceRef: s.sourceRef,
+      sourceIdentity: s.sourceIdentity,
+      retiringSources: s.retiringSources?.map(epoch => ({ ...epoch, retiringSources: undefined, configSnapshot: null, streamId: '' })),
       tabId: s.tabId,
       state: s.state,
       sourceLang: s.sourceLang,
@@ -253,6 +276,7 @@ export function persistSessions(): void {
       stoppedGeneration: s.stoppedGeneration,
       subtitles: s.subtitles,
       messages: s.messages,
+      chatSourceRef: s.chatSourceRef,
       agentSessionId: s.agentSessionId ?? null,
       transcriptId: s.transcriptId ?? null,
       audioSilent: false,
@@ -260,23 +284,32 @@ export function persistSessions(): void {
       pendingTranscriptLines: s.pendingTranscriptLines,
     }
   }
-  try {
-    void chrome.storage.session.set({ [SESSION_RECOVERY_KEY]: JSON.stringify(obj) }).catch(() => {})
-  } catch {
-    // session storage may be full
-  }
+  const encoded = JSON.stringify(obj)
+  const write = snapshotWrite.catch(() => {}).then(() => chrome.storage.session.set({ [SESSION_RECOVERY_KEY]: encoded }))
+  snapshotWrite = write
+  return write
 }
 
 /** Capture stops with room for the offscreen pipeline's bounded tail. */
 export const MAX_UNSAVED_SESSION_LINES = 180
-const saveAttempts = new Map<number, Promise<void>>()
+const saveAttempts = new WeakMap<SessionState, Promise<void>>()
 export function markTranscriptSaveError(s: SessionState, error: unknown): void {
   s.saveState = { status: 'error', message: `有内容未保存：${error instanceof Error ? error.message : String(error)}。请重试或导出，勿关闭页面` }
   pushSession(s.tabId)
   persistSessions()
 }
-export function retrySessionTranscript(s: SessionState): Promise<void> {
-  const existing = saveAttempts.get(s.tabId)
+export function allSourceSessions(s: SessionState): SessionState[] { return [...(s.retiringSources || []), s] }
+
+export async function retrySessionTranscript(s: SessionState): Promise<void> {
+  for (const epoch of s.retiringSources || []) {
+    await retryOneTranscript(epoch)
+    if (epoch.sourceDrained) await finalizeSessionTranscript(epoch).catch(error => { markTranscriptSaveError(epoch, error); throw error })
+  }
+  await retryOneTranscript(s)
+}
+
+function retryOneTranscript(s: SessionState): Promise<void> {
+  const existing = saveAttempts.get(s)
   if (existing) return existing
   const run = (async () => {
     s.pendingTranscriptLines ||= []
@@ -294,8 +327,8 @@ export function retrySessionTranscript(s: SessionState): Promise<void> {
     pushSession(s.tabId)
     persistSessions()
   })().catch(error => { markTranscriptSaveError(s, error); throw error })
-  saveAttempts.set(s.tabId, run)
-  void run.finally(() => { if (saveAttempts.get(s.tabId) === run) saveAttempts.delete(s.tabId) }).catch(() => {})
+  saveAttempts.set(s, run)
+  void run.finally(() => { if (saveAttempts.get(s) === run) saveAttempts.delete(s) }).catch(() => {})
   return run
 }
 export function saveSessionSubtitle(s: SessionState, entry: SubtitleEntry): void {
@@ -304,18 +337,25 @@ export function saveSessionSubtitle(s: SessionState, entry: SubtitleEntry): void
   if (s.saveState?.status !== 'error') s.saveState = { status: 'pending' }
   // Stop accepting NEW capture at the boundary, while retaining the bounded
   // already-produced tail. Never evict the oldest failed line.
-  if (s.pendingTranscriptLines.length >= MAX_UNSAVED_SESSION_LINES && (s.state === 'running' || s.state === 'starting')) {
-    s.state = 'stopping'
-    s.stoppedGeneration = s.generation
-    markTranscriptSaveError(s, '未保存缓存已满，已停止新采集')
+  const owner = sessions.get(s.tabId) || s
+  if (allSourceSessions(owner).reduce((sum, epoch) => sum + epoch.pendingTranscriptLines.length, 0) >= MAX_UNSAVED_SESSION_LINES && (owner.state === 'running' || owner.state === 'starting')) {
+    owner.state = 'stopping'
+    owner.stoppedGeneration = owner.generation
+    markTranscriptSaveError(owner, '未保存缓存已满，已停止新采集')
     void sendToOffscreen({ type: 'STOP_CAPTURE', tabId: s.tabId, generation: s.generation, drain: true })
       .catch(error => markTranscriptSaveError(s, error))
-      .finally(() => { s.state = 'idle'; s.stoppedGeneration = undefined; pushSession(s.tabId); maybeCloseOffscreen() })
+      .finally(() => { owner.state = 'idle'; owner.stoppedGeneration = undefined; pushSession(s.tabId); maybeCloseOffscreen() })
   }
-  void retrySessionTranscript(s).catch(() => {})
+  void retryOneTranscript(s).catch(() => {})
 }
 export async function finishSessionTranscript(s: SessionState): Promise<boolean> {
   try {
+    for (const epoch of s.retiringSources || []) {
+      if (s.state === 'idle' || s.state === 'error' || epoch.sourceDrained) {
+        epoch.sourceDrained = true
+        await finishSessionTranscript(epoch)
+      }
+    }
     if (s.pendingTranscriptLines?.length) await retrySessionTranscript(s)
     const kept = await finalizeSessionTranscript(s)
     s.saveState = { status: 'saved' }

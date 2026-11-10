@@ -1,3 +1,6 @@
+import { sourceRefForUrl, legacySourceRef } from '../../../lib/video-key'
+import { bindInitialSource } from '../source-sessions'
+import { persistSessionsStrict } from '../session-store'
 /** Session lifecycle + Q&A + panel-opening handlers. */
 
 import { describeCaptureSuspects } from '../../capture-recovery'
@@ -33,6 +36,7 @@ import {
 } from '../offscreen'
 import {
   getOrCreateSession,
+  allSourceSessions,
   finishSessionTranscript,
   markTranscriptSaveError,
   retrySessionTranscript,
@@ -84,6 +88,8 @@ function videoKeyFromMessage(message: any): string | undefined {
 function showSessionInTab(tabId: number, session: AgentSession | null): void {
   const s = getOrCreateSession(tabId)
   s.agentSessionId = session?.id ?? null
+  const source = session ? sourceRefForUrl(session.videoUrl, session.videoTitle, session.id) : undefined
+  s.chatSourceRef = source && source.key === session?.videoKey ? source : session ? legacySourceRef(session.videoUrl, session.videoTitle, session.id) : undefined
   s.messages = session ? messagesFromTurns(session.turns) : []
   pushSession(tabId)
 }
@@ -130,7 +136,7 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     pushSession(tabId)
   }
 
-  if (s.saveState?.status === 'error' || s.pendingTranscriptLines?.length) {
+  if (allSourceSessions(s).some(epoch => epoch.saveState?.status === 'error' || epoch.pendingTranscriptLines?.length)) {
     try { await retrySessionTranscript(s); await finishSessionTranscript(s) }
     catch { return { ok: false, error: '上一场有内容未保存，请先重试或导出' } }
   }
@@ -198,7 +204,10 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     // lazy ensureTranscript path in offscreen-events retries later.
     try {
       const tab = await chrome.tabs.get(tabId).catch(() => null)
+      bindInitialSource(s, message.pageUrl || message.videoUrl || tab?.url || '', message.pageTitle || tab?.title || '')
       const record = await beginTranscript({
+        sourceEpoch: s.sourceEpoch,
+        sourceRef: s.sourceRef,
         tabId,
         generation,
         pageTitle: typeof message.pageTitle === 'string' && message.pageTitle
@@ -253,9 +262,13 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     s.streamId = streamId
     console.log('[RTTS] streamId obtained for tab', tabId)
 
+    await persistSessionsStrict()
+    if (!isCurrent()) return { ok: true, cancelled: true }
     // Send to offscreen for capture
     const started = await sendToOffscreen({
       type: 'START_CAPTURE',
+      sourceEpoch: s.sourceEpoch,
+      sourceRef: s.sourceRef,
       tabId,
       streamId,
       sourceLang: s.sourceLang,
@@ -509,6 +522,8 @@ export const sessionHandlers: MessageHandlerMap = {
       // The tab may still be showing an older session (another tab switched,
       // or this page just reloaded). Replace the projection before answering
       // so the UI and the replayed memory describe the same conversation.
+      const chatSource = sourceRefForUrl(session.videoUrl, session.videoTitle, session.id)
+      s.chatSourceRef = chatSource.key === session.videoKey ? chatSource : legacySourceRef(session.videoUrl, session.videoTitle, session.id)
       if (s.agentSessionId !== session.id) {
         s.agentSessionId = session.id
         s.messages = [
@@ -568,8 +583,10 @@ export const sessionHandlers: MessageHandlerMap = {
    */
   SUMMARIZE: (message, { tabId, sendResponse }) => {
     const s = getOrCreateSession(tabId)
-    const digest = buildSubtitleDigest(s.subtitles)
-    if (!digest.trim() || s.subtitles.length === 0) {
+    const evidence = structuredClone(s.subtitles)
+    const sourceRef = s.sourceRef || evidence[0]?.sourceRef || legacySourceRef('', '', s.transcriptId || 'summary')
+    const digest = buildSubtitleDigest(evidence)
+    if (!digest.trim() || evidence.length === 0) {
       sendResponse({ ok: false, error: '还没有可总结的字幕，先开启实时翻译' })
       return false
     }
@@ -581,7 +598,7 @@ export const sessionHandlers: MessageHandlerMap = {
         const parts = buildSummaryParts({
           digest,
           videoTitle: video.videoTitle,
-          subtitleCount: s.subtitles.length,
+          subtitleCount: evidence.length,
         })
         const summary = await askLLM({
           parts,
@@ -591,14 +608,14 @@ export const sessionHandlers: MessageHandlerMap = {
         })
         // Anchor for the note entry: the evidence window's latest position.
         let videoTime: number | null = null
-        for (let i = s.subtitles.length - 1; i >= 0; i -= 1) {
-          const t = s.subtitles[i]?.videoTime
+        for (let i = evidence.length - 1; i >= 0; i -= 1) {
+          const t = evidence[i]?.videoTime
           if (typeof t === 'number' && Number.isFinite(t)) {
             videoTime = t
             break
           }
         }
-        sendResponse({ ok: true, summary, videoTime, subtitleCount: s.subtitles.length })
+        sendResponse({ ok: true, summary, sourceRef, videoTime, subtitleCount: evidence.length })
       } catch (err: any) {
         sendResponse({ ok: false, error: err?.message || '生成纪要失败' })
       }

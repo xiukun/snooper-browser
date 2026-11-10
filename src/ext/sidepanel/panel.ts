@@ -1,3 +1,4 @@
+import type { SourceRef } from '../../lib/knowledge-types'
 import type { NoteDocument } from '../../lib/types'
 import { loadNotes, deleteNoteDocuments, hasRetainedLegacyNotes, exportRetainedLegacyNotes } from '../content/notes-store'
 /**
@@ -24,6 +25,7 @@ import { videoDeepLink } from '../../lib/deep-link'
   }
 
   interface HistorySubtitle {
+    sourceRef?: SourceRef
     at?: number
     endedAt?: number | null
     /** Video-timeline position in seconds (ADR-033). */
@@ -399,8 +401,8 @@ import { videoDeepLink } from '../../lib/deep-link'
           if (entry.target) lines.push(`**译文**：${entry.target}`)
           if (entry.source) lines.push(`**原文**：${entry.source}`)
           // ADR-035: deep-link the anchor when the entry carries one.
-          const link = typeof entry.videoTime === 'number' && Number.isFinite(entry.videoTime)
-            ? videoDeepLink(entry.videoUrl, entry.videoTime)
+          const link = entry.sourceRef?.confidence === 'exact' && typeof entry.videoTime === 'number' && Number.isFinite(entry.videoTime)
+            ? videoDeepLink(entry.sourceRef.url, entry.videoTime)
             : null
           if (link) lines.push(`**视频锚点**：[\`${formatVideoTime(entry.videoTime!)}\`](${link})`)
           lines.push('')
@@ -524,21 +526,12 @@ import { videoDeepLink } from '../../lib/deep-link'
   const seekFailureNotice = '页面里没有可定位的视频，或视频拒绝了跳转'
 
   /** ADR-034: forward a seek to the active tab's content script. */
-  async function seekVideoInPage(seconds: number): Promise<boolean> {
+  async function seekVideoInPage(subtitle: HistorySubtitle): Promise<'seeked' | 'opened' | false> {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-      if (!tab?.id) return false
-      const res: any = await sendToPageWithInjection(tab.id, { type: 'SEEK_VIDEO', seconds }, tab.url, {
-        sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
-        injectContentScript: injectContentScriptFresh,
-        // The content script answers `{ ok, seek }`; the generic envelope
-        // discards it, so pass the verdict through explicitly (ADR-036).
-        collectResponse: (raw: any) => raw?.seek?.ok === true,
-      })
-      return res?.responseOk === true
-    } catch {
-      return false
-    }
+      const result = await chrome.runtime.sendMessage({ target: 'background', type: 'OPEN_SOURCE', tabId: tab?.id, sourceRef: subtitle.sourceRef, videoTime: subtitle.videoTime })
+      return result?.ok ? result.action : false
+    } catch { return false }
   }
 
   function appendHistoryRows(
@@ -554,21 +547,21 @@ import { videoDeepLink } from '../../lib/deep-link'
       const time = document.createElement('time')
       const anchored = typeof subtitle.videoTime === 'number' && Number.isFinite(subtitle.videoTime)
       const wall = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : ''
-      time.textContent = anchored ? formatVideoTime(subtitle.videoTime!) : (wall || '--:--:--')
+      time.textContent = anchored ? formatVideoTime(subtitle.videoTime!) : subtitle.sourceRef?.url ? '打开来源' : (wall || '--:--:--')
       if (anchored && wall) time.title = `录制时间 ${wall}`
-      if (anchored) {
+      if (anchored || subtitle.sourceRef?.url) {
         // Same affordance as the in-page overlay (ADR-034): the chip seeks
         // through the page's content script, which owns the video element.
         time.classList.add('history-time-chip')
         time.setAttribute('role', 'button')
         time.tabIndex = 0
-        time.title = `点击跳转到视频 ${formatVideoTime(subtitle.videoTime!)}`
+        time.title = anchored && subtitle.sourceRef?.confidence === 'exact' ? `点击跳转到视频 ${formatVideoTime(subtitle.videoTime!)}` : '打开来源（时间或课节未核验）'
         const activate = async () => {
           time.classList.remove('seek-ok', 'seek-fail')
           void time.offsetWidth
-          const result = await seekVideoInPage(subtitle.videoTime!)
+          const result = await seekVideoInPage(subtitle)
           time.classList.add(result ? 'seek-ok' : 'seek-fail')
-          if (!result) showNotice(seekFailureNotice, true)
+          showNotice(result === 'seeked' ? '已定位' : result === 'opened' ? '已打开来源' : seekFailureNotice, !result)
         }
         time.addEventListener('click', activate)
         time.addEventListener('keydown', (event) => {
@@ -849,7 +842,7 @@ import { videoDeepLink } from '../../lib/deep-link'
         const video = hasTime ? formatVideoTime(subtitle.videoTime!) : ''
         // ADR-035: link the timestamp back to the record's own page when the
         // site supports ?t= seeks.
-        const link = hasTime ? videoDeepLink(item.url, subtitle.videoTime!) : null
+        const link = hasTime && subtitle.sourceRef?.confidence === 'exact' ? videoDeepLink(subtitle.sourceRef.url, subtitle.videoTime!) : null
         lines.push(`| ${link ? `[\`${video}\`](${link})` : video} | ${wall} | ${source} | ${target} |`)
       } else {
         lines.push(`| ${wall} | ${source} | ${target} |`)

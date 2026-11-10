@@ -17,17 +17,22 @@ import {
 /** Five minutes at 1 Hz. Segments are at most 4 s and queue depth is 3. */
 const MAX_SAMPLES = 300
 
-const timelines = new Map<number, VideoClockSample[]>()
+const timelines = new Map<string, VideoClockSample[]>()
 
 export function resetVideoClock(tabId: number): void {
-  timelines.delete(tabId)
+  for (const key of timelines.keys()) if (key.startsWith(`${tabId}:`)) timelines.delete(key)
+}
+
+export function resetSourceVideoClock(tabId: number, sourceEpoch: string): void {
+  timelines.delete(`${tabId}:${sourceEpoch}`)
 }
 
 /** Records are appended in wall-clock order; an equal timestamp replaces. */
-export function recordVideoClock(tabId: number, sample: VideoClockSample): void {
-  const list = timelines.get(tabId)
+export function recordVideoClock(tabId: number, sample: VideoClockSample, sourceEpoch = ''): void {
+  const key = `${tabId}:${sourceEpoch}`
+  const list = timelines.get(key)
   if (!list) {
-    timelines.set(tabId, [sample])
+    timelines.set(key, [sample])
     return
   }
   const last = list[list.length - 1]
@@ -38,8 +43,8 @@ export function recordVideoClock(tabId: number, sample: VideoClockSample): void 
 }
 
 /** Seconds into the page's video for a wall-clock instant, or null. */
-export function resolveVideoTimeAt(tabId: number, at: number): number | null {
-  const list = timelines.get(tabId)
+export function resolveVideoTimeAt(tabId: number, at: number, sourceEpoch = ''): number | null {
+  const list = timelines.get(`${tabId}:${sourceEpoch}`)
   if (!list || list.length === 0) return null
   return resolveFromSamples(list, at)
 }

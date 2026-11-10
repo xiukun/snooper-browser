@@ -13,6 +13,7 @@ declare namespace chrome {
     }
   }
   namespace tabs {
+    function create(properties: { url: string; active?: boolean }): Promise<any>
     function sendMessage(tabId: number, message: any): Promise<any>
     function get(tabId: number): Promise<any>
     function query(queryInfo: any): Promise<any[]>

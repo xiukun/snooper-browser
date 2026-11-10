@@ -1,6 +1,6 @@
 /** Transcript history read/delete handlers (ADR-031). */
 
-import { sessions, retrySessionTranscript, finishSessionTranscript } from '../session-store'
+import { sessions, allSourceSessions, retrySessionTranscript, finishSessionTranscript } from '../session-store'
 import {
   clearTranscripts,
   deleteTranscripts,
@@ -16,7 +16,7 @@ import type { MessageHandlerMap } from './types'
 export const historyHandlers: MessageHandlerMap = {
   GET_SAVE_FAILURES: (_message, { tabId, sendResponse }) => {
     if (tabId != null) { sendResponse({ ok: false, error: '请在侧栏查看全部保存状态' }); return false }
-    sendResponse({ ok: true, failures: [...sessions.values()].filter(s => s.saveState?.status === 'error').map(s => ({ tabId: s.tabId, transcriptId: s.transcriptId, pendingCount: s.pendingTranscriptLines?.length || 0, saveState: s.saveState })) })
+    sendResponse({ ok: true, failures: [...sessions.values()].flatMap(allSourceSessions).filter(s => s.saveState?.status === 'error').map(s => ({ tabId: s.tabId, transcriptId: s.transcriptId, pendingCount: s.pendingTranscriptLines?.length || 0, saveState: s.saveState })) })
     return false
   },
   /** Summaries only; subtitle bodies stay on disk until requested. */
@@ -59,17 +59,19 @@ export const historyHandlers: MessageHandlerMap = {
     const targetTab = tabId ?? Number(message.tabId)
     const s = sessions.get(targetTab)
     void (async () => {
-      const id = s?.transcriptId || await findLatestTranscriptIdForTab(targetTab)
-      const result = id ? await readAvailableTranscript(id) : { lines: [], complete: !s?.subtitles.length }
-      const lines = [...result.lines]
+      const owners = s ? allSourceSessions(s) : []
+      const ids = owners.flatMap(epoch => epoch.transcriptId ? [epoch.transcriptId] : [])
+      if (!ids.length) { const latest = await findLatestTranscriptIdForTab(targetTab); if (latest) ids.push(latest) }
+      const results = await Promise.all(ids.map(id => readAvailableTranscript(id)))
+      const lines = results.flatMap(result => result.lines)
       const seen = new Set(lines.map(l => l.id))
-      for (const line of s?.pendingTranscriptLines || []) {
+      for (const line of owners.flatMap(epoch => epoch.pendingTranscriptLines || [])) {
         if (!seen.has(line.id)) { lines.push(line); seen.add(line.id) }
       }
       lines.sort((a, b) => a.at - b.at)
-      sendResponse({ ok: true, subtitles: lines, complete: result.complete, error: result.error, saveState: s?.saveState })
+      sendResponse({ ok: true, subtitles: lines, complete: results.every(result => result.complete), error: results.find(result => result.error)?.error, saveState: s?.saveState })
     })().catch((err) => {
-      sendResponse({ ok: false, error: err.message || '无法读取完整转写', subtitles: s?.pendingTranscriptLines || [], complete: false })
+      sendResponse({ ok: false, error: err.message || '无法读取完整转写', subtitles: s ? allSourceSessions(s).flatMap(epoch => epoch.pendingTranscriptLines || []) : [], complete: false })
     })
     return true
   },

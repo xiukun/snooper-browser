@@ -26,7 +26,7 @@ import { createShotPreview } from './content/shot'
 import { createCitePicker } from './content/cite-picker'
 import { createAsk } from './content/ask'
 import { createCompanionSessions } from './content/history'
-import { readVideoContext } from './content/video-context'
+import { readVideoContext, type VideoContext } from './content/video-context'
 import { createVideoClock } from './content/video-clock'
 import { onAfterSeek, seekTo } from './content/video-seek'
 import { createToolsMenu } from './content/tools-menu'
@@ -940,8 +940,8 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     openDrawer,
     toast,
   });
-  function openShotPreview(dataUrl: string, saved: boolean, insertable = false) {
-    shotPreview.open(dataUrl, saved, insertable);
+  function openShotPreview(dataUrl: string, saved: boolean, insertable = false, source?: VideoContext) {
+    shotPreview.open(dataUrl, saved, insertable, source);
   }
   function closeShotPreview() {
     shotPreview.close();
@@ -1086,10 +1086,15 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
       return;
     }
 
+    if (msg && msg.type === 'GET_VIDEO_CONTEXT') {
+      sendResponse?.({ ok: true, ...readVideoContext() });
+      return;
+    }
+
     if (msg && msg.type === 'SEEK_VIDEO') {
       // ADR-034/036: side-panel rows seek through the page, which owns the
       // video. `seek` is the verdict; the outer `ok` only means "handled".
-      const result = seekTo(msg.seconds);
+      const result = seekTo(msg.seconds, msg.expectedSourceKey);
       sendResponse?.({ ok: true, seek: result });
       return;
     }

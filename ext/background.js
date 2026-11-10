@@ -261,6 +261,101 @@ async function forceResetOffscreenCapture() {
   return true;
 }
 
+// src/lib/video-key.ts
+var TRACKING_PARAMS = /* @__PURE__ */ new Set([
+  "t",
+  "si",
+  "feature",
+  "index",
+  "list",
+  "start_radio",
+  "spm_id_from",
+  "vd_source",
+  "share_source",
+  "share_medium",
+  "share_plat",
+  "share_session_id",
+  "share_tag",
+  "timestamp",
+  "unique_k",
+  "from",
+  "ref",
+  "ref_src",
+  "fbclid",
+  "gclid"
+]);
+function stripWww(host) {
+  return host.replace(/^www\./, "");
+}
+function youtubeId(url) {
+  const host = stripWww(url.hostname);
+  if (host === "youtu.be") {
+    const id = url.pathname.split("/").filter(Boolean)[0];
+    return id || null;
+  }
+  if (host !== "youtube.com" && !host.endsWith(".youtube.com")) return null;
+  const direct = url.searchParams.get("v");
+  if (direct) return direct;
+  const match = url.pathname.match(/^\/(?:shorts|embed|live)\/([^/?#]+)/);
+  return match?.[1] ?? null;
+}
+function bilibiliKey(url) {
+  const host = stripWww(url.hostname);
+  if (host !== "bilibili.com" && !host.endsWith(".bilibili.com")) return null;
+  const bv = url.pathname.match(/\/(BV[0-9A-Za-z]+)/);
+  if (bv?.[1]) return `bilibili:${bv[1]}`;
+  const av = url.pathname.match(/\/av(\d+)/i);
+  if (av?.[1]) return `bilibili:av${av[1]}`;
+  const episode = url.pathname.match(/^\/(bangumi|cheese)\/play\/(ep\d+)(?:\/|$)/);
+  if (episode) return `bilibili:${episode[1]}/play/${episode[2]}`;
+  return null;
+}
+function videoKeyForUrl(rawUrl) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return `page:${(rawUrl || "unknown").slice(0, 160)}`;
+  }
+  const yt = youtubeId(url);
+  if (yt) return `youtube:${yt}`;
+  const bili = bilibiliKey(url);
+  if (bili) {
+    const part = bilibiliPart(url);
+    if (part !== null) return `${bili}:p${part}`;
+    for (const key of [...url.searchParams.keys()]) if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) url.searchParams.delete(key);
+    url.searchParams.sort();
+    return `unknown:${bili}:${url.search}`;
+  }
+  const normalized = new URL(url.toString());
+  normalized.hash = "";
+  for (const key of [...normalized.searchParams.keys()]) {
+    if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) {
+      normalized.searchParams.delete(key);
+    }
+  }
+  return `page:${normalized.toString()}`;
+}
+function bilibiliPart(url) {
+  if (!url.searchParams.has("p")) return 1;
+  const parts = url.searchParams.getAll("p");
+  if (parts.length !== 1 || !/^[1-9]\d*$/.test(parts[0])) return null;
+  const n = Number(parts[0]);
+  return Number.isSafeInteger(n) ? n : null;
+}
+function sourceRefForUrl(rawUrl, title = "", scope = "page") {
+  let exact = false;
+  try {
+    const url = new URL(rawUrl);
+    exact = !!youtubeId(url) || !!bilibiliKey(url) && bilibiliPart(url) !== null;
+  } catch {
+  }
+  return { key: exact ? videoKeyForUrl(rawUrl) : `unknown:${scope}`, url: rawUrl, title, confidence: exact ? "exact" : "unknown" };
+}
+function legacySourceRef(url, title, scope) {
+  return { key: `legacy:${scope}`, url, title, confidence: url ? "legacy" : "unknown" };
+}
+
 // src/lib/subtitle-order.ts
 function startOf(item) {
   return typeof item.at === "number" && Number.isFinite(item.at) && item.at > 0 ? item.at : 0;
@@ -313,6 +408,8 @@ function normalizeRecord(raw) {
   const status = raw.status === "recording" ? "recording" : "completed";
   return {
     id: raw.id,
+    sourceEpoch: typeof raw.sourceEpoch === "string" ? raw.sourceEpoch : void 0,
+    sourceRef: raw.sourceRef || legacySourceRef(raw.url || "", raw.pageTitle || "", raw.id),
     tabId: toNumber(raw.tabId, -1),
     generation: toNumber(raw.generation, 0),
     pageTitle: typeof raw.pageTitle === "string" ? raw.pageTitle.slice(0, 300) : "",
@@ -342,6 +439,8 @@ function normalizeIndex(raw) {
 function toSummary(record) {
   return {
     id: record.id,
+    sourceEpoch: record.sourceEpoch,
+    sourceRef: record.sourceRef,
     pageTitle: record.pageTitle,
     url: record.url,
     startedAt: record.startedAt,
@@ -370,11 +469,11 @@ function chunkKey(id, index) {
 function chunkKeys(record) {
   return Array.from({ length: record.chunkCount }, (_, i) => chunkKey(record.id, i));
 }
-function normalizeChunk(raw, id, index) {
+function normalizeChunk(raw, id, index, sourceRef) {
   if (!Array.isArray(raw)) throw new Error(`\u8F6C\u5199\u6B63\u6587\u7F3A\u5757\uFF1A${id} / ${index}\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9`);
   return raw.flatMap((value, offset) => {
     const line = normalizeLine(value);
-    return line ? [{ ...line, id: line.id || `${id}:${index}:${offset}` }] : [];
+    return line ? [{ ...line, sourceRef: line.sourceRef || sourceRef || legacySourceRef("", "", id), id: line.id || `${id}:${index}:${offset}` }] : [];
   });
 }
 async function writeIndex(records) {
@@ -415,7 +514,7 @@ async function repair(record, records) {
   let lastAt = record.lastAt;
   for (let i = 0; i < keys.length; i++) {
     if (got[keys[i]] === void 0 && i >= record.chunkCount) break;
-    const lines = normalizeChunk(got[keys[i]], record.id, i);
+    const lines = normalizeChunk(got[keys[i]], record.id, i, record.sourceRef);
     if (!lines.length) break;
     count += lines.length;
     chunks++;
@@ -428,7 +527,7 @@ async function repair(record, records) {
 }
 async function readBody(record) {
   const got = await chrome.storage.local.get(chunkKeys(record));
-  return chunkKeys(record).flatMap((key, i) => normalizeChunk(got[key], record.id, i));
+  return chunkKeys(record).flatMap((key, i) => normalizeChunk(got[key], record.id, i, record.sourceRef));
 }
 async function flushNow(id) {
   const waiting = pending.get(id);
@@ -456,7 +555,7 @@ async function flushNow(id) {
     const offset = record.subtitleCount % TRANSCRIPT_CHUNK_SIZE;
     const key = chunkKey(id, chunkIndex);
     const got = offset ? await chrome.storage.local.get(key) : {};
-    const lines = offset ? normalizeChunk(got[key], id, chunkIndex).slice(0, offset) : [];
+    const lines = offset ? normalizeChunk(got[key], id, chunkIndex, record.sourceRef).slice(0, offset) : [];
     const savedLine = { ...line, id: line.id || `${id}:${chunkIndex}:${offset}` };
     await chrome.storage.local.set({ [key]: [...lines, savedLine] });
     const next = { ...record, subtitleCount: record.subtitleCount + 1, chunkCount: chunkIndex + 1, lastAt: Math.max(record.lastAt, line.at) };
@@ -501,9 +600,9 @@ async function finalizeNow(id) {
 function beginTranscript(input) {
   return serial(async () => {
     let records = await loadIndex();
-    const existing = records.find((r) => r.status === "recording" && r.tabId === input.tabId && r.generation === input.generation);
+    const existing = records.find((r) => r.status === "recording" && r.tabId === input.tabId && r.generation === input.generation && r.sourceEpoch === input.sourceEpoch);
     if (existing) return existing;
-    for (const stale of records.filter((r) => r.status === "recording" && r.tabId === input.tabId)) await finalizeNow(stale.id);
+    for (const stale of records.filter((r) => r.status === "recording" && r.tabId === input.tabId && r.generation !== input.generation)) await finalizeNow(stale.id);
     records = await loadIndex();
     const now = input.startedAt ?? Date.now();
     const record = normalizeRecord({ ...input, id: `tr_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`, startedAt: now, status: "recording" });
@@ -513,7 +612,7 @@ function beginTranscript(input) {
 }
 async function ensureTranscript(session, meta = {}) {
   if (session.transcriptId) return session.transcriptId;
-  const record = await beginTranscript({ ...session, ...meta });
+  const record = await beginTranscript({ ...session, pageTitle: session.sourceRef?.title, url: session.sourceRef?.url, ...meta });
   session.transcriptId = record.id;
   return record.id;
 }
@@ -559,7 +658,7 @@ function readTranscriptPage(id, chunkIndex) {
     if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= Math.max(1, record.chunkCount)) throw new Error("\u65E0\u6548\u7684\u8F6C\u5199\u5757\u7D22\u5F15");
     const key = chunkKey(id, chunkIndex);
     const got = record.chunkCount ? await chrome.storage.local.get(key) : {};
-    return { record, chunkIndex, lines: record.chunkCount ? normalizeChunk(got[key], id, chunkIndex) : [], nextChunkIndex: chunkIndex + 1 < record.chunkCount ? chunkIndex + 1 : null };
+    return { record, chunkIndex, lines: record.chunkCount ? normalizeChunk(got[key], id, chunkIndex, record.sourceRef) : [], nextChunkIndex: chunkIndex + 1 < record.chunkCount ? chunkIndex + 1 : null };
   });
 }
 function readTranscript(id) {
@@ -581,7 +680,7 @@ function readAvailableTranscript(id) {
           try {
             const key = chunkKey(id, i);
             const got = await chrome.storage.local.get(key);
-            lines.push(...normalizeChunk(got[key], id, i));
+            lines.push(...normalizeChunk(got[key], id, i, record.sourceRef));
           } catch (err) {
             error = String(err);
           }
@@ -637,6 +736,9 @@ var SESSION_RECOVERY_KEY = "snooper.extension.sessions.v1";
 var LIVE_SUBTITLE_WINDOW = 200;
 var sessions = /* @__PURE__ */ new Map();
 var recoveryReady = Promise.resolve();
+function waitForRecovery() {
+  return recoveryReady;
+}
 function setRecoveryReady(promise) {
   recoveryReady = promise;
 }
@@ -690,19 +792,22 @@ async function reconcileSessionState(tabId) {
 }
 function safeSession(s) {
   return {
+    sourceEpoch: s.sourceEpoch,
+    sourceRef: s.sourceRef,
     state: s.state,
     sourceLang: s.sourceLang,
     targetLang: s.targetLang,
     subtitles: s.subtitles,
     messages: s.messages,
+    chatSourceRef: s.chatSourceRef,
     agentSessionId: s.agentSessionId ?? null,
     transcriptId: s.transcriptId ?? null,
     streamingSubtitle: s.streamingSubtitle,
     audioSilent: s.audioSilent,
     screenCaption: s.screenCaption,
     screenCaptionError: s.screenCaptionError,
-    saveState: s.saveState || { status: "saved" },
-    pendingTranscriptCount: s.pendingTranscriptLines?.length || 0
+    saveState: allSourceSessions(s).find((epoch) => epoch.saveState?.status === "error")?.saveState || s.saveState || { status: "saved" },
+    pendingTranscriptCount: allSourceSessions(s).reduce((sum, epoch) => sum + (epoch.pendingTranscriptLines?.length || 0), 0)
   };
 }
 function hasActiveSession() {
@@ -737,6 +842,7 @@ function pushStreamingUpdate(tabId) {
   });
 }
 var lastPersistAt = 0;
+var snapshotWrite = Promise.resolve();
 function persistSessionsThrottled() {
   const now = Date.now();
   if (now - lastPersistAt < 3e3) return;
@@ -744,9 +850,17 @@ function persistSessionsThrottled() {
   persistSessions();
 }
 function persistSessions() {
+  void persistSessionsStrict().catch(() => {
+  });
+}
+function persistSessionsStrict() {
   const obj = {};
   for (const [tabId, s] of sessions.entries()) {
     obj[String(tabId)] = {
+      sourceEpoch: s.sourceEpoch,
+      sourceRef: s.sourceRef,
+      sourceIdentity: s.sourceIdentity,
+      retiringSources: s.retiringSources?.map((epoch) => ({ ...epoch, retiringSources: void 0, configSnapshot: null, streamId: "" })),
       tabId: s.tabId,
       state: s.state,
       sourceLang: s.sourceLang,
@@ -755,6 +869,7 @@ function persistSessions() {
       stoppedGeneration: s.stoppedGeneration,
       subtitles: s.subtitles,
       messages: s.messages,
+      chatSourceRef: s.chatSourceRef,
       agentSessionId: s.agentSessionId ?? null,
       transcriptId: s.transcriptId ?? null,
       audioSilent: false,
@@ -762,21 +877,34 @@ function persistSessions() {
       pendingTranscriptLines: s.pendingTranscriptLines
     };
   }
-  try {
-    void chrome.storage.session.set({ [SESSION_RECOVERY_KEY]: JSON.stringify(obj) }).catch(() => {
-    });
-  } catch {
-  }
+  const encoded = JSON.stringify(obj);
+  const write = snapshotWrite.catch(() => {
+  }).then(() => chrome.storage.session.set({ [SESSION_RECOVERY_KEY]: encoded }));
+  snapshotWrite = write;
+  return write;
 }
 var MAX_UNSAVED_SESSION_LINES = 180;
-var saveAttempts = /* @__PURE__ */ new Map();
+var saveAttempts = /* @__PURE__ */ new WeakMap();
 function markTranscriptSaveError(s, error) {
   s.saveState = { status: "error", message: `\u6709\u5185\u5BB9\u672A\u4FDD\u5B58\uFF1A${error instanceof Error ? error.message : String(error)}\u3002\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA\uFF0C\u52FF\u5173\u95ED\u9875\u9762` };
   pushSession(s.tabId);
   persistSessions();
 }
-function retrySessionTranscript(s) {
-  const existing = saveAttempts.get(s.tabId);
+function allSourceSessions(s) {
+  return [...s.retiringSources || [], s];
+}
+async function retrySessionTranscript(s) {
+  for (const epoch of s.retiringSources || []) {
+    await retryOneTranscript(epoch);
+    if (epoch.sourceDrained) await finalizeSessionTranscript(epoch).catch((error) => {
+      markTranscriptSaveError(epoch, error);
+      throw error;
+    });
+  }
+  await retryOneTranscript(s);
+}
+function retryOneTranscript(s) {
+  const existing = saveAttempts.get(s);
   if (existing) return existing;
   const run = (async () => {
     s.pendingTranscriptLines ||= [];
@@ -795,9 +923,9 @@ function retrySessionTranscript(s) {
     markTranscriptSaveError(s, error);
     throw error;
   });
-  saveAttempts.set(s.tabId, run);
+  saveAttempts.set(s, run);
   void run.finally(() => {
-    if (saveAttempts.get(s.tabId) === run) saveAttempts.delete(s.tabId);
+    if (saveAttempts.get(s) === run) saveAttempts.delete(s);
   }).catch(() => {
   });
   return run;
@@ -806,22 +934,29 @@ function saveSessionSubtitle(s, entry) {
   s.pendingTranscriptLines ||= [];
   if (!s.pendingTranscriptLines.some((line) => line.id === entry.id)) s.pendingTranscriptLines.push(entry);
   if (s.saveState?.status !== "error") s.saveState = { status: "pending" };
-  if (s.pendingTranscriptLines.length >= MAX_UNSAVED_SESSION_LINES && (s.state === "running" || s.state === "starting")) {
-    s.state = "stopping";
-    s.stoppedGeneration = s.generation;
-    markTranscriptSaveError(s, "\u672A\u4FDD\u5B58\u7F13\u5B58\u5DF2\u6EE1\uFF0C\u5DF2\u505C\u6B62\u65B0\u91C7\u96C6");
+  const owner = sessions.get(s.tabId) || s;
+  if (allSourceSessions(owner).reduce((sum, epoch) => sum + epoch.pendingTranscriptLines.length, 0) >= MAX_UNSAVED_SESSION_LINES && (owner.state === "running" || owner.state === "starting")) {
+    owner.state = "stopping";
+    owner.stoppedGeneration = owner.generation;
+    markTranscriptSaveError(owner, "\u672A\u4FDD\u5B58\u7F13\u5B58\u5DF2\u6EE1\uFF0C\u5DF2\u505C\u6B62\u65B0\u91C7\u96C6");
     void sendToOffscreen({ type: "STOP_CAPTURE", tabId: s.tabId, generation: s.generation, drain: true }).catch((error) => markTranscriptSaveError(s, error)).finally(() => {
-      s.state = "idle";
-      s.stoppedGeneration = void 0;
+      owner.state = "idle";
+      owner.stoppedGeneration = void 0;
       pushSession(s.tabId);
       maybeCloseOffscreen();
     });
   }
-  void retrySessionTranscript(s).catch(() => {
+  void retryOneTranscript(s).catch(() => {
   });
 }
 async function finishSessionTranscript(s) {
   try {
+    for (const epoch of s.retiringSources || []) {
+      if (s.state === "idle" || s.state === "error" || epoch.sourceDrained) {
+        epoch.sourceDrained = true;
+        await finishSessionTranscript(epoch);
+      }
+    }
     if (s.pendingTranscriptLines?.length) await retrySessionTranscript(s);
     const kept = await finalizeSessionTranscript(s);
     s.saveState = { status: "saved" };
@@ -916,12 +1051,16 @@ function formatVideoTime(seconds) {
 var MAX_SAMPLES = 300;
 var timelines = /* @__PURE__ */ new Map();
 function resetVideoClock(tabId) {
-  timelines.delete(tabId);
+  for (const key of timelines.keys()) if (key.startsWith(`${tabId}:`)) timelines.delete(key);
 }
-function recordVideoClock(tabId, sample) {
-  const list = timelines.get(tabId);
+function resetSourceVideoClock(tabId, sourceEpoch) {
+  timelines.delete(`${tabId}:${sourceEpoch}`);
+}
+function recordVideoClock(tabId, sample, sourceEpoch = "") {
+  const key = `${tabId}:${sourceEpoch}`;
+  const list = timelines.get(key);
   if (!list) {
-    timelines.set(tabId, [sample]);
+    timelines.set(key, [sample]);
     return;
   }
   const last = list[list.length - 1];
@@ -930,8 +1069,8 @@ function recordVideoClock(tabId, sample) {
   else list.push(sample);
   if (list.length > MAX_SAMPLES) list.splice(0, list.length - MAX_SAMPLES);
 }
-function resolveVideoTimeAt2(tabId, at) {
-  const list = timelines.get(tabId);
+function resolveVideoTimeAt2(tabId, at, sourceEpoch = "") {
+  const list = timelines.get(`${tabId}:${sourceEpoch}`);
   if (!list || list.length === 0) return null;
   return resolveVideoTimeAt(list, at);
 }
@@ -1035,35 +1174,135 @@ function registerLifecycleListeners() {
   });
 }
 
+// src/lib/keyed-task.ts
+function runKeyedTask(tasks, key, mode, task) {
+  const previous = tasks.get(key);
+  if (mode === "share" && previous) return previous;
+  const run = mode === "queue" && previous ? previous.catch(() => void 0).then(task) : task();
+  tasks.set(key, run);
+  const settle = () => {
+    if (tasks.get(key) === run) tasks.delete(key);
+  };
+  run.then(settle, settle);
+  return run;
+}
+
+// src/ext/background/source-sessions.ts
+var transitions = /* @__PURE__ */ new Map();
+function bindInitialSource(s, url, title) {
+  s.sourceEpoch = crypto.randomUUID();
+  s.sourceIdentity = videoKeyForUrl(url);
+  s.sourceRef = sourceRefForUrl(url, title, s.sourceEpoch);
+  s.retiringSources = [];
+}
+function findSourceSession(s, epoch) {
+  if (typeof epoch !== "string") return void 0;
+  return allSourceSessions(s).find((item) => item.sourceEpoch === epoch && !item.sourceDrained);
+}
+async function failSourceBinding(s) {
+  s.state = "error";
+  s.streamingSubtitle = null;
+  markTranscriptSaveError(s, "\u8BFE\u8282\u6765\u6E90\u65E0\u6CD5\u6838\u9A8C\uFF0C\u5DF2\u505C\u6B62\u91C7\u96C6\u3002\u8BF7\u91CD\u65B0\u5F00\u59CB\u5F55\u97F3");
+  await sendToOffscreen({ type: "STOP_CAPTURE", tabId: s.tabId, generation: s.generation }).catch(() => {
+  });
+}
+function transitionSource(tabId, source) {
+  return runKeyedTask(transitions, tabId, "queue", async () => {
+    const previous = sessions.get(tabId);
+    if (!previous || previous.state !== "running") return previous;
+    const identity = videoKeyForUrl(source.url);
+    if (previous.sourceIdentity === identity) return previous;
+    if (!previous.sourceEpoch || !previous.sourceRef) {
+      await failSourceBinding(previous);
+      throw new Error("\u7F3A\u5C11\u65E7\u8BFE\u8282\u7ED1\u5B9A\uFF0C\u8BF7\u91CD\u65B0\u5F00\u59CB\u5F55\u97F3");
+    }
+    const sourceEpoch = crypto.randomUUID();
+    const next = {
+      ...previous,
+      sourceEpoch,
+      sourceIdentity: identity,
+      sourceRef: sourceRefForUrl(source.url, source.title, sourceEpoch),
+      sourceDrained: false,
+      retiringSources: [...previous.retiringSources || [], previous],
+      transcriptId: null,
+      subtitles: [],
+      pendingTranscriptLines: [],
+      streamingSubtitle: null,
+      saveState: { status: "saved" },
+      lastScreenAt: 0,
+      messages: [],
+      agentSessionId: null,
+      chatSourceRef: void 0,
+      pendingAskRequestId: null
+    };
+    previous.pendingAskRequestId = null;
+    try {
+      const paused = await sendToOffscreen({ type: "PREPARE_CAPTURE_SOURCE", tabId, generation: previous.generation, sourceEpoch: previous.sourceEpoch });
+      if (!paused?.ok) throw new Error(paused?.error || "\u65E0\u6CD5\u6682\u505C\u8BFE\u8282\u8FB9\u754C\u91C7\u96C6");
+      await ensureTranscript(next);
+      if (sessions.get(tabId) !== previous || previous.state !== "running" || previous.generation !== next.generation) {
+        await finishSessionTranscript({ ...next, retiringSources: [] });
+        return sessions.get(tabId);
+      }
+      previous.retiringSources = [];
+      sessions.set(tabId, next);
+      await persistSessionsStrict();
+      const reply = await sendToOffscreen({ type: "SET_CAPTURE_SOURCE", tabId, generation: next.generation, previousSourceEpoch: previous.sourceEpoch, sourceEpoch, sourceRef: next.sourceRef });
+      if (!reply?.ok) throw new Error(reply?.error || "\u8BFE\u8282\u5207\u6362\u672A\u786E\u8BA4");
+      pushSession(tabId);
+      return next;
+    } catch (error) {
+      sessions.set(tabId, next);
+      markTranscriptSaveError(next, error);
+      await failSourceBinding(next);
+      throw error;
+    }
+  });
+}
+async function drainSource(s, sourceEpoch) {
+  const retired = (s.retiringSources || []).find((item) => item.sourceEpoch === sourceEpoch);
+  if (!retired) return;
+  retired.sourceDrained = true;
+  await finishSessionTranscript(retired);
+  if (retired.sourceEpoch) resetSourceVideoClock(s.tabId, retired.sourceEpoch);
+  retired.subtitles = [];
+  retired.messages = [];
+  retired.configSnapshot = null;
+  retired.streamId = "";
+  await persistSessionsStrict();
+  pushSession(s.tabId);
+}
+
 // src/ext/background/recovery.ts
-async function readLiveGenerations() {
-  if (!await hasOffscreenDocument()) return {};
+async function readLiveCapture() {
+  if (!await hasOffscreenDocument()) return { sessions: {} };
   try {
     const live = await chrome.runtime.sendMessage({
       target: "offscreen",
       type: "GET_CAPTURE_SESSIONS"
     });
     if (live?.ok && live.sessions && typeof live.sessions === "object") {
-      return live.sessions;
+      return live;
     }
   } catch {
   }
-  return {};
+  return { sessions: {} };
 }
 async function recoverSessions() {
   try {
-    const liveGenerations = await readLiveGenerations();
+    const live = await readLiveCapture();
+    const liveGenerations = live.sessions;
     const result = await chrome.storage.session.get(SESSION_RECOVERY_KEY);
     const recovered = result[SESSION_RECOVERY_KEY] ? JSON.parse(result[SESSION_RECOVERY_KEY]) : {};
     const recoveryGenerations = { ...liveGenerations };
     for (const [tab, stored] of Object.entries(recovered)) {
       const s = stored;
-      if (s.pendingTranscriptLines?.length) recoveryGenerations[tab] = s.stoppedGeneration ?? s.generation;
+      if (allSourceSessions(s).some((epoch) => epoch.pendingTranscriptLines?.length)) recoveryGenerations[tab] = s.stoppedGeneration ?? s.generation;
     }
     let recoveryError;
     const liveTranscripts = await recoverTranscripts(recoveryGenerations, Object.values(recovered).flatMap((stored) => {
       const s = stored;
-      return s.pendingTranscriptLines?.length && s.transcriptId ? [s.transcriptId] : [];
+      return allSourceSessions(s).flatMap((epoch) => epoch.pendingTranscriptLines?.length && epoch.transcriptId ? [epoch.transcriptId] : []);
     })).catch((error) => {
       recoveryError = error;
       return /* @__PURE__ */ new Map();
@@ -1078,7 +1317,7 @@ async function recoverSessions() {
         s.generation = liveGeneration;
         s.stoppedGeneration = void 0;
         s.streamId = "";
-        s.transcriptId = liveTranscriptId || s.transcriptId;
+        if (!s.sourceEpoch) s.transcriptId = liveTranscriptId || s.transcriptId;
       } else if (s.state === "running" || s.state === "starting" || s.state === "stopping") {
         s.state = "idle";
         s.stoppedGeneration = void 0;
@@ -1093,8 +1332,31 @@ async function recoverSessions() {
       s.saveState ||= { status: "saved" };
       sessions.set(tabId, s);
       if (recoveryError) markTranscriptSaveError(s, recoveryError);
-      else if (s.pendingTranscriptLines.length) markTranscriptSaveError(s, "\u4E0A\u6B21\u4FDD\u5B58\u4E2D\u65AD");
+      else if (allSourceSessions(s).some((epoch) => epoch.pendingTranscriptLines?.length)) markTranscriptSaveError(s, "\u4E0A\u6B21\u4FDD\u5B58\u4E2D\u65AD");
+      if (typeof liveGeneration === "number" && !s.sourceEpoch) await failSourceBinding(s);
+      if (typeof liveGeneration === "number" && s.sourceEpoch) {
+        const provenance = live.sources?.[tabIdStr];
+        let valid = provenance?.sourceEpoch === s.sourceEpoch && s.generation === liveGeneration;
+        for (const [epoch, binding] of Object.entries(provenance?.bindings || {})) {
+          const owner = allSourceSessions(s).find((item) => item.sourceEpoch === epoch);
+          const record = owner?.transcriptId ? await getTranscriptRecord(owner.transcriptId) : null;
+          if (!owner || !record || record.sourceEpoch !== epoch || record.generation !== liveGeneration || record.sourceRef?.key !== binding.sourceRef?.key || owner.sourceRef?.key !== binding.sourceRef?.key || (binding.pending > 0 || epoch === s.sourceEpoch) && record.status !== "recording") valid = false;
+        }
+        if (!provenance?.bindings?.[s.sourceEpoch]) valid = false;
+        if (!valid) await failSourceBinding(s);
+        else {
+          for (const epoch of s.retiringSources || []) {
+            if (epoch.sourceEpoch && provenance?.bindings?.[epoch.sourceEpoch]?.pending === 0) await drainSource(s, epoch.sourceEpoch).catch((error) => markTranscriptSaveError(epoch, error));
+          }
+        }
+      }
       pushSession(tabId);
+    }
+    for (const tab of Object.keys(liveGenerations)) {
+      if (sessions.has(Number(tab))) continue;
+      const orphan = createSession(Number(tab));
+      orphan.generation = liveGenerations[tab];
+      await failSourceBinding(orphan);
     }
   } catch (error) {
     console.warn("[RTTS] session recovery failed:", error);
@@ -1118,161 +1380,184 @@ function registerOffscreenEventRouter() {
     if (sender.url !== chrome.runtime.getURL(OFFSCREEN_PATH)) {
       return false;
     }
-    switch (message.type) {
-      case "CAPTURE_AUDIO_STATE": {
-        const s = sessions.get(message.tabId);
-        if (s && s.generation === message.generation) {
-          const next = !!message.silent;
-          if (s.audioSilent !== next) {
-            s.audioSilent = next;
-            pushSession(message.tabId);
-          }
-        }
-        sendResponse({ ok: true });
-        return false;
-      }
-      case "CAPTURE_KEEPALIVE": {
-        const s = sessions.get(message.tabId);
-        if (s && s.state === "starting" && s.generation === message.generation) {
-          s.state = "running";
+    void waitForRecovery().then(() => {
+      if (handleEvent(message, sendResponse) !== true) sendResponse({ ok: true });
+    }).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  });
+}
+function handleEvent(message, sendResponse) {
+  switch (message.type) {
+    case "CAPTURE_SOURCE_DRAINED": {
+      const s = sessions.get(message.tabId);
+      if (!s || s.generation !== message.generation && !isStoppingGeneration(s, message.generation)) return false;
+      void drainSource(s, message.sourceEpoch).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+    }
+    case "CAPTURE_AUDIO_STATE": {
+      const s = sessions.get(message.tabId);
+      if (s && s.generation === message.generation && (!s.sourceEpoch || s.sourceEpoch === message.sourceEpoch)) {
+        const next = !!message.silent;
+        if (s.audioSilent !== next) {
+          s.audioSilent = next;
           pushSession(message.tabId);
         }
-        sendResponse({ ok: true });
-        return false;
       }
-      case "CAPTURE_ENDED": {
-        const s = sessions.get(message.tabId);
-        if (s && s.generation === message.generation && (s.state === "running" || s.state === "starting")) {
-          s.state = "idle";
-          s.streamId = "";
-          s.configSnapshot = null;
-          s.streamingSubtitle = null;
-          s.audioSilent = false;
-          s.screenCaption = "off";
-          s.screenCaptionError = "";
-          if (s.transcriptId || s.subtitles.length > 0) {
-            void finishSessionTranscript(s).catch(() => {
-            });
-          }
-          pushSession(message.tabId);
-          maybeCloseOffscreen();
-        }
-        sendResponse({ ok: true });
-        return false;
-      }
-      case "CAPTURE_SUBTITLE_STREAMING": {
-        const s = sessions.get(message.tabId);
-        if (!s || s.generation !== message.generation) {
-          return false;
-        }
-        if (s.state !== "running" && s.state !== "starting") {
-          return false;
-        }
-        if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
-          return false;
-        }
-        if (!message.source && !message.partialTarget) {
-          if (!s.streamingSubtitle || s.streamingSubtitle.at === message.at) {
-            s.streamingSubtitle = null;
-          }
-        } else {
-          s.streamingSubtitle = {
-            at: message.at || Date.now(),
-            source: message.source || "",
-            partialTarget: message.partialTarget || "",
-            latency: message.latency || 0
-          };
-        }
-        pushStreamingUpdate(message.tabId);
-        return false;
-      }
-      case "CAPTURE_SUBTITLE": {
-        const s = sessions.get(message.tabId);
-        if (!s || s.generation !== message.generation && !isStoppingGeneration(s, message.generation)) {
-          return false;
-        }
-        if (s.state !== "running" && s.state !== "starting" && s.state !== "stopping") return false;
-        if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
-          return false;
-        }
-        const tail = s.generation !== message.generation;
-        const at = message.at || Date.now();
-        if (s.streamingSubtitle && s.streamingSubtitle.at === at) {
-          s.streamingSubtitle = null;
-        }
-        const entry = {
-          id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-          at,
-          endedAt: message.endedAt || null,
-          videoTime: resolveVideoTimeAt2(message.tabId, at),
-          source: message.source || "",
-          target: message.target || "",
-          latency: message.latency || 0
-        };
-        insertByStart(s.subtitles, entry);
-        if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
-          s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
-        }
-        saveSessionSubtitle(s, entry);
-        if (!tail) pushSession(message.tabId);
-        return false;
-      }
-      case "CAPTURE_SCREEN_SUBTITLE": {
-        const s = sessions.get(message.tabId);
-        if (!s || s.generation !== message.generation) return false;
-        if (s.state !== "running" && s.state !== "starting") return false;
-        s.lastScreenAt = Date.now();
-        s.streamingSubtitle = null;
-        if (!message.source || message.duplicate) {
-          pushStreamingUpdate(message.tabId);
-          return false;
-        }
-        const at = message.at || Date.now();
-        const entry = {
-          id: `scr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-          at,
-          endedAt: null,
-          videoTime: resolveVideoTimeAt2(message.tabId, at),
-          source: message.source || "",
-          target: message.target || "",
-          latency: message.latency || 0,
-          kind: "screen"
-        };
-        insertByStart(s.subtitles, entry);
-        if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
-          s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
-        }
-        saveSessionSubtitle(s, entry);
+      return false;
+    }
+    case "CAPTURE_KEEPALIVE": {
+      const s = sessions.get(message.tabId);
+      if (s && s.state === "starting" && s.generation === message.generation) {
+        s.state = "running";
         pushSession(message.tabId);
-        return false;
       }
-      case "CAPTURE_SCREEN_STATUS": {
-        const s = sessions.get(message.tabId);
-        if (!s || s.generation !== message.generation) return false;
-        s.screenCaption = message.status === "active" ? "on" : message.status === "error" ? "error" : "off";
-        s.screenCaptionError = message.error || "";
-        pushSession(message.tabId);
-        return false;
-      }
-      case "CAPTURE_ERROR": {
-        const s = sessions.get(message.tabId);
-        if (!s || s.generation !== message.generation) return false;
-        s.state = "error";
+      return false;
+    }
+    case "CAPTURE_ENDED": {
+      const s = sessions.get(message.tabId);
+      if (s && s.generation === message.generation && (s.state === "running" || s.state === "starting")) {
+        s.state = "idle";
+        s.streamId = "";
+        s.configSnapshot = null;
         s.streamingSubtitle = null;
+        s.audioSilent = false;
+        s.screenCaption = "off";
+        s.screenCaptionError = "";
         if (s.transcriptId || s.subtitles.length > 0) {
           void finishSessionTranscript(s).catch(() => {
           });
         }
-        pushStreamingUpdate(message.tabId);
         pushSession(message.tabId);
-        return false;
+        maybeCloseOffscreen();
       }
-      case "ASK_RESULT": {
-        return false;
-      }
+      return false;
     }
-    return false;
-  });
+    case "CAPTURE_SUBTITLE_STREAMING": {
+      const s = sessions.get(message.tabId);
+      if (!s || s.generation !== message.generation || s.sourceEpoch && s.sourceEpoch !== message.sourceEpoch) {
+        return false;
+      }
+      if (s.state !== "running" && s.state !== "starting") {
+        return false;
+      }
+      if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
+        return false;
+      }
+      if (!message.source && !message.partialTarget) {
+        if (!s.streamingSubtitle || s.streamingSubtitle.at === message.at) {
+          s.streamingSubtitle = null;
+        }
+      } else {
+        s.streamingSubtitle = {
+          at: message.at || Date.now(),
+          source: message.source || "",
+          partialTarget: message.partialTarget || "",
+          latency: message.latency || 0
+        };
+      }
+      pushStreamingUpdate(message.tabId);
+      return false;
+    }
+    case "CAPTURE_SUBTITLE": {
+      const active = sessions.get(message.tabId);
+      if (active && active.state !== "running" && active.state !== "starting" && active.state !== "stopping") return false;
+      const s = active ? findSourceSession(active, message.sourceEpoch) : void 0;
+      if (active && !s && active.generation === message.generation) {
+        void failSourceBinding(active);
+        return false;
+      }
+      if (!s || s.generation !== message.generation && !isStoppingGeneration(active, message.generation)) {
+        return false;
+      }
+      if (s.state !== "running" && s.state !== "starting" && s.state !== "stopping") return false;
+      if (s === active && shouldYieldAudio(s.lastScreenAt, Date.now())) {
+        return false;
+      }
+      const tail = s !== active || active.generation !== message.generation;
+      const at = message.at || Date.now();
+      if (s.streamingSubtitle && s.streamingSubtitle.at === at) {
+        s.streamingSubtitle = null;
+      }
+      const entry = {
+        id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        at,
+        endedAt: message.endedAt || null,
+        videoTime: resolveVideoTimeAt2(message.tabId, at, s.sourceEpoch),
+        sourceRef: s.sourceRef,
+        source: message.source || "",
+        target: message.target || "",
+        latency: message.latency || 0
+      };
+      insertByStart(s.subtitles, entry);
+      if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
+        s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
+      }
+      saveSessionSubtitle(s, entry);
+      if (!tail) pushSession(message.tabId);
+      return false;
+    }
+    case "CAPTURE_SCREEN_SUBTITLE": {
+      const active = sessions.get(message.tabId);
+      if (active && active.state !== "running" && active.state !== "starting" && active.state !== "stopping") return false;
+      const s = active ? findSourceSession(active, message.sourceEpoch) : void 0;
+      if (active && !s && active.generation === message.generation) {
+        void failSourceBinding(active);
+        return false;
+      }
+      if (!s || s.generation !== message.generation) return false;
+      if (s.state !== "running" && s.state !== "starting") return false;
+      s.lastScreenAt = Date.now();
+      s.streamingSubtitle = null;
+      if (!message.source || message.duplicate) {
+        if (s === active) pushStreamingUpdate(message.tabId);
+        return false;
+      }
+      const at = message.at || Date.now();
+      const entry = {
+        id: `scr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        at,
+        endedAt: null,
+        videoTime: resolveVideoTimeAt2(message.tabId, at, s.sourceEpoch),
+        sourceRef: s.sourceRef,
+        source: message.source || "",
+        target: message.target || "",
+        latency: message.latency || 0,
+        kind: "screen"
+      };
+      insertByStart(s.subtitles, entry);
+      if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
+        s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
+      }
+      saveSessionSubtitle(s, entry);
+      if (s === active) pushSession(message.tabId);
+      return false;
+    }
+    case "CAPTURE_SCREEN_STATUS": {
+      const s = sessions.get(message.tabId);
+      if (!s || s.generation !== message.generation) return false;
+      s.screenCaption = message.status === "active" ? "on" : message.status === "error" ? "error" : "off";
+      s.screenCaptionError = message.error || "";
+      pushSession(message.tabId);
+      return false;
+    }
+    case "CAPTURE_ERROR": {
+      const s = sessions.get(message.tabId);
+      if (!s || s.generation !== message.generation || message.sourceEpoch && s.sourceEpoch !== message.sourceEpoch) return false;
+      s.state = "error";
+      s.streamingSubtitle = null;
+      if (s.transcriptId || s.subtitles.length > 0) {
+        void finishSessionTranscript(s).catch(() => {
+        });
+      }
+      pushStreamingUpdate(message.tabId);
+      pushSession(message.tabId);
+      return false;
+    }
+    case "ASK_RESULT": {
+      return false;
+    }
+  }
+  return false;
 }
 
 // src/ext/background/router/capture.ts
@@ -1404,6 +1689,9 @@ async function read(legacy) {
   if (notes.length) await chrome.storage.local.remove(MIGRATION_KEY);
   return notes;
 }
+function withProvenance(notes) {
+  return notes.map((note) => ({ ...note, entries: note.entries.map((entry) => ({ ...entry, sourceRef: entry.sourceRef || legacySourceRef(entry.videoUrl || "", note.title, note.id) })) }));
+}
 function includesLegacySnapshot(notes, legacy) {
   if (!Array.isArray(legacy) || legacy.length === 0 || validDocuments(legacy).length !== legacy.length) return false;
   return legacy.every((old) => {
@@ -1416,7 +1704,7 @@ function includesLegacySnapshot(notes, legacy) {
 function listNotesWithMigration(legacy) {
   return serial2(async () => {
     const notes = await read(legacy);
-    return { notes, legacyAcknowledged: includesLegacySnapshot(notes, legacy) };
+    return { notes: withProvenance(notes), legacyAcknowledged: includesLegacySnapshot(notes, legacy) };
   });
 }
 function addNoteEntry(input) {
@@ -1435,11 +1723,11 @@ function addNoteEntry(input) {
       note = { id: input.noteId, title: input.title || "\u7B14\u8BB0", createdAt: input.createdAt ?? now, updatedAt: now, entries: [], sessionInfo: input.sessionInfo };
       notes.push(note);
     }
-    if (note.entries.some((e) => e.id === input.entry.id)) return notes;
+    if (note.entries.some((e) => e.id === input.entry.id)) return withProvenance(notes);
     note.entries.push(structuredClone(input.entry));
     note.updatedAt = Date.now();
     await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
-    return notes;
+    return withProvenance(notes);
   });
 }
 function deleteNoteEntry(noteId, entryId) {
@@ -1451,7 +1739,7 @@ function deleteNoteEntry(noteId, entryId) {
       note.updatedAt = Date.now();
     }
     await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
-    return notes;
+    return withProvenance(notes);
   });
 }
 function deleteNoteDocuments(ids) {
@@ -1459,7 +1747,7 @@ function deleteNoteDocuments(ids) {
     if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) throw new Error("\u7B14\u8BB0 ID \u65E0\u6548");
     const notes = (await read()).filter((n) => !ids.includes(n.id));
     await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
-    return notes;
+    return withProvenance(notes);
   });
 }
 
@@ -1490,7 +1778,7 @@ var historyHandlers = {
       sendResponse({ ok: false, error: "\u8BF7\u5728\u4FA7\u680F\u67E5\u770B\u5168\u90E8\u4FDD\u5B58\u72B6\u6001" });
       return false;
     }
-    sendResponse({ ok: true, failures: [...sessions.values()].filter((s) => s.saveState?.status === "error").map((s) => ({ tabId: s.tabId, transcriptId: s.transcriptId, pendingCount: s.pendingTranscriptLines?.length || 0, saveState: s.saveState })) });
+    sendResponse({ ok: true, failures: [...sessions.values()].flatMap(allSourceSessions).filter((s) => s.saveState?.status === "error").map((s) => ({ tabId: s.tabId, transcriptId: s.transcriptId, pendingCount: s.pendingTranscriptLines?.length || 0, saveState: s.saveState })) });
     return false;
   },
   /** Summaries only; subtitle bodies stay on disk until requested. */
@@ -1534,20 +1822,25 @@ var historyHandlers = {
     const targetTab = tabId ?? Number(message.tabId);
     const s = sessions.get(targetTab);
     void (async () => {
-      const id = s?.transcriptId || await findLatestTranscriptIdForTab(targetTab);
-      const result = id ? await readAvailableTranscript(id) : { lines: [], complete: !s?.subtitles.length };
-      const lines = [...result.lines];
+      const owners = s ? allSourceSessions(s) : [];
+      const ids = owners.flatMap((epoch) => epoch.transcriptId ? [epoch.transcriptId] : []);
+      if (!ids.length) {
+        const latest = await findLatestTranscriptIdForTab(targetTab);
+        if (latest) ids.push(latest);
+      }
+      const results = await Promise.all(ids.map((id) => readAvailableTranscript(id)));
+      const lines = results.flatMap((result) => result.lines);
       const seen = new Set(lines.map((l) => l.id));
-      for (const line of s?.pendingTranscriptLines || []) {
+      for (const line of owners.flatMap((epoch) => epoch.pendingTranscriptLines || [])) {
         if (!seen.has(line.id)) {
           lines.push(line);
           seen.add(line.id);
         }
       }
       lines.sort((a, b) => a.at - b.at);
-      sendResponse({ ok: true, subtitles: lines, complete: result.complete, error: result.error, saveState: s?.saveState });
+      sendResponse({ ok: true, subtitles: lines, complete: results.every((result) => result.complete), error: results.find((result) => result.error)?.error, saveState: s?.saveState });
     })().catch((err) => {
-      sendResponse({ ok: false, error: err.message || "\u65E0\u6CD5\u8BFB\u53D6\u5B8C\u6574\u8F6C\u5199", subtitles: s?.pendingTranscriptLines || [], complete: false });
+      sendResponse({ ok: false, error: err.message || "\u65E0\u6CD5\u8BFB\u53D6\u5B8C\u6574\u8F6C\u5199", subtitles: s ? allSourceSessions(s).flatMap((epoch) => epoch.pendingTranscriptLines || []) : [], complete: false });
     });
     return true;
   },
@@ -2297,15 +2590,6 @@ async function resolveCurrentSession(store, video, preferNew = false) {
     syncVideoMeta(active, video);
     return active;
   }
-  if (!active && !preferNew) {
-    const legacy = store.sessions.filter((s) => !s.videoKey && s.turns.length > 0).sort((a, b) => b.updatedAt - a.updatedAt)[0];
-    if (legacy) {
-      legacy.videoKey = videoKey;
-      syncVideoMeta(legacy, video);
-      store.activeByVideo[videoKey] = legacy.id;
-      return legacy;
-    }
-  }
   const created = newSession(video);
   store.sessions.unshift(created);
   store.activeByVideo[videoKey] = created.id;
@@ -2460,7 +2744,7 @@ async function recordExchange(store, session, userTurn, assistantTurn) {
   return store;
 }
 function listSessions(store, videoKey) {
-  return [...store.sessions].filter((session) => !videoKey || session.videoKey === videoKey).sort((a, b) => b.updatedAt - a.updatedAt).map(({ id, title, videoKey: key, videoTitle, turns, createdAt, updatedAt }) => ({
+  return [...store.sessions].filter((session) => !videoKey || session.videoKey === videoKey || !session.videoKey || /^bilibili:/.test(videoKey) && session.videoKey === videoKey.replace(/:p\d+$/, "")).sort((a, b) => b.updatedAt - a.updatedAt).map(({ id, title, videoKey: key, videoTitle, turns, createdAt, updatedAt }) => ({
     id,
     title,
     videoKey: key,
@@ -2473,7 +2757,7 @@ function listSessions(store, videoKey) {
 function switchSession(store, id, videoKey) {
   const target = store.sessions.find((s) => s.id === id);
   if (!target) return null;
-  if (videoKey && target.videoKey && target.videoKey !== videoKey) return null;
+  if (videoKey && target.videoKey && target.videoKey !== videoKey && target.videoKey !== videoKey.replace(/:p\d+$/, "")) return null;
   store.activeByVideo[target.videoKey || "page:unknown"] = id;
   return target;
 }
@@ -2553,6 +2837,8 @@ function videoKeyFromMessage(message) {
 function showSessionInTab(tabId, session) {
   const s = getOrCreateSession(tabId);
   s.agentSessionId = session?.id ?? null;
+  const source = session ? sourceRefForUrl(session.videoUrl, session.videoTitle, session.id) : void 0;
+  s.chatSourceRef = source && source.key === session?.videoKey ? source : session ? legacySourceRef(session.videoUrl, session.videoTitle, session.id) : void 0;
   s.messages = session ? messagesFromTurns(session.turns) : [];
   pushSession(tabId);
 }
@@ -2589,7 +2875,7 @@ async function runStart(message, tabId, startVersion) {
     s.streamingSubtitle = null;
     pushSession(tabId);
   }
-  if (s.saveState?.status === "error" || s.pendingTranscriptLines?.length) {
+  if (allSourceSessions(s).some((epoch) => epoch.saveState?.status === "error" || epoch.pendingTranscriptLines?.length)) {
     try {
       await retrySessionTranscript(s);
       await finishSessionTranscript(s);
@@ -2645,7 +2931,10 @@ async function runStart(message, tabId, startVersion) {
   try {
     try {
       const tab = await chrome.tabs.get(tabId).catch(() => null);
+      bindInitialSource(s, message.pageUrl || message.videoUrl || tab?.url || "", message.pageTitle || tab?.title || "");
       const record = await beginTranscript({
+        sourceEpoch: s.sourceEpoch,
+        sourceRef: s.sourceRef,
         tabId,
         generation,
         pageTitle: typeof message.pageTitle === "string" && message.pageTitle ? message.pageTitle : tab?.title || "",
@@ -2684,8 +2973,12 @@ async function runStart(message, tabId, startVersion) {
     if (!isCurrent()) return { ok: true, cancelled: true };
     s.streamId = streamId;
     console.log("[RTTS] streamId obtained for tab", tabId);
+    await persistSessionsStrict();
+    if (!isCurrent()) return { ok: true, cancelled: true };
     const started = await sendToOffscreen({
       type: "START_CAPTURE",
+      sourceEpoch: s.sourceEpoch,
+      sourceRef: s.sourceRef,
       tabId,
       streamId,
       sourceLang: s.sourceLang,
@@ -2885,6 +3178,8 @@ var sessionHandlers = {
       const config = s.configSnapshot || await loadConfig();
       const store = await loadAgentStore();
       const session = await resolveCurrentSession(store, video, message.newSession === true);
+      const chatSource = sourceRefForUrl(session.videoUrl, session.videoTitle, session.id);
+      s.chatSourceRef = chatSource.key === session.videoKey ? chatSource : legacySourceRef(session.videoUrl, session.videoTitle, session.id);
       if (s.agentSessionId !== session.id) {
         s.agentSessionId = session.id;
         s.messages = [
@@ -2939,8 +3234,10 @@ var sessionHandlers = {
    */
   SUMMARIZE: (message, { tabId, sendResponse }) => {
     const s = getOrCreateSession(tabId);
-    const digest = buildSubtitleDigest(s.subtitles);
-    if (!digest.trim() || s.subtitles.length === 0) {
+    const evidence = structuredClone(s.subtitles);
+    const sourceRef = s.sourceRef || evidence[0]?.sourceRef || legacySourceRef("", "", s.transcriptId || "summary");
+    const digest = buildSubtitleDigest(evidence);
+    if (!digest.trim() || evidence.length === 0) {
       sendResponse({ ok: false, error: "\u8FD8\u6CA1\u6709\u53EF\u603B\u7ED3\u7684\u5B57\u5E55\uFF0C\u5148\u5F00\u542F\u5B9E\u65F6\u7FFB\u8BD1" });
       return false;
     }
@@ -2951,7 +3248,7 @@ var sessionHandlers = {
         const parts = buildSummaryParts({
           digest,
           videoTitle: video.videoTitle,
-          subtitleCount: s.subtitles.length
+          subtitleCount: evidence.length
         });
         const summary = await askLLM({
           parts,
@@ -2960,14 +3257,14 @@ var sessionHandlers = {
           targetLang: s.targetLang
         });
         let videoTime = null;
-        for (let i = s.subtitles.length - 1; i >= 0; i -= 1) {
-          const t = s.subtitles[i]?.videoTime;
+        for (let i = evidence.length - 1; i >= 0; i -= 1) {
+          const t = evidence[i]?.videoTime;
           if (typeof t === "number" && Number.isFinite(t)) {
             videoTime = t;
             break;
           }
         }
-        sendResponse({ ok: true, summary, videoTime, subtitleCount: s.subtitles.length });
+        sendResponse({ ok: true, summary, sourceRef, videoTime, subtitleCount: evidence.length });
       } catch (err) {
         sendResponse({ ok: false, error: err?.message || "\u751F\u6210\u7EAA\u8981\u5931\u8D25" });
       }
@@ -3062,9 +3359,63 @@ var sessionHandlers = {
   }
 };
 
+// src/lib/deep-link.ts
+function floorSeconds(seconds) {
+  return Math.max(0, Math.floor(seconds));
+}
+function videoDeepLink(url, seconds) {
+  if (!url || typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const t = floorSeconds(seconds);
+  if (bilibiliKey(parsed)) {
+    const part = bilibiliPart(parsed);
+    if (part === null) return null;
+    return `https://www.bilibili.com${parsed.pathname}?${parsed.searchParams.has("p") ? `p=${part}&` : ""}t=${t}`;
+  }
+  const yt = youtubeId(parsed);
+  if (yt) {
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") return `https://youtu.be/${yt}?t=${t}s`;
+    if (parsed.pathname.startsWith("/shorts/")) return `https://www.youtube.com/shorts/${yt}?t=${t}s`;
+    return `https://www.youtube.com/watch?v=${yt}&t=${t}s`;
+  }
+  return null;
+}
+
+// src/ext/background/source-opening.ts
+async function openSource(source, videoTime, tabId) {
+  let url;
+  try {
+    url = new URL(source?.url);
+  } catch {
+    return { ok: false, error: "\u6CA1\u6709\u53EF\u6253\u5F00\u7684\u6765\u6E90\u5730\u5740" };
+  }
+  if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: "\u6765\u6E90\u5730\u5740\u4EC5\u652F\u6301\u7F51\u9875\u94FE\u63A5" };
+  const exact = source.confidence === "exact" && sourceRefForUrl(source.url).key === source.key;
+  const anchored = exact && typeof videoTime === "number" && Number.isFinite(videoTime) && videoTime >= 0;
+  if (anchored && typeof tabId === "number") {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, { type: "SEEK_VIDEO", expectedSourceKey: source.key, seconds: videoTime });
+      if (response?.seek?.ok === true) return { ok: true, action: "seeked", time: response.seek.time };
+    } catch {
+    }
+  }
+  await chrome.tabs.create({ url: anchored ? videoDeepLink(source.url, videoTime) || source.url : source.url });
+  return { ok: true, action: "opened" };
+}
+
 // src/ext/background/router/video-clock.ts
 var MAX_SAMPLE_SKEW_MS = 12e4;
 var videoClockHandlers = {
+  OPEN_SOURCE: (message, { tabId, sendResponse }) => {
+    void openSource(message.sourceRef, message.videoTime, tabId ?? message.tabId).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  },
   VIDEO_CLOCK: (message, { tabId, sendResponse }) => {
     const session = sessions.get(tabId);
     const active = session && (session.state === "running" || session.state === "starting" || session.state === "stopping");
@@ -3072,14 +3423,14 @@ var videoClockHandlers = {
       sendResponse({ ok: true, ignored: true });
       return false;
     }
-    const sample = sanitizeVideoClockSample(message);
-    if (!sample || Math.abs(Date.now() - sample.at) > MAX_SAMPLE_SKEW_MS) {
-      sendResponse({ ok: true, ignored: true });
-      return false;
-    }
-    recordVideoClock(tabId, sample);
-    sendResponse({ ok: true });
-    return false;
+    void (async () => {
+      const bound = message.sourceRef && typeof message.sourceRef.url === "string" ? await transitionSource(tabId, message.sourceRef) : session;
+      if (!bound || bound.state !== "running" && bound.state !== "starting") return;
+      if (message.sourceRef?.url && bound.sourceIdentity !== videoKeyForUrl(message.sourceRef.url)) return;
+      const sample = sanitizeVideoClockSample(message);
+      if (sample && Math.abs(Date.now() - sample.at) <= MAX_SAMPLE_SKEW_MS) recordVideoClock(tabId, sample, bound.sourceEpoch);
+    })().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
   }
 };
 

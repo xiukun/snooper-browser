@@ -2405,207 +2405,14 @@
     return items.slice().sort(compareStart);
   }
 
-  // src/ext/screenshot.ts
-  function loadImageElement(src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error("\u622A\u56FE\u89E3\u7801\u5931\u8D25"));
-      img.src = src;
-    });
-  }
-  function collectVideos(root, out, depth) {
-    if (depth > 3) return;
-    root.querySelectorAll("video").forEach((video) => out.push(video));
-    root.querySelectorAll("iframe").forEach((frame) => {
-      try {
-        const doc = frame.contentDocument;
-        if (doc) collectVideos(doc, out, depth + 1);
-      } catch {
-      }
-    });
-    root.querySelectorAll("*").forEach((el) => {
-      const shadowRoot = el.shadowRoot;
-      if (shadowRoot) collectVideos(shadowRoot, out, depth + 1);
-    });
-  }
-  function getFrameGeometry(win) {
-    const frames = [];
-    let current = win;
-    for (let depth = 0; current && current !== window && depth < 5; depth++) {
-      let frame = null;
-      try {
-        frame = current.frameElement;
-      } catch {
-        break;
-      }
-      if (!frame) break;
-      frames.unshift(frame);
-      current = frame.ownerDocument.defaultView;
-    }
-    let x = 0;
-    let y = 0;
-    let clip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
-    for (const frame of frames) {
-      const rect = frame.getBoundingClientRect();
-      const left = x + rect.left;
-      const top = y + rect.top;
-      clip = {
-        left: Math.max(clip.left, left),
-        top: Math.max(clip.top, top),
-        right: Math.min(clip.right, left + rect.width),
-        bottom: Math.min(clip.bottom, top + rect.height)
-      };
-      x = left;
-      y = top;
-    }
-    return { x, y, clip };
-  }
-  function getVideoContentRect(video) {
-    if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
-    const win = video.ownerDocument.defaultView;
-    if (!win) return null;
-    const style = win.getComputedStyle(video);
-    if (style.display === "none" || style.visibility === "hidden") return null;
-    if (Number(style.opacity) < 0.05) return null;
-    const r = video.getBoundingClientRect();
-    if (!r.width || !r.height) return null;
-    const frame = getFrameGeometry(win);
-    let x = r.left + frame.x;
-    let y = r.top + frame.y;
-    let w = r.width;
-    let h = r.height;
-    const fit = style.objectFit || "contain";
-    if (fit === "contain" || fit === "scale-down") {
-      const videoAspect = video.videoWidth / video.videoHeight;
-      const boxAspect = w / h;
-      if (videoAspect > boxAspect) {
-        const nh = w / videoAspect;
-        y += (h - nh) / 2;
-        h = nh;
-      } else {
-        const nw = h * videoAspect;
-        x += (w - nw) / 2;
-        w = nw;
-      }
-    }
-    const left = Math.max(frame.clip.left, x);
-    const top = Math.max(frame.clip.top, y);
-    const right = Math.min(frame.clip.right, x + w);
-    const bottom = Math.min(frame.clip.bottom, y + h);
-    if (right - left < 64 || bottom - top < 64) return null;
-    return { x: left, y: top, w: right - left, h: bottom - top };
-  }
-  function findBestVideoCandidate() {
-    const videos = [];
-    collectVideos(document, videos, 0);
-    let best = null;
-    for (const video of videos) {
-      const rect = getVideoContentRect(video);
-      if (!rect) continue;
-      const score = rect.w * rect.h * (video.paused ? 0.6 : 1);
-      if (!best || score > best.score) best = { video, rect, score };
-    }
-    return best ? { video: best.video, rect: best.rect, count: videos.length } : null;
-  }
-  function createScreenshotCapturer(deps) {
-    const maxWidth = deps.maxWidth ?? 1600;
-    const quality = deps.jpegQuality ?? 0.9;
-    const hideDelayMs = deps.hideDelayMs ?? 120;
-    async function render(dataUrl, rect) {
-      const img = await loadImageElement(dataUrl);
-      const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
-      const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
-      let sx = 0;
-      let sy = 0;
-      let sw = img.naturalWidth;
-      let sh = img.naturalHeight;
-      if (rect) {
-        sx = Math.min(img.naturalWidth - 1, Math.max(0, Math.round(rect.x * scaleX)));
-        sy = Math.min(img.naturalHeight - 1, Math.max(0, Math.round(rect.y * scaleY)));
-        sw = Math.min(img.naturalWidth - sx, Math.max(1, Math.round(rect.w * scaleX)));
-        sh = Math.min(img.naturalHeight - sy, Math.max(1, Math.round(rect.h * scaleY)));
-        if (sw < 32 || sh < 32) throw new Error("\u89C6\u9891\u88C1\u526A\u533A\u57DF\u8FC7\u5C0F");
-      }
-      let outW = sw;
-      let outH = sh;
-      if (outW > maxWidth) {
-        outH = Math.round(outH * maxWidth / outW);
-        outW = maxWidth;
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = outW;
-      canvas.height = outH;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("\u65E0\u6CD5\u521B\u5EFA\u753B\u5E03");
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
-      return canvas.toDataURL("image/jpeg", quality);
-    }
-    async function captureVideoFrame() {
-      const candidate = findBestVideoCandidate();
-      console.log("[RTTS] screenshot candidates", {
-        count: candidate?.count ?? 0,
-        chosen: candidate ? { width: candidate.video.videoWidth, height: candidate.video.videoHeight, area: Math.round(candidate.rect.w * candidate.rect.h) } : null
-      });
-      deps.host.style.display = "none";
-      try {
-        await new Promise((resolve) => {
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-        });
-        await new Promise((resolve) => setTimeout(resolve, hideDelayMs));
-        const res = await deps.capture();
-        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u6D4F\u89C8\u5668\u622A\u56FE\u5931\u8D25");
-        let dataUrl = res.dataUrl;
-        let cropped = false;
-        if (candidate) {
-          try {
-            dataUrl = await render(res.dataUrl, candidate.rect);
-            cropped = true;
-          } catch (err) {
-            console.warn("[RTTS] screenshot crop failed, using the full frame:", err);
-          }
-        }
-        if (!cropped) dataUrl = await render(res.dataUrl, null);
-        console.log("[RTTS] screenshot", {
-          path: res.path || "unknown",
-          cropped,
-          bytes: dataUrl.length
-        });
-        return { dataUrl, cropped };
-      } finally {
-        deps.host.style.display = "";
-      }
-    }
-    return { captureVideoFrame, findBestVideoCandidate };
-  }
-
-  // src/ext/content/video-seek.ts
-  var SEEK_LEAD_SECONDS = 0.25;
-  var afterSeekHook = null;
-  function onAfterSeek(hook) {
-    afterSeekHook = hook;
-  }
-  function seekTo(seconds) {
-    let video = null;
+  // src/ext/content/source-opening.ts
+  async function openSavedSource(sourceRef, videoTime) {
+    if (!sourceRef?.url) return { ok: false, error: "\u6CA1\u6709\u53EF\u6253\u5F00\u7684\u6765\u6E90\u5730\u5740" };
     try {
-      video = findBestVideoCandidate()?.video ?? null;
+      return await chrome.runtime.sendMessage({ target: "background", type: "OPEN_SOURCE", sourceRef, videoTime });
     } catch {
-      video = null;
+      return { ok: false, error: "\u65E0\u6CD5\u6253\u5F00\u6765\u6E90\uFF0C\u8BF7\u91CD\u8BD5" };
     }
-    if (!video) return { ok: false, reason: "no-video" };
-    const target = Math.max(0, (Number.isFinite(seconds) ? seconds : 0) - SEEK_LEAD_SECONDS);
-    const before = video.currentTime;
-    try {
-      video.currentTime = target;
-    } catch {
-      return { ok: false, reason: "no-progress" };
-    }
-    if (Math.abs(video.currentTime - before) < 1e-6 && Math.abs(target - before) > 1e-6) {
-      return { ok: false, reason: "no-progress" };
-    }
-    video.pause();
-    afterSeekHook?.();
-    return { ok: true, time: video.currentTime };
   }
 
   // src/ext/content/subtitle-view.ts
@@ -2669,9 +2476,10 @@
               chip.className = "sub-time-chip";
               chip.textContent = formatVideoTime(sub.videoTime);
               chip.setAttribute("aria-label", `\u8DF3\u8F6C\u5230 ${formatVideoTime(sub.videoTime)}`);
-              chip.title = "\u70B9\u51FB\u8DF3\u8F6C\u5230\u89C6\u9891\u5BF9\u5E94\u4F4D\u7F6E";
-              const activate = () => {
-                const result = seekTo(sub.videoTime);
+              chip.title = sub.sourceRef?.confidence === "exact" ? "\u70B9\u51FB\u8DF3\u8F6C\u5230\u89C6\u9891\u5BF9\u5E94\u4F4D\u7F6E" : "\u6253\u5F00\u6765\u6E90\uFF08\u8BFE\u8282\u672A\u6838\u9A8C\uFF09";
+              const activate = async () => {
+                const result = await openSavedSource(sub.sourceRef, sub.videoTime);
+                chip.title = result.action === "seeked" ? "\u5DF2\u5B9A\u4F4D" : result.ok ? "\u5DF2\u6253\u5F00\u6765\u6E90" : "\u65E0\u6CD5\u6253\u5F00\u6765\u6E90";
                 row.classList.remove("seek-ok", "seek-fail");
                 void row.offsetWidth;
                 row.classList.add(result.ok ? "seek-ok" : "seek-fail");
@@ -2777,12 +2585,13 @@
       }
       r.chatEl.scrollTop = r.chatEl.scrollHeight;
     }
-    r.chatEl.addEventListener("click", (event) => {
+    r.chatEl.addEventListener("click", async (event) => {
       const target = event.target?.closest?.(".chat-time-ref");
       if (!target) return;
       const seconds = Number(target.dataset.t);
       if (!Number.isFinite(seconds)) return;
-      const result = seekTo(seconds);
+      const result = await openSavedSource(deps.getSession().chatSourceRef, seconds);
+      target.title = result.action === "seeked" ? "\u5DF2\u5B9A\u4F4D" : result.ok ? "\u5DF2\u6253\u5F00\u6765\u6E90" : "\u65E0\u6CD5\u6253\u5F00\u6765\u6E90";
       const bubble = target.closest(".rtts-msg");
       if (bubble) {
         bubble.classList.remove("seek-ok", "seek-fail");
@@ -3242,14 +3051,313 @@
     };
   }
 
+  // src/lib/video-key.ts
+  var TRACKING_PARAMS = /* @__PURE__ */ new Set([
+    "t",
+    "si",
+    "feature",
+    "index",
+    "list",
+    "start_radio",
+    "spm_id_from",
+    "vd_source",
+    "share_source",
+    "share_medium",
+    "share_plat",
+    "share_session_id",
+    "share_tag",
+    "timestamp",
+    "unique_k",
+    "from",
+    "ref",
+    "ref_src",
+    "fbclid",
+    "gclid"
+  ]);
+  function stripWww(host) {
+    return host.replace(/^www\./, "");
+  }
+  function youtubeId(url) {
+    const host = stripWww(url.hostname);
+    if (host === "youtu.be") {
+      const id = url.pathname.split("/").filter(Boolean)[0];
+      return id || null;
+    }
+    if (host !== "youtube.com" && !host.endsWith(".youtube.com")) return null;
+    const direct = url.searchParams.get("v");
+    if (direct) return direct;
+    const match = url.pathname.match(/^\/(?:shorts|embed|live)\/([^/?#]+)/);
+    return match?.[1] ?? null;
+  }
+  function bilibiliKey(url) {
+    const host = stripWww(url.hostname);
+    if (host !== "bilibili.com" && !host.endsWith(".bilibili.com")) return null;
+    const bv = url.pathname.match(/\/(BV[0-9A-Za-z]+)/);
+    if (bv?.[1]) return `bilibili:${bv[1]}`;
+    const av = url.pathname.match(/\/av(\d+)/i);
+    if (av?.[1]) return `bilibili:av${av[1]}`;
+    const episode = url.pathname.match(/^\/(bangumi|cheese)\/play\/(ep\d+)(?:\/|$)/);
+    if (episode) return `bilibili:${episode[1]}/play/${episode[2]}`;
+    return null;
+  }
+  function videoKeyForUrl(rawUrl) {
+    let url;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      return `page:${(rawUrl || "unknown").slice(0, 160)}`;
+    }
+    const yt = youtubeId(url);
+    if (yt) return `youtube:${yt}`;
+    const bili = bilibiliKey(url);
+    if (bili) {
+      const part = bilibiliPart(url);
+      if (part !== null) return `${bili}:p${part}`;
+      for (const key of [...url.searchParams.keys()]) if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) url.searchParams.delete(key);
+      url.searchParams.sort();
+      return `unknown:${bili}:${url.search}`;
+    }
+    const normalized = new URL(url.toString());
+    normalized.hash = "";
+    for (const key of [...normalized.searchParams.keys()]) {
+      if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) {
+        normalized.searchParams.delete(key);
+      }
+    }
+    return `page:${normalized.toString()}`;
+  }
+  function videoTitleFromDocumentTitle(rawTitle) {
+    const title = (rawTitle || "").trim();
+    if (!title) return "";
+    const stripped = title.replace(/\s*[-–—_|]\s*YouTube\s*$/i, "").replace(/[_\-–—|]\s*哔哩哔哩.*$/i, "").replace(/\s*[-–—|]\s*Bilibili\s*$/i, "").trim();
+    return (stripped || title).slice(0, 120);
+  }
+  function bilibiliPart(url) {
+    if (!url.searchParams.has("p")) return 1;
+    const parts = url.searchParams.getAll("p");
+    if (parts.length !== 1 || !/^[1-9]\d*$/.test(parts[0])) return null;
+    const n = Number(parts[0]);
+    return Number.isSafeInteger(n) ? n : null;
+  }
+  function sourceRefForUrl(rawUrl, title = "", scope = "page") {
+    let exact = false;
+    try {
+      const url = new URL(rawUrl);
+      exact = !!youtubeId(url) || !!bilibiliKey(url) && bilibiliPart(url) !== null;
+    } catch {
+    }
+    return { key: exact ? videoKeyForUrl(rawUrl) : `unknown:${scope}`, url: rawUrl, title, confidence: exact ? "exact" : "unknown" };
+  }
+  function legacySourceRef(url, title, scope) {
+    return { key: `legacy:${scope}`, url, title, confidence: url ? "legacy" : "unknown" };
+  }
+
+  // src/ext/screenshot.ts
+  function loadImageElement(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("\u622A\u56FE\u89E3\u7801\u5931\u8D25"));
+      img.src = src;
+    });
+  }
+  function collectVideos(root, out, depth) {
+    if (depth > 3) return;
+    root.querySelectorAll("video").forEach((video) => out.push(video));
+    root.querySelectorAll("iframe").forEach((frame) => {
+      try {
+        const doc = frame.contentDocument;
+        if (doc) collectVideos(doc, out, depth + 1);
+      } catch {
+      }
+    });
+    root.querySelectorAll("*").forEach((el) => {
+      const shadowRoot = el.shadowRoot;
+      if (shadowRoot) collectVideos(shadowRoot, out, depth + 1);
+    });
+  }
+  function getFrameGeometry(win) {
+    const frames = [];
+    let current = win;
+    for (let depth = 0; current && current !== window && depth < 5; depth++) {
+      let frame = null;
+      try {
+        frame = current.frameElement;
+      } catch {
+        break;
+      }
+      if (!frame) break;
+      frames.unshift(frame);
+      current = frame.ownerDocument.defaultView;
+    }
+    let x = 0;
+    let y = 0;
+    let clip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    for (const frame of frames) {
+      const rect = frame.getBoundingClientRect();
+      const left = x + rect.left;
+      const top = y + rect.top;
+      clip = {
+        left: Math.max(clip.left, left),
+        top: Math.max(clip.top, top),
+        right: Math.min(clip.right, left + rect.width),
+        bottom: Math.min(clip.bottom, top + rect.height)
+      };
+      x = left;
+      y = top;
+    }
+    return { x, y, clip };
+  }
+  function getVideoContentRect(video) {
+    if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
+    const win = video.ownerDocument.defaultView;
+    if (!win) return null;
+    const style = win.getComputedStyle(video);
+    if (style.display === "none" || style.visibility === "hidden") return null;
+    if (Number(style.opacity) < 0.05) return null;
+    const r = video.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const frame = getFrameGeometry(win);
+    let x = r.left + frame.x;
+    let y = r.top + frame.y;
+    let w = r.width;
+    let h = r.height;
+    const fit = style.objectFit || "contain";
+    if (fit === "contain" || fit === "scale-down") {
+      const videoAspect = video.videoWidth / video.videoHeight;
+      const boxAspect = w / h;
+      if (videoAspect > boxAspect) {
+        const nh = w / videoAspect;
+        y += (h - nh) / 2;
+        h = nh;
+      } else {
+        const nw = h * videoAspect;
+        x += (w - nw) / 2;
+        w = nw;
+      }
+    }
+    const left = Math.max(frame.clip.left, x);
+    const top = Math.max(frame.clip.top, y);
+    const right = Math.min(frame.clip.right, x + w);
+    const bottom = Math.min(frame.clip.bottom, y + h);
+    if (right - left < 64 || bottom - top < 64) return null;
+    return { x: left, y: top, w: right - left, h: bottom - top };
+  }
+  function findBestVideoCandidate() {
+    const videos = [];
+    collectVideos(document, videos, 0);
+    let best = null;
+    for (const video of videos) {
+      const rect = getVideoContentRect(video);
+      if (!rect) continue;
+      const score = rect.w * rect.h * (video.paused ? 0.6 : 1);
+      if (!best || score > best.score) best = { video, rect, score };
+    }
+    return best ? { video: best.video, rect: best.rect, count: videos.length } : null;
+  }
+  function createScreenshotCapturer(deps) {
+    const maxWidth = deps.maxWidth ?? 1600;
+    const quality = deps.jpegQuality ?? 0.9;
+    const hideDelayMs = deps.hideDelayMs ?? 120;
+    async function render(dataUrl, rect) {
+      const img = await loadImageElement(dataUrl);
+      const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
+      const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
+      let sx = 0;
+      let sy = 0;
+      let sw = img.naturalWidth;
+      let sh = img.naturalHeight;
+      if (rect) {
+        sx = Math.min(img.naturalWidth - 1, Math.max(0, Math.round(rect.x * scaleX)));
+        sy = Math.min(img.naturalHeight - 1, Math.max(0, Math.round(rect.y * scaleY)));
+        sw = Math.min(img.naturalWidth - sx, Math.max(1, Math.round(rect.w * scaleX)));
+        sh = Math.min(img.naturalHeight - sy, Math.max(1, Math.round(rect.h * scaleY)));
+        if (sw < 32 || sh < 32) throw new Error("\u89C6\u9891\u88C1\u526A\u533A\u57DF\u8FC7\u5C0F");
+      }
+      let outW = sw;
+      let outH = sh;
+      if (outW > maxWidth) {
+        outH = Math.round(outH * maxWidth / outW);
+        outW = maxWidth;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("\u65E0\u6CD5\u521B\u5EFA\u753B\u5E03");
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+      return canvas.toDataURL("image/jpeg", quality);
+    }
+    async function captureVideoFrame() {
+      const candidate = findBestVideoCandidate();
+      console.log("[RTTS] screenshot candidates", {
+        count: candidate?.count ?? 0,
+        chosen: candidate ? { width: candidate.video.videoWidth, height: candidate.video.videoHeight, area: Math.round(candidate.rect.w * candidate.rect.h) } : null
+      });
+      deps.host.style.display = "none";
+      try {
+        await new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        await new Promise((resolve) => setTimeout(resolve, hideDelayMs));
+        const res = await deps.capture();
+        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u6D4F\u89C8\u5668\u622A\u56FE\u5931\u8D25");
+        let dataUrl = res.dataUrl;
+        let cropped = false;
+        if (candidate) {
+          try {
+            dataUrl = await render(res.dataUrl, candidate.rect);
+            cropped = true;
+          } catch (err) {
+            console.warn("[RTTS] screenshot crop failed, using the full frame:", err);
+          }
+        }
+        if (!cropped) dataUrl = await render(res.dataUrl, null);
+        console.log("[RTTS] screenshot", {
+          path: res.path || "unknown",
+          cropped,
+          bytes: dataUrl.length
+        });
+        return { dataUrl, cropped };
+      } finally {
+        deps.host.style.display = "";
+      }
+    }
+    return { captureVideoFrame, findBestVideoCandidate };
+  }
+
+  // src/ext/content/video-context.ts
+  function readVideoContext() {
+    const videoUrl = location.href;
+    let videoTime = null;
+    try {
+      const candidate = findBestVideoCandidate();
+      const time = candidate?.video?.currentTime;
+      if (typeof time === "number" && Number.isFinite(time) && time >= 0) videoTime = time;
+    } catch {
+    }
+    return {
+      videoKey: videoKeyForUrl(videoUrl),
+      videoTitle: videoTitleFromDocumentTitle(document.title),
+      videoUrl,
+      videoTime,
+      sourceRef: sourceRefForUrl(videoUrl, videoTitleFromDocumentTitle(document.title))
+    };
+  }
+
   // src/ext/content/notes.ts
   function createNotes(deps) {
     const r = deps.refs;
-    r.list.addEventListener("click", (event) => {
+    r.list.addEventListener("click", async (event) => {
       const target = event.target?.closest?.(".chat-time-ref");
       if (!target) return;
       const seconds = Number(target.dataset.t);
-      if (Number.isFinite(seconds)) seekTo(seconds);
+      const entryId = target.closest("[data-entry-id]")?.dataset.entryId;
+      const entry = deps.getSession().notes.flatMap((note) => note.entries).find((item) => item.id === entryId);
+      if (entry && Number.isFinite(seconds)) {
+        const result = await openSavedSource(entry.sourceRef, seconds);
+        deps.toast(result.ok ? result.action === "seeked" ? "\u5DF2\u5B9A\u4F4D" : "\u5DF2\u6253\u5F00\u6765\u6E90" : result.error || "\u65E0\u6CD5\u6253\u5F00\u6765\u6E90", result.ok ? "ok" : "err");
+      }
     });
     let loadError = "";
     function setLoadError(error) {
@@ -3309,6 +3417,14 @@
     function addEntry(entry) {
       const note = getOrCreateActiveNote();
       const key = `${note.id}:${entry.id}`;
+      if (pending.has(key)) return persistEntry(key);
+      if (!entry.sourceRef) {
+        const context = readVideoContext();
+        entry = { ...entry, sourceRef: entry.videoUrl ? legacySourceRef(entry.videoUrl, "", note.id) : sourceRefForUrl(context.videoUrl, context.videoTitle, note.id), videoUrl: entry.videoUrl || context.videoUrl, videoTime: entry.videoTime ?? (entry.videoUrl ? null : context.videoTime) };
+      }
+      if (entry.sourceRef?.confidence !== "exact") {
+        entry = { ...entry, sourceRef: { ...entry.sourceRef, key: `${entry.sourceRef?.confidence || "unknown"}:${note.id}` } };
+      }
       if (!note.entries.some((e) => e.id === entry.id)) note.entries.push(entry);
       pending.set(key, { note, entry, error: "" });
       note.updatedAt = Date.now();
@@ -3386,6 +3502,7 @@
       active.entries.slice(-10).forEach((entry) => {
         const item = document.createElement("div");
         item.className = "note-item";
+        item.dataset.entryId = entry.id;
         if (entry.type === "image" || entry.type === "svg" || entry.type === "screenshot") {
           item.style.flexDirection = "column";
           item.style.gap = "4px";
@@ -3465,8 +3582,10 @@
   function createShotPreview(deps) {
     const r = deps.refs;
     let previewUrl = "";
-    function open(dataUrl, saved, insertable = false) {
+    let origin = null;
+    function open(dataUrl, saved, insertable = false, source) {
       previewUrl = dataUrl;
+      origin = source || readVideoContext();
       r.image.src = dataUrl;
       r.save.disabled = saved;
       r.save.textContent = saved ? "\u5DF2\u5B58\u5165\u7B14\u8BB0" : "\u5B58\u5165\u7B14\u8BB0";
@@ -3495,6 +3614,9 @@
       const saved = await deps.addNoteEntry({
         id: `screenshot_${Date.now()}`,
         type: "screenshot",
+        sourceRef: origin?.sourceRef,
+        videoUrl: origin?.videoUrl,
+        videoTime: origin?.videoTime,
         at: Date.now(),
         imageUrl: previewUrl,
         text: "\u89C6\u9891\u622A\u56FE"
@@ -3846,100 +3968,6 @@
     };
   }
 
-  // src/lib/video-key.ts
-  var TRACKING_PARAMS = /* @__PURE__ */ new Set([
-    "t",
-    "si",
-    "feature",
-    "index",
-    "list",
-    "start_radio",
-    "spm_id_from",
-    "vd_source",
-    "share_source",
-    "share_medium",
-    "share_plat",
-    "share_session_id",
-    "share_tag",
-    "timestamp",
-    "unique_k",
-    "from",
-    "ref",
-    "ref_src",
-    "fbclid",
-    "gclid"
-  ]);
-  function stripWww(host) {
-    return host.replace(/^www\./, "");
-  }
-  function youtubeId(url) {
-    const host = stripWww(url.hostname);
-    if (host === "youtu.be") {
-      const id = url.pathname.split("/").filter(Boolean)[0];
-      return id || null;
-    }
-    if (host !== "youtube.com" && !host.endsWith(".youtube.com")) return null;
-    const direct = url.searchParams.get("v");
-    if (direct) return direct;
-    const match = url.pathname.match(/^\/(?:shorts|embed|live)\/([^/?#]+)/);
-    return match?.[1] ?? null;
-  }
-  function bilibiliKey(url) {
-    const host = stripWww(url.hostname);
-    if (host !== "bilibili.com" && !host.endsWith(".bilibili.com")) return null;
-    const bv = url.pathname.match(/\/(BV[0-9A-Za-z]+)/);
-    if (bv?.[1]) return `bilibili:${bv[1]}`;
-    const av = url.pathname.match(/\/av(\d+)/i);
-    if (av?.[1]) return `bilibili:av${av[1]}`;
-    const parts = url.pathname.split("/").filter(Boolean).slice(0, 3);
-    if (parts.length > 0) return `bilibili:${parts.join("/")}`;
-    return null;
-  }
-  function videoKeyForUrl(rawUrl) {
-    let url;
-    try {
-      url = new URL(rawUrl);
-    } catch {
-      return `page:${(rawUrl || "unknown").slice(0, 160)}`;
-    }
-    const yt = youtubeId(url);
-    if (yt) return `youtube:${yt}`;
-    const bili = bilibiliKey(url);
-    if (bili) return bili;
-    const normalized = new URL(url.toString());
-    normalized.hash = "";
-    for (const key of [...normalized.searchParams.keys()]) {
-      if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) {
-        normalized.searchParams.delete(key);
-      }
-    }
-    return `page:${normalized.toString()}`;
-  }
-  function videoTitleFromDocumentTitle(rawTitle) {
-    const title = (rawTitle || "").trim();
-    if (!title) return "";
-    const stripped = title.replace(/\s*[-–—_|]\s*YouTube\s*$/i, "").replace(/[_\-–—|]\s*哔哩哔哩.*$/i, "").replace(/\s*[-–—|]\s*Bilibili\s*$/i, "").trim();
-    return (stripped || title).slice(0, 120);
-  }
-
-  // src/ext/content/video-context.ts
-  function readVideoContext() {
-    const videoUrl = location.href;
-    let videoTime = 0;
-    try {
-      const candidate = findBestVideoCandidate();
-      const time = candidate?.video?.currentTime;
-      if (typeof time === "number" && Number.isFinite(time) && time > 0) videoTime = time;
-    } catch {
-    }
-    return {
-      videoKey: videoKeyForUrl(videoUrl),
-      videoTitle: videoTitleFromDocumentTitle(document.title),
-      videoUrl,
-      videoTime
-    };
-  }
-
   // src/ext/content/video-clock.ts
   var SAMPLE_INTERVAL_MS = 1e3;
   var EVENT_MIN_GAP_MS = 500;
@@ -3950,8 +3978,9 @@
     let video = null;
     let lastSentAt = 0;
     let nextResolveAt = 0;
+    let identity = videoKeyForUrl(location.href);
     function resolveVideo(force = false) {
-      if (video && video.isConnected) return video;
+      if (!force && video && video.isConnected) return video;
       video = null;
       const now = Date.now();
       if (!force && now < nextResolveAt) return null;
@@ -3965,12 +3994,23 @@
     }
     function sample(force = false) {
       if (!deps.isActive()) return;
+      const current = videoKeyForUrl(location.href);
+      if (identity !== current) {
+        identity = current;
+        video = null;
+        nextResolveAt = 0;
+        force = true;
+      }
+      const sourceRef = sourceRefForUrl(location.href, videoTitleFromDocumentTitle(document.title));
       const el = resolveVideo(force);
-      if (!el) return;
-      const time = el.currentTime;
-      if (!Number.isFinite(time) || time < 0) return;
+      const time = el?.currentTime;
+      if (!el || typeof time !== "number" || !Number.isFinite(time) || time < 0) {
+        deps.send({ sourceRef });
+        return;
+      }
       const now = Date.now();
       deps.send({
+        sourceRef,
         at: now,
         videoTime: time,
         paused: el.paused === true,
@@ -3981,11 +4021,11 @@
     function onMediaEvent(event) {
       if (!deps.isActive()) return;
       const target = event.target;
-      if (target && target.tagName === "VIDEO" && event.type === "play" && target !== video) {
+      if (target && target.tagName === "VIDEO" && (event.type === "play" && target !== video || event.type === "loadedmetadata" || event.type === "emptied")) {
         video = null;
         nextResolveAt = 0;
       }
-      if (Date.now() - lastSentAt < EVENT_MIN_GAP_MS) return;
+      if (Date.now() - lastSentAt < EVENT_MIN_GAP_MS && event.type !== "loadedmetadata" && event.type !== "emptied" && identity === videoKeyForUrl(location.href)) return;
       sample();
     }
     function start() {
@@ -4009,7 +4049,40 @@
     for (const type of MEDIA_EVENTS) {
       document.addEventListener(type, onMediaEvent, true);
     }
+    window.addEventListener("popstate", () => sample(true));
+    window.addEventListener("hashchange", () => sample(true));
     return { sync, start, stop, sample };
+  }
+
+  // src/ext/content/video-seek.ts
+  var SEEK_LEAD_SECONDS = 0.25;
+  var afterSeekHook = null;
+  function onAfterSeek(hook) {
+    afterSeekHook = hook;
+  }
+  function seekTo(seconds, expectedSourceKey) {
+    if (!Number.isFinite(seconds) || seconds < 0) return { ok: false, reason: "seek-failed" };
+    if (!expectedSourceKey || expectedSourceKey !== videoKeyForUrl(location.href)) return { ok: false, reason: "mismatched-source" };
+    let video = null;
+    try {
+      video = findBestVideoCandidate()?.video ?? null;
+    } catch {
+      video = null;
+    }
+    if (!video) return { ok: false, reason: "no-video" };
+    const target = Math.max(0, (Number.isFinite(seconds) ? seconds : 0) - SEEK_LEAD_SECONDS);
+    const before = video.currentTime;
+    try {
+      video.currentTime = target;
+    } catch {
+      return { ok: false, reason: "seek-failed" };
+    }
+    if (Math.abs(video.currentTime - before) < 1e-6 && Math.abs(target - before) > 1e-6) {
+      return { ok: false, reason: "seek-failed" };
+    }
+    video.pause();
+    afterSeekHook?.();
+    return { ok: true, time: video.currentTime };
   }
 
   // src/ext/content/tools-menu.ts
@@ -4292,7 +4365,9 @@
     }
     const t = floorSeconds(seconds);
     if (bilibiliKey(parsed)) {
-      return `https://www.bilibili.com${parsed.pathname}?t=${t}`;
+      const part = bilibiliPart(parsed);
+      if (part === null) return null;
+      return `https://www.bilibili.com${parsed.pathname}?${parsed.searchParams.has("p") ? `p=${part}&` : ""}t=${t}`;
     }
     const yt = youtubeId(parsed);
     if (yt) {
@@ -4365,8 +4440,8 @@
       const s = (sub.source || "").replace(/\|/g, "\\|");
       if (anchored) {
         const video = typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) ? formatVideoTime(sub.videoTime) : "";
-        const link = typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) ? videoDeepLink(session.pageUrl, sub.videoTime) : null;
-        const cell = link ? `[\`${video}\`](${link})` : video;
+        const link = sub.sourceRef?.confidence === "exact" && typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) ? videoDeepLink(sub.sourceRef.url, sub.videoTime) : null;
+        const cell = link ? `[\`${video}\`](${link})` : sub.sourceRef?.url ? `${video} [\u6765\u6E90](${sub.sourceRef.url})` : video;
         lines.push(`| ${cell} | ${wall} | ${t} | ${s} |`);
       } else {
         lines.push(`| ${wall} | ${t} | ${s} |`);
@@ -4389,6 +4464,10 @@
       lines.push("", "---", "", `## \u7B14\u8BB0\uFF1A${note.title || "\u672A\u547D\u540D\u7B14\u8BB0"}`, "");
       note.entries.forEach((entry) => {
         const label2 = entry.text || entry.target || "\u7B14\u8BB0";
+        if (entry.sourceRef?.url) {
+          const link = entry.sourceRef.confidence === "exact" && typeof entry.videoTime === "number" ? videoDeepLink(entry.sourceRef.url, entry.videoTime) : null;
+          lines.push(`[${link ? "\u89C6\u9891\u951A\u70B9" : "\u6765\u6E90"}](${link || entry.sourceRef.url})`, "");
+        }
         const isVisual = entry.type === "image" || entry.type === "screenshot" || entry.type === "svg";
         if (isVisual) {
           const uploaded = assetNames?.get(`note:${note.id}:${entry.id}`);
@@ -4545,7 +4624,8 @@
         targetLang: session.targetLang,
         // ADR-035: carry the anchor so exports can deep-link back to the video.
         videoTime: typeof last.videoTime === "number" ? last.videoTime : null,
-        videoUrl: location.href
+        sourceRef: last.sourceRef || legacySourceRef("", "", session.transcriptId || last.id || "subtitle"),
+        videoUrl: last.sourceRef?.url
       });
       if (!saved) return;
       deps.flashChip(r.note);
@@ -4574,7 +4654,8 @@
           at: Date.now(),
           text: res.summary,
           videoTime: typeof res.videoTime === "number" ? res.videoTime : null,
-          videoUrl: location.href
+          sourceRef: res.sourceRef,
+          videoUrl: res.sourceRef?.url
         });
         deps.openNotes();
         if (!saved) return;
@@ -4593,15 +4674,19 @@
     r.screenshot.addEventListener("click", async () => {
       r.screenshot.classList.add("busy");
       try {
+        const origin = readVideoContext();
         const shot = await deps.captureVideoFrame();
         const saved = await deps.addNoteEntry({
           id: `screenshot_${Date.now()}`,
           type: "screenshot",
+          sourceRef: origin.sourceRef,
+          videoUrl: origin.videoUrl,
+          videoTime: origin.videoTime,
           at: Date.now(),
           imageUrl: shot.dataUrl,
           text: shot.cropped ? "\u89C6\u9891\u622A\u56FE" : "\u9875\u9762\u622A\u56FE"
         });
-        deps.openShotPreview(shot.dataUrl, saved, true);
+        deps.openShotPreview(shot.dataUrl, saved, true, origin);
         if (!saved) return;
         deps.flashChip(r.screenshot);
         deps.toast(
@@ -5920,8 +6005,8 @@ ${context}`;
       openDrawer,
       toast
     });
-    function openShotPreview(dataUrl, saved, insertable = false) {
-      shotPreview.open(dataUrl, saved, insertable);
+    function openShotPreview(dataUrl, saved, insertable = false, source) {
+      shotPreview.open(dataUrl, saved, insertable, source);
     }
     function closeShotPreview() {
       shotPreview.close();
@@ -6047,8 +6132,12 @@ ${context}`;
         sendResponse?.({ ok: true });
         return;
       }
+      if (msg && msg.type === "GET_VIDEO_CONTEXT") {
+        sendResponse?.({ ok: true, ...readVideoContext() });
+        return;
+      }
       if (msg && msg.type === "SEEK_VIDEO") {
-        const result = seekTo(msg.seconds);
+        const result = seekTo(msg.seconds, msg.expectedSourceKey);
         sendResponse?.({ ok: true, seek: result });
         return;
       }

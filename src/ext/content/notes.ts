@@ -8,7 +8,9 @@
 import type { NoteDocument, NoteEntry } from '../../lib/types'
 import { createNoteDocument, addNoteEntry, deleteNoteEntry, loadNotes, hasRetainedLegacyNotes, exportRetainedLegacyNotes } from './notes-store'
 import { renderMarkdownLite } from './markdown'
-import { seekTo } from './video-seek'
+import { openSavedSource } from './source-opening'
+import { readVideoContext } from './video-context'
+import { legacySourceRef, sourceRefForUrl } from '../../lib/video-key'
 import type { SessionState } from './types'
 
 export interface NotesRefs {
@@ -30,11 +32,16 @@ export function createNotes(deps: NotesDeps) {
 
   // ADR-037: summaries and notes render `[mm:ss]` stamps as buttons (ADR-036
   // renderer); clicking one seeks the video the same way chat does.
-  r.list.addEventListener('click', (event) => {
+  r.list.addEventListener('click', async (event) => {
     const target = (event.target as HTMLElement | null)?.closest?.('.chat-time-ref') as HTMLElement | null
     if (!target) return
     const seconds = Number(target.dataset.t)
-    if (Number.isFinite(seconds)) seekTo(seconds)
+    const entryId = (target.closest('[data-entry-id]') as HTMLElement | null)?.dataset.entryId
+    const entry = deps.getSession().notes.flatMap(note => note.entries).find(item => item.id === entryId)
+    if (entry && Number.isFinite(seconds)) {
+      const result = await openSavedSource(entry.sourceRef, seconds)
+      deps.toast(result.ok ? (result.action === 'seeked' ? '已定位' : '已打开来源') : result.error || '无法打开来源', result.ok ? 'ok' : 'err')
+    }
   })
 
   let loadError = ''
@@ -91,6 +98,14 @@ export function createNotes(deps: NotesDeps) {
   function addEntry(entry: NoteEntry): Promise<boolean> {
     const note = getOrCreateActiveNote()
     const key = `${note.id}:${entry.id}`
+    if (pending.has(key)) return persistEntry(key)
+    if (!entry.sourceRef) {
+      const context = readVideoContext()
+      entry = { ...entry, sourceRef: entry.videoUrl ? legacySourceRef(entry.videoUrl, '', note.id) : sourceRefForUrl(context.videoUrl, context.videoTitle, note.id), videoUrl: entry.videoUrl || context.videoUrl, videoTime: entry.videoTime ?? (entry.videoUrl ? null : context.videoTime) }
+    }
+    if (entry.sourceRef?.confidence !== 'exact') {
+      entry = { ...entry, sourceRef: { ...entry.sourceRef!, key: `${entry.sourceRef?.confidence || 'unknown'}:${note.id}` } }
+    }
     if (!note.entries.some(e => e.id === entry.id)) note.entries.push(entry)
     pending.set(key, { note, entry, error: '' })
     note.updatedAt = Date.now()
@@ -170,6 +185,7 @@ export function createNotes(deps: NotesDeps) {
     active.entries.slice(-10).forEach((entry) => {
       const item = document.createElement('div')
       item.className = 'note-item'
+      item.dataset.entryId = entry.id
       if (entry.type === 'image' || entry.type === 'svg' || entry.type === 'screenshot') {
         item.style.flexDirection = 'column'
         item.style.gap = '4px'

@@ -1,3 +1,5 @@
+import type { SourceRef } from '../../lib/knowledge-types'
+import { beginSourceRequest, endSourceRequest, drainSourceIfReady, type SourceBinding } from './source-epochs'
 /**
  * Offscreen capture sessions.
  *
@@ -62,6 +64,10 @@ const STOP_DRAIN_MS = 4000
 const ASR_EVIDENCE_RESET_MS = 60000
 
 export interface CaptureSession {
+  sourceEpoch?: string
+  sourcePaused?: boolean
+  sourceBindings?: Record<string, SourceBinding>
+  sourceContext?: CaptureContext
   tabId: number
   generation: number
   sourceLang: string
@@ -118,13 +124,43 @@ export interface CaptureSession {
   recentAsrWindow: string[]
 }
 
+type CaptureContext = Pick<CaptureSession, 'recentContext' | 'recentAsrCandidates' | 'recentAsrWindow' | 'recentWeakWindow' | 'lastAsrAt'>
+function contextFor(session: CaptureSession): CaptureContext {
+  return session.sourceContext ||= { recentContext: session.recentContext || [], recentAsrCandidates: session.recentAsrCandidates || [], recentAsrWindow: session.recentAsrWindow || [], recentWeakWindow: session.recentWeakWindow || [], lastAsrAt: session.lastAsrAt || 0 }
+}
+
+/** Halt new segmentation while the worker durably installs the next binding. */
+export function prepareCaptureSource(tabId: number, generation: number, sourceEpoch: string): { ok: boolean; error?: string } {
+  const session = captureSessions.get(tabId)
+  if (!session || session.generation !== generation || session.sourceEpoch !== sourceEpoch || session.captureStopped) return { ok: false, error: '采集课节绑定不匹配' }
+  session.sourcePaused = true
+  session.pcmBuffer = []; session.frameRms = []; session.frameLens = []
+  return { ok: true }
+}
+
+/** Reuse tracks/worklet; discard the partly captured boundary segment. */
+export function setCaptureSource(tabId: number, generation: number, previousSourceEpoch: string, sourceEpoch: string, sourceRef: SourceRef): { ok: boolean; error?: string } {
+  const session = captureSessions.get(tabId)
+  if (!session || session.generation !== generation || session.sourceEpoch !== previousSourceEpoch || session.captureStopped) return { ok: false, error: '采集课节绑定不匹配' }
+  if (!sourceEpoch || !sourceRef?.key) return { ok: false, error: '缺少课节来源' }
+  session.sourceBindings ||= {}
+  session.sourceBindings[sourceEpoch] = { sourceRef: structuredClone(sourceRef), pending: 0 }
+  session.sourceEpoch = sourceEpoch
+  session.sourcePaused = false
+  session.sourceContext = { recentContext: [], recentAsrCandidates: [], recentAsrWindow: [], recentWeakWindow: [], lastAsrAt: 0 }
+  session.pcmBuffer = []; session.frameRms = []; session.frameLens = []
+  session.segmentStartTime = Date.now(); session.lastSilenceTime = 0; session.isSilent = false
+  void drainSourceIfReady(session, previousSourceEpoch)
+  return { ok: true }
+}
+
 export const captureSessions = new Map<number, CaptureSession>()
 
 /* ===== Context tracking ===== */
 
 const MAX_CONTEXT_ENTRIES = 5
 
-function getContextSummary(session: CaptureSession): string {
+function getContextSummary(session: CaptureContext): string {
   const ctx = session.recentContext || []
   if (ctx.length === 0) return ''
   return ctx
@@ -133,7 +169,7 @@ function getContextSummary(session: CaptureSession): string {
     .join('\n')
 }
 
-function pushContext(session: CaptureSession, source: string, target: string) {
+function pushContext(session: CaptureContext, source: string, target: string) {
   if (!session.recentContext) session.recentContext = []
   session.recentContext.push({ source, target })
   if (session.recentContext.length > MAX_CONTEXT_ENTRIES * 2) {
@@ -144,6 +180,8 @@ function pushContext(session: CaptureSession, source: string, target: string) {
 /* ===== Start / stop ===== */
 
 interface StartCaptureArgs {
+  sourceEpoch?: string
+  sourceRef?: SourceRef
   tabId: number
   streamId: string
   sourceLang: string
@@ -215,11 +253,13 @@ function isCurrentStart(tabId: number, generation: number): boolean {
   return isCurrentCaptureGeneration(generationState(tabId), generation)
 }
 
-async function startTabCaptureNow({ tabId, streamId, sourceLang, targetLang, config, generation }: StartCaptureArgs): Promise<{ ok: true }> {
+async function startTabCaptureNow({ tabId, streamId, sourceLang, targetLang, config, generation, sourceEpoch, sourceRef }: StartCaptureArgs): Promise<{ ok: true }> {
   await stopCurrentCapture(tabId)
   if (!isCurrentStart(tabId, generation)) return { ok: true }
 
   const session: CaptureSession = {
+    sourceEpoch,
+    sourceBindings: sourceEpoch && sourceRef ? { [sourceEpoch]: { sourceRef, pending: 0 } } : {},
     tabId,
     generation,
     sourceLang,
@@ -465,7 +505,7 @@ async function waitForPendingTranscriptions(session: CaptureSession, timeoutMs: 
 
 function onPcmChunk(tabId: number, msg: any) {
   const session = captureSessions.get(tabId)
-  if (!session || session.aborted || session.captureStopped) return
+  if (!session || session.aborted || session.captureStopped || session.sourcePaused) return
 
   const pcmData = new Int16Array(msg.buffer)
   session.pcmBuffer.push(pcmData)
@@ -512,6 +552,7 @@ function reportAudioState(session: CaptureSession, silent: boolean) {
   session.audioSilent = silent
   chrome.runtime.sendMessage({
     type: 'CAPTURE_AUDIO_STATE',
+    sourceEpoch: session.sourceEpoch,
     tabId: session.tabId,
     generation: session.generation,
     silent,
@@ -522,7 +563,7 @@ function reportAudioState(session: CaptureSession, silent: boolean) {
 
 export function checkSegment(tabId: number) {
   const session = captureSessions.get(tabId)
-  if (!session || session.aborted || session.captureStopped) return
+  if (!session || session.aborted || session.captureStopped || session.sourcePaused) return
 
   // Backpressure: never let the buffer grow past one segment's worth while a
   // slow ASR request is still in flight.
@@ -578,8 +619,8 @@ function concatPcm(buffers: Int16Array[]): Int16Array {
 
 /**
  * Final subtitles are awaited during an explicit stop so the STOP response
- * cannot finalize the transcript before the last line is delivered. Normal
- * operation stays fire-and-forget.
+ * cannot finalize the transcript before the last line is delivered. Epoch
+ * drains also wait for delivery before releasing their pending request.
  */
 async function emitFinalSubtitle(session: CaptureSession, payload: Record<string, unknown>): Promise<void> {
   const message = {
@@ -588,16 +629,12 @@ async function emitFinalSubtitle(session: CaptureSession, payload: Record<string
     generation: session.generation,
     ...payload,
   }
-  if (session.draining) {
-    await chrome.runtime.sendMessage(message).catch(() => {})
-    return
-  }
-  chrome.runtime.sendMessage(message).catch(() => {})
+  await chrome.runtime.sendMessage(message).catch(() => {})
 }
 
-async function finalizeSegment(tabId: number) {
+export async function finalizeSegment(tabId: number): Promise<void> {
   const session = captureSessions.get(tabId)
-  if (!session) return
+  if (!session || session.sourcePaused) return
 
   if (session.pendingTranscriptions >= MAX_QUEUE_SIZE) return
 
@@ -663,13 +700,16 @@ async function finalizeSegment(tabId: number) {
   if (durationMs < 300) return
 
   session.pendingTranscriptions++
+  const sourceEpoch = beginSourceRequest(session)
+  const context = contextFor(session)
+  const { sourceLang, targetLang } = session
 
   try {
     const wavBlob = createWavBlob(pcmData, TARGET_SAMPLE_RATE)
     const t0 = performance.now()
 
     // 1. Transcribe the complete audio segment.
-    const transcription = await transcribeAudio(wavBlob, session.config, session.sourceLang)
+    const transcription = await transcribeAudio(wavBlob, session.config, sourceLang)
     if (session.aborted) return
     if (!transcription) return
     const asrMs = Math.round(performance.now() - t0)
@@ -681,37 +721,37 @@ async function finalizeSegment(tabId: number) {
       text: transcription,
       durationMs: Math.round(durationMs),
       speechMs,
-      sourceLang: session.sourceLang,
+      sourceLang,
       asrMs,
     })
     const isHallucination = isLikelyAsrHallucinationSequence(
-      session.recentAsrCandidates,
+      context.recentAsrCandidates,
       transcription,
     )
-    const isRepeatLoop = isLikelyAsrRepeatLoop(session.recentAsrWindow, transcription)
+    const isRepeatLoop = isLikelyAsrRepeatLoop(context.recentAsrWindow, transcription)
     // ADR-039: a gateway that ignores the `language` field returns another
     // script; translating it would disguise the failure.
     const isLanguageMismatch = isLikelyAsrLanguageMismatch(
       transcription,
-      session.sourceLang,
+      sourceLang,
     )
     // ADR-042: a stock line that follows a filler or another stock line is
     // the music-bridge burst. A lone stock line after content is kept.
     const asrNow = Date.now()
-    if (session.lastAsrAt > 0 && asrNow - session.lastAsrAt > ASR_EVIDENCE_RESET_MS) {
-      session.recentAsrCandidates = []
-      session.recentAsrWindow = []
-      session.recentWeakWindow = []
+    if (context.lastAsrAt > 0 && asrNow - context.lastAsrAt > ASR_EVIDENCE_RESET_MS) {
+      context.recentAsrCandidates = []
+      context.recentAsrWindow = []
+      context.recentWeakWindow = []
     }
-    session.lastAsrAt = asrNow
-    const isArtifactBurst = isLikelyArtifactBurst(session.recentWeakWindow, transcription)
+    context.lastAsrAt = asrNow
+    const isArtifactBurst = isLikelyArtifactBurst(context.recentWeakWindow, transcription)
     if (isArtifactLine(transcription) || isFillerOnly(transcription)) {
-      session.recentWeakWindow = [
-        ...session.recentWeakWindow.slice(-4),
+      context.recentWeakWindow = [
+        ...context.recentWeakWindow.slice(-4),
         transcription,
       ]
     } else {
-      session.recentWeakWindow = []
+      context.recentWeakWindow = []
     }
     // ADR-042: seconds of continuous audio that the model reduced to a word
     // or two is a music/noise artifact, not speech.
@@ -728,32 +768,32 @@ async function finalizeSegment(tabId: number) {
         languageMismatch: isLanguageMismatch,
         sparse: isSparse,
         artifactBurst: isArtifactBurst,
-        sourceLang: session.sourceLang,
+        sourceLang,
         durationMs: Math.round(durationMs),
         speechMs,
-        recentCandidates: [...session.recentAsrCandidates],
-        recentWindow: [...session.recentAsrWindow],
+        recentCandidates: [...context.recentAsrCandidates],
+        recentWindow: [...context.recentAsrWindow],
       })
-      session.recentAsrCandidates = [
-        ...session.recentAsrCandidates.slice(-5),
+      context.recentAsrCandidates = [
+        ...context.recentAsrCandidates.slice(-5),
         transcription,
       ]
-      session.recentAsrWindow = [
-        ...session.recentAsrWindow.slice(-5),
+      context.recentAsrWindow = [
+        ...context.recentAsrWindow.slice(-5),
         transcription,
       ]
       return
     }
     // A real subtitle breaks a suspected noise burst. Keeping only rejected
     // candidates avoids carrying a stale counting phrase into later dialogue.
-    session.recentAsrCandidates = []
+    context.recentAsrCandidates = []
       // The repeat window is the last three lines regardless of verdict:
       // the first "Keep it up." is accepted, and only the second can
       // confirm the loop (cycles of period ≤ 3 repeat within three lines).
       // Three lines also means one long real line evicts the loop from the
       // window, so genuine speech recovers immediately.
-      session.recentAsrWindow = [
-        ...session.recentAsrWindow.slice(-2),
+      context.recentAsrWindow = [
+        ...context.recentAsrWindow.slice(-2),
         transcription,
       ]
 
@@ -762,7 +802,7 @@ async function finalizeSegment(tabId: number) {
     // Same-language passthrough: when the transcript already is the target
     // language (e.g. zh audio with zh subtitles), displaying it directly is
     // faster, cheaper, and avoids the LLM rewriting correct text.
-    if (shouldSkipTranslation(session.sourceLang, session.targetLang, transcription)) {
+    if (shouldSkipTranslation(sourceLang, targetLang, transcription)) {
       const passthroughLatency = Math.round(performance.now() - t0 + (Date.now() - segmentStartTime))
       if (session.aborted) return
       console.log('[RTTS] subtitle emitted:', {
@@ -772,6 +812,7 @@ async function finalizeSegment(tabId: number) {
         asrMs,
       })
       await emitFinalSubtitle(session, {
+        sourceEpoch,
         at: segmentStartTime,
         endedAt: Date.now(),
         source: transcription,
@@ -782,13 +823,14 @@ async function finalizeSegment(tabId: number) {
     }
 
     // 2. Build context for coherent translation
-    const contextSummary = getContextSummary(session)
+    const contextSummary = getContextSummary(context)
 
     // 3. Send initial streaming marker (so UI shows "translating..." immediately)
     chrome.runtime.sendMessage({
       type: 'CAPTURE_SUBTITLE_STREAMING',
       tabId,
       generation: session.generation,
+      sourceEpoch,
       at: segmentStartTime,
       source: transcription,
       partialTarget: '',
@@ -799,8 +841,8 @@ async function finalizeSegment(tabId: number) {
     let fullTranslation = ''
 
     const translation = await translateTextStream(transcription, {
-      source: session.sourceLang,
-      target: session.targetLang,
+      source: sourceLang,
+      target: targetLang,
       config: session.config,
       context: contextSummary,
       onDelta: (delta) => {
@@ -813,6 +855,7 @@ async function finalizeSegment(tabId: number) {
           type: 'CAPTURE_SUBTITLE_STREAMING',
           tabId,
           generation: session.generation,
+          sourceEpoch,
           at: segmentStartTime,
           source: transcription,
           partialTarget: fullTranslation,
@@ -826,7 +869,7 @@ async function finalizeSegment(tabId: number) {
     // ADR-039: different fragments can collapse into the same short
     // translation ("你快" / "快快" → "Speak up."). The ASR-side repeat check
     // cannot see that; the translated line is the last chance before display.
-    const recentTargets = (session.recentContext || [])
+    const recentTargets = (context.recentContext || [])
       .map((entry) => entry.target)
       .filter(Boolean)
     if (isLikelyShortRepeatLoop(recentTargets, translation)) {
@@ -839,6 +882,7 @@ async function finalizeSegment(tabId: number) {
         type: 'CAPTURE_SUBTITLE_STREAMING',
         tabId,
         generation: session.generation,
+        sourceEpoch,
         at: segmentStartTime,
         source: '',
         partialTarget: '',
@@ -853,7 +897,7 @@ async function finalizeSegment(tabId: number) {
 
     // 5. Track context for future coherence
     if (transcription && translation) {
-      pushContext(session, transcription, translation)
+      pushContext(context, transcription, translation)
     }
 
     // 6. Send final subtitle (triggers content script to finalize the entry)
@@ -866,6 +910,7 @@ async function finalizeSegment(tabId: number) {
       llmMs,
     })
     await emitFinalSubtitle(session, {
+      sourceEpoch,
       at: segmentStartTime,
       endedAt: Date.now(),
       source: transcription,
@@ -880,6 +925,7 @@ async function finalizeSegment(tabId: number) {
       type: 'CAPTURE_SUBTITLE_STREAMING',
       tabId,
       generation: session.generation,
+      sourceEpoch,
       at: segmentStartTime,
       source: '',
       partialTarget: '',
@@ -889,10 +935,12 @@ async function finalizeSegment(tabId: number) {
       type: 'CAPTURE_ERROR',
       tabId,
       generation: session.generation,
+      sourceEpoch,
       error: err.message,
     })
   } finally {
     session.pendingTranscriptions--
+    await endSourceRequest(session, sourceEpoch)
   }
 }
 

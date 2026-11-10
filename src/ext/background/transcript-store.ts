@@ -1,3 +1,4 @@
+import { legacySourceRef } from '../../lib/video-key'
 /**
  * Full-session transcript store (ADR-031).
  *
@@ -38,6 +39,8 @@ export interface TranscriptLine {
 }
 
 export interface TranscriptRecord {
+  sourceEpoch?: string
+  sourceRef?: SourceRef
   id: string
   tabId: number
   generation: number
@@ -55,6 +58,8 @@ export interface TranscriptRecord {
 
 /** The shape returned by GET_HISTORY; never includes subtitle bodies. */
 export interface TranscriptSummary {
+  sourceEpoch?: string
+  sourceRef?: SourceRef
   id: string
   pageTitle: string
   url: string
@@ -68,6 +73,8 @@ export interface TranscriptSummary {
 }
 
 export interface BeginTranscriptInput {
+  sourceEpoch?: string
+  sourceRef?: SourceRef
   tabId: number
   generation: number
   pageTitle?: string
@@ -79,6 +86,8 @@ export interface BeginTranscriptInput {
 
 /** Minimal session shape needed by the lifecycle helpers. */
 export interface TranscriptSessionLike {
+  sourceEpoch?: string
+  sourceRef?: SourceRef
   tabId: number
   generation: number
   transcriptId: string | null
@@ -125,6 +134,8 @@ function normalizeRecord(raw: any): TranscriptRecord | null {
   const status: TranscriptStatus = raw.status === 'recording' ? 'recording' : 'completed'
   return {
     id: raw.id,
+    sourceEpoch: typeof raw.sourceEpoch === 'string' ? raw.sourceEpoch : undefined,
+    sourceRef: raw.sourceRef || legacySourceRef(raw.url || '', raw.pageTitle || '', raw.id),
     tabId: toNumber(raw.tabId, -1),
     generation: toNumber(raw.generation, 0),
     pageTitle: typeof raw.pageTitle === 'string' ? raw.pageTitle.slice(0, 300) : '',
@@ -156,6 +167,8 @@ function normalizeIndex(raw: any): TranscriptRecord[] {
 function toSummary(record: TranscriptRecord): TranscriptSummary {
   return {
     id: record.id,
+    sourceEpoch: record.sourceEpoch,
+    sourceRef: record.sourceRef,
     pageTitle: record.pageTitle,
     url: record.url,
     startedAt: record.startedAt,
@@ -185,11 +198,11 @@ function chunkKey(id: string, index: number): string {
 function chunkKeys(record: TranscriptRecord): string[] {
   return Array.from({ length: record.chunkCount }, (_, i) => chunkKey(record.id, i))
 }
-function normalizeChunk(raw: unknown, id: string, index: number): TranscriptLine[] {
+function normalizeChunk(raw: unknown, id: string, index: number, sourceRef?: SourceRef): TranscriptLine[] {
   if (!Array.isArray(raw)) throw new Error(`转写正文缺块：${id} / ${index}，请重试或导出可用内容`)
   return raw.flatMap((value, offset) => {
     const line = normalizeLine(value)
-    return line ? [{ ...line, id: line.id || `${id}:${index}:${offset}` }] : []
+    return line ? [{ ...line, sourceRef: line.sourceRef || sourceRef || legacySourceRef('', '', id), id: line.id || `${id}:${index}:${offset}` }] : []
   })
 }
 async function writeIndex(records: TranscriptRecord[]): Promise<void> {
@@ -232,7 +245,7 @@ async function repair(record: TranscriptRecord, records: TranscriptRecord[]): Pr
   let lastAt = record.lastAt
   for (let i = 0; i < keys.length; i++) {
     if (got[keys[i]!] === undefined && i >= record.chunkCount) break
-    const lines = normalizeChunk(got[keys[i]!], record.id, i)
+    const lines = normalizeChunk(got[keys[i]!], record.id, i, record.sourceRef)
     if (!lines.length) break
     count += lines.length
     chunks++
@@ -245,7 +258,7 @@ async function repair(record: TranscriptRecord, records: TranscriptRecord[]): Pr
 }
 async function readBody(record: TranscriptRecord): Promise<TranscriptLine[]> {
   const got = await chrome.storage.local.get(chunkKeys(record))
-  return chunkKeys(record).flatMap((key, i) => normalizeChunk(got[key], record.id, i))
+  return chunkKeys(record).flatMap((key, i) => normalizeChunk(got[key], record.id, i, record.sourceRef))
 }
 async function flushNow(id: string): Promise<void> {
   const waiting = pending.get(id)
@@ -267,7 +280,7 @@ async function flushNow(id: string): Promise<void> {
     const offset = record.subtitleCount % TRANSCRIPT_CHUNK_SIZE
     const key = chunkKey(id, chunkIndex)
     const got = offset ? await chrome.storage.local.get(key) : {}
-    const lines = offset ? normalizeChunk(got[key], id, chunkIndex).slice(0, offset) : []
+    const lines = offset ? normalizeChunk(got[key], id, chunkIndex, record.sourceRef).slice(0, offset) : []
     const savedLine = { ...line, id: line.id || `${id}:${chunkIndex}:${offset}` }
     // Keep waiting[0] until BOTH body and index succeed. Retrying overwrites
     // the same chunk/offset after an index failure, never duplicates a row.
@@ -305,13 +318,13 @@ async function finalizeNow(id: string): Promise<boolean> {
   knownIds.delete(id)
   return true
 }
-/** Idempotent for a tab/generation; failed creates never become cached success. */
+/** Idempotent for a capture generation + lesson epoch; failed creates are never cached. */
 export function beginTranscript(input: BeginTranscriptInput): Promise<TranscriptRecord> {
   return serial(async () => {
     let records = await loadIndex()
-    const existing = records.find(r => r.status === 'recording' && r.tabId === input.tabId && r.generation === input.generation)
+    const existing = records.find(r => r.status === 'recording' && r.tabId === input.tabId && r.generation === input.generation && r.sourceEpoch === input.sourceEpoch)
     if (existing) return existing
-    for (const stale of records.filter(r => r.status === 'recording' && r.tabId === input.tabId)) await finalizeNow(stale.id)
+    for (const stale of records.filter(r => r.status === 'recording' && r.tabId === input.tabId && r.generation !== input.generation)) await finalizeNow(stale.id)
     records = await loadIndex()
     const now = input.startedAt ?? Date.now()
     const record = normalizeRecord({ ...input, id: `tr_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`, startedAt: now, status: 'recording' })!
@@ -321,7 +334,7 @@ export function beginTranscript(input: BeginTranscriptInput): Promise<Transcript
 }
 export async function ensureTranscript(session: TranscriptSessionLike, meta: TranscriptMeta = {}): Promise<string> {
   if (session.transcriptId) return session.transcriptId
-  const record = await beginTranscript({ ...session, ...meta })
+  const record = await beginTranscript({ ...session, pageTitle: session.sourceRef?.title, url: session.sourceRef?.url, ...meta })
   session.transcriptId = record.id
   return record.id
 }
@@ -367,7 +380,7 @@ export function readTranscriptPage(id: string, chunkIndex: number): Promise<Tran
     if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= Math.max(1, record.chunkCount)) throw new Error('无效的转写块索引')
     const key = chunkKey(id, chunkIndex)
     const got = record.chunkCount ? await chrome.storage.local.get(key) : {}
-    return { record, chunkIndex, lines: record.chunkCount ? normalizeChunk(got[key], id, chunkIndex) : [], nextChunkIndex: chunkIndex + 1 < record.chunkCount ? chunkIndex + 1 : null }
+    return { record, chunkIndex, lines: record.chunkCount ? normalizeChunk(got[key], id, chunkIndex, record.sourceRef) : [], nextChunkIndex: chunkIndex + 1 < record.chunkCount ? chunkIndex + 1 : null }
   })
 }
 export function readTranscript(id: string): Promise<TranscriptLine[]> {
@@ -390,7 +403,7 @@ export function readAvailableTranscript(id: string): Promise<{ lines: Transcript
           try {
             const key = chunkKey(id, i)
             const got = await chrome.storage.local.get(key)
-            lines.push(...normalizeChunk(got[key], id, i))
+            lines.push(...normalizeChunk(got[key], id, i, record.sourceRef))
           } catch (err) { error = String(err) }
         }
       }

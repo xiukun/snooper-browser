@@ -293,9 +293,16 @@
     if (bv?.[1]) return `bilibili:${bv[1]}`;
     const av = url.pathname.match(/\/av(\d+)/i);
     if (av?.[1]) return `bilibili:av${av[1]}`;
-    const parts = url.pathname.split("/").filter(Boolean).slice(0, 3);
-    if (parts.length > 0) return `bilibili:${parts.join("/")}`;
+    const episode = url.pathname.match(/^\/(bangumi|cheese)\/play\/(ep\d+)(?:\/|$)/);
+    if (episode) return `bilibili:${episode[1]}/play/${episode[2]}`;
     return null;
+  }
+  function bilibiliPart(url) {
+    if (!url.searchParams.has("p")) return 1;
+    const parts = url.searchParams.getAll("p");
+    if (parts.length !== 1 || !/^[1-9]\d*$/.test(parts[0])) return null;
+    const n = Number(parts[0]);
+    return Number.isSafeInteger(n) ? n : null;
   }
 
   // src/lib/deep-link.ts
@@ -312,7 +319,9 @@
     }
     const t = floorSeconds(seconds);
     if (bilibiliKey(parsed)) {
-      return `https://www.bilibili.com${parsed.pathname}?t=${t}`;
+      const part = bilibiliPart(parsed);
+      if (part === null) return null;
+      return `https://www.bilibili.com${parsed.pathname}?${parsed.searchParams.has("p") ? `p=${part}&` : ""}t=${t}`;
     }
     const yt = youtubeId(parsed);
     if (yt) {
@@ -658,7 +667,7 @@ ${line.target}`).join("\n\n");
             lines.push(`### \u5B57\u5E55 ${time}`);
             if (entry.target) lines.push(`**\u8BD1\u6587**\uFF1A${entry.target}`);
             if (entry.source) lines.push(`**\u539F\u6587**\uFF1A${entry.source}`);
-            const link = typeof entry.videoTime === "number" && Number.isFinite(entry.videoTime) ? videoDeepLink(entry.videoUrl, entry.videoTime) : null;
+            const link = entry.sourceRef?.confidence === "exact" && typeof entry.videoTime === "number" && Number.isFinite(entry.videoTime) ? videoDeepLink(entry.sourceRef.url, entry.videoTime) : null;
             if (link) lines.push(`**\u89C6\u9891\u951A\u70B9**\uFF1A[\`${formatVideoTime(entry.videoTime)}\`](${link})`);
             lines.push("");
             break;
@@ -763,18 +772,11 @@ ${line.target}`).join("\n\n");
       return res?.ok && Array.isArray(res.subtitles) ? res.subtitles : [];
     }
     const seekFailureNotice = "\u9875\u9762\u91CC\u6CA1\u6709\u53EF\u5B9A\u4F4D\u7684\u89C6\u9891\uFF0C\u6216\u89C6\u9891\u62D2\u7EDD\u4E86\u8DF3\u8F6C";
-    async function seekVideoInPage(seconds) {
+    async function seekVideoInPage(subtitle) {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.id) return false;
-        const res = await sendToPageWithInjection(tab.id, { type: "SEEK_VIDEO", seconds }, tab.url, {
-          sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
-          injectContentScript: injectContentScriptFresh,
-          // The content script answers `{ ok, seek }`; the generic envelope
-          // discards it, so pass the verdict through explicitly (ADR-036).
-          collectResponse: (raw) => raw?.seek?.ok === true
-        });
-        return res?.responseOk === true;
+        const result = await chrome.runtime.sendMessage({ target: "background", type: "OPEN_SOURCE", tabId: tab?.id, sourceRef: subtitle.sourceRef, videoTime: subtitle.videoTime });
+        return result?.ok ? result.action : false;
       } catch {
         return false;
       }
@@ -787,19 +789,19 @@ ${line.target}`).join("\n\n");
         const time = document.createElement("time");
         const anchored = typeof subtitle.videoTime === "number" && Number.isFinite(subtitle.videoTime);
         const wall = subtitle.at ? new Date(subtitle.at).toLocaleTimeString("zh-CN") : "";
-        time.textContent = anchored ? formatVideoTime(subtitle.videoTime) : wall || "--:--:--";
+        time.textContent = anchored ? formatVideoTime(subtitle.videoTime) : subtitle.sourceRef?.url ? "\u6253\u5F00\u6765\u6E90" : wall || "--:--:--";
         if (anchored && wall) time.title = `\u5F55\u5236\u65F6\u95F4 ${wall}`;
-        if (anchored) {
+        if (anchored || subtitle.sourceRef?.url) {
           time.classList.add("history-time-chip");
           time.setAttribute("role", "button");
           time.tabIndex = 0;
-          time.title = `\u70B9\u51FB\u8DF3\u8F6C\u5230\u89C6\u9891 ${formatVideoTime(subtitle.videoTime)}`;
+          time.title = anchored && subtitle.sourceRef?.confidence === "exact" ? `\u70B9\u51FB\u8DF3\u8F6C\u5230\u89C6\u9891 ${formatVideoTime(subtitle.videoTime)}` : "\u6253\u5F00\u6765\u6E90\uFF08\u65F6\u95F4\u6216\u8BFE\u8282\u672A\u6838\u9A8C\uFF09";
           const activate = async () => {
             time.classList.remove("seek-ok", "seek-fail");
             void time.offsetWidth;
-            const result = await seekVideoInPage(subtitle.videoTime);
+            const result = await seekVideoInPage(subtitle);
             time.classList.add(result ? "seek-ok" : "seek-fail");
-            if (!result) showNotice(seekFailureNotice, true);
+            showNotice(result === "seeked" ? "\u5DF2\u5B9A\u4F4D" : result === "opened" ? "\u5DF2\u6253\u5F00\u6765\u6E90" : seekFailureNotice, !result);
           };
           time.addEventListener("click", activate);
           time.addEventListener("keydown", (event) => {
@@ -1052,7 +1054,7 @@ ${subtitle.target || ""}`).join("\n\n");
         if (anchored) {
           const hasTime = typeof subtitle.videoTime === "number" && Number.isFinite(subtitle.videoTime);
           const video = hasTime ? formatVideoTime(subtitle.videoTime) : "";
-          const link = hasTime ? videoDeepLink(item.url, subtitle.videoTime) : null;
+          const link = hasTime && subtitle.sourceRef?.confidence === "exact" ? videoDeepLink(subtitle.sourceRef.url, subtitle.videoTime) : null;
           lines.push(`| ${link ? `[\`${video}\`](${link})` : video} | ${wall} | ${source} | ${target} |`);
         } else {
           lines.push(`| ${wall} | ${source} | ${target} |`);

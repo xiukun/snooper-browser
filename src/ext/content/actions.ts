@@ -1,3 +1,6 @@
+import { legacySourceRef } from '../../lib/video-key'
+import type { SourceRef } from '../../lib/knowledge-types'
+import { readVideoContext, type VideoContext } from './video-context'
 /**
  * Toolbar actions: copy subtitles, export TXT/Markdown, capture the current
  * line as a note, open image generation, and screenshot the video.
@@ -29,9 +32,9 @@ export interface ActionDeps {
   addNoteEntry: (entry: NoteEntry) => Promise<boolean>
   openImagePanel: (prompt?: string) => void
   captureVideoFrame: () => Promise<{ dataUrl: string; cropped: boolean }>
-  openShotPreview: (url: string, saved: boolean, insertable?: boolean) => void
+  openShotPreview: (url: string, saved: boolean, insertable?: boolean, source?: VideoContext) => void
   /** ADR-037: the background round-trip lives in content.ts (it owns `bg`). */
-  summarize: () => Promise<{ ok: boolean; summary?: string; videoTime?: number | null; error?: string }>
+  summarize: () => Promise<{ ok: boolean; summary?: string; sourceRef?: SourceRef; videoTime?: number | null; error?: string }>
   /** ADR-037: reveal the notes pane after the summary lands. */
   openNotes: () => void
 }
@@ -173,7 +176,8 @@ export function bindActions(deps: ActionDeps) {
       targetLang: session.targetLang,
       // ADR-035: carry the anchor so exports can deep-link back to the video.
       videoTime: typeof last.videoTime === 'number' ? last.videoTime : null,
-      videoUrl: location.href,
+      sourceRef: last.sourceRef || legacySourceRef('', '', session.transcriptId || last.id || 'subtitle'),
+      videoUrl: last.sourceRef?.url,
     })
     if (!saved) return
     deps.flashChip(r.note)
@@ -205,7 +209,8 @@ export function bindActions(deps: ActionDeps) {
         at: Date.now(),
         text: res.summary,
         videoTime: typeof res.videoTime === 'number' ? res.videoTime : null,
-        videoUrl: location.href,
+        sourceRef: res.sourceRef,
+        videoUrl: res.sourceRef?.url,
       })
       deps.openNotes()
       if (!saved) return
@@ -229,15 +234,19 @@ export function bindActions(deps: ActionDeps) {
   r.screenshot.addEventListener('click', async () => {
     r.screenshot.classList.add('busy')
     try {
+      const origin = readVideoContext()
       const shot = await deps.captureVideoFrame()
       const saved = await deps.addNoteEntry({
         id: `screenshot_${Date.now()}`,
         type: 'screenshot',
+        sourceRef: origin.sourceRef,
+        videoUrl: origin.videoUrl,
+        videoTime: origin.videoTime,
         at: Date.now(),
         imageUrl: shot.dataUrl,
         text: shot.cropped ? '视频截图' : '页面截图',
       })
-      deps.openShotPreview(shot.dataUrl, saved, true)
+      deps.openShotPreview(shot.dataUrl, saved, true, origin)
       if (!saved) return
       deps.flashChip(r.screenshot)
       deps.toast(

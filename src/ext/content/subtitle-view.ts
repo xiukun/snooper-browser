@@ -1,3 +1,4 @@
+import type { SourceRef } from '../../lib/knowledge-types'
 /**
  * Subtitle overlay: history rows, streaming row, auto-idle collapse, sizing,
  * positioning and drag/resize handles.
@@ -8,7 +9,7 @@ import { renderMarkdownLite } from './markdown'
 import { formatVideoTime } from '../../lib/video-clock'
 import { isFillerOnly } from '../../lib/asr-guard'
 import { sortByStart } from '../../lib/subtitle-order'
-import { seekTo } from './video-seek'
+import { openSavedSource } from './source-opening'
 import type { StreamingSubtitle } from './types'
 
 const SUB_BOX_SIZE_KEY = 'snooper.subtitle-box-size.v1'
@@ -34,9 +35,11 @@ export interface SubtitleViewRefs {
 }
 
 export interface SubtitleViewSession {
+  sourceRef?: SourceRef
+  chatSourceRef?: SourceRef
   state: string
   isDemoMode: boolean
-  subtitles: Array<{ target?: string; source?: string; id?: string; at?: number; videoTime?: number | null }>
+  subtitles: Array<{ kind?: 'screen'; sourceRef?: SourceRef; target?: string; source?: string; id?: string; at?: number; videoTime?: number | null }>
   messages?: Array<{ role: string; content: string; images?: string[] }>
   streamingSubtitle?: StreamingSubtitle | null
   audioSilent?: boolean
@@ -153,9 +156,10 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
             chip.className = 'sub-time-chip'
             chip.textContent = formatVideoTime(sub.videoTime!)
             chip.setAttribute('aria-label', `跳转到 ${formatVideoTime(sub.videoTime!)}`)
-            chip.title = '点击跳转到视频对应位置'
-            const activate = () => {
-              const result = seekTo(sub.videoTime!)
+            chip.title = sub.sourceRef?.confidence === 'exact' ? '点击跳转到视频对应位置' : '打开来源（课节未核验）'
+            const activate = async () => {
+              const result = await openSavedSource(sub.sourceRef, sub.videoTime)
+              chip.title = result.action === 'seeked' ? '已定位' : result.ok ? '已打开来源' : '无法打开来源'
               row.classList.remove('seek-ok', 'seek-fail')
               // Force a reflow so the flash restarts on rapid re-clicks.
               void row.offsetWidth
@@ -293,12 +297,13 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
 
   // ADR-036: `[mm:ss]` stamps in answers seek the video. One delegated
   // listener covers every bubble, including re-renders.
-  r.chatEl.addEventListener('click', (event) => {
+  r.chatEl.addEventListener('click', async (event) => {
     const target = (event.target as HTMLElement | null)?.closest?.('.chat-time-ref') as HTMLElement | null
     if (!target) return
     const seconds = Number(target.dataset.t)
     if (!Number.isFinite(seconds)) return
-    const result = seekTo(seconds)
+    const result = await openSavedSource(deps.getSession().chatSourceRef, seconds)
+    target.title = result.action === 'seeked' ? '已定位' : result.ok ? '已打开来源' : '无法打开来源'
     const bubble = target.closest('.rtts-msg')
     if (bubble) {
       bubble.classList.remove('seek-ok', 'seek-fail')

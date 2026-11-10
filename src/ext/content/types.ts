@@ -1,3 +1,4 @@
+import type { SourceRef } from '../../lib/knowledge-types'
 /** Shared content-script session shapes. */
 
 import type { NoteDocument, SubtitleLine } from '../../lib/types'
@@ -27,6 +28,9 @@ export interface ChatMessage {
 }
 
 export interface SessionState {
+  sourceRef?: SourceRef
+  sourceEpoch?: string
+  chatSourceRef?: SourceRef
   state: string
   sourceLang: string
   targetLang: string

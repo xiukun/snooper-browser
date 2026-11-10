@@ -1,3 +1,4 @@
+import { beginSourceRequest, endSourceRequest } from './source-epochs'
 /**
  * Screen-caption channel (ADR-043).
  *
@@ -42,6 +43,7 @@ interface ScreenState {
   stopped: boolean
   failures: number
   lastSignature: number[]
+  sourceEpoch?: string
   lastCaption: ScreenCaption | null
   lastRequestAt: number
   canvas: HTMLCanvasElement | null
@@ -49,8 +51,8 @@ interface ScreenState {
 
 const states = new Map<number, ScreenState>()
 
-function emit(message: Record<string, unknown>): void {
-  chrome.runtime.sendMessage(message).catch(() => {})
+async function emit(message: Record<string, unknown>): Promise<void> {
+  await chrome.runtime.sendMessage(message).catch(() => {})
 }
 
 function emitStatus(state: ScreenState, status: 'active' | 'error' | 'stopped', error = ''): void {
@@ -202,6 +204,11 @@ async function tick(state: ScreenState): Promise<void> {
     return
   }
 
+  if (state.sourceEpoch !== session.sourceEpoch) {
+    state.sourceEpoch = session.sourceEpoch
+    state.lastSignature = []; state.lastCaption = null; state.lastRequestAt = 0; state.failures = 0
+  }
+  if (session.sourcePaused) return
   const video = session.videoEl
   if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return
 
@@ -224,6 +231,8 @@ async function tick(state: ScreenState): Promise<void> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   const startedAt = Date.now()
+  const sourceEpoch = beginSourceRequest(session)
+  const lastCaption = state.lastCaption
   try {
     const caption = await readScreenCaption({
       imageDataUrl: sample.dataUrl,
@@ -231,13 +240,15 @@ async function tick(state: ScreenState): Promise<void> {
       config: state.config,
       signal: controller.signal,
     })
-    state.failures = 0
+    const current = session.sourceEpoch === sourceEpoch
+    if (current) state.failures = 0
     if (!caption.source) {
       // Text-free screen: refresh freshness only, never append an empty row.
-      emit({
+      await emit({
         type: 'CAPTURE_SCREEN_SUBTITLE',
         tabId: state.tabId,
         generation: state.generation,
+      sourceEpoch,
         at: startedAt,
         source: '',
         target: '',
@@ -245,11 +256,12 @@ async function tick(state: ScreenState): Promise<void> {
       })
       return
     }
-    if (isDuplicateCaption(state.lastCaption, caption)) {
-      emit({
+    if (isDuplicateCaption(lastCaption, caption)) {
+      await emit({
         type: 'CAPTURE_SCREEN_SUBTITLE',
         tabId: state.tabId,
         generation: state.generation,
+      sourceEpoch,
         at: startedAt,
         source: caption.source,
         target: caption.target,
@@ -258,18 +270,19 @@ async function tick(state: ScreenState): Promise<void> {
       })
       return
     }
-    state.lastCaption = caption
-    emit({
+    if (current) state.lastCaption = caption
+    await emit({
       type: 'CAPTURE_SCREEN_SUBTITLE',
       tabId: state.tabId,
       generation: state.generation,
+      sourceEpoch,
       at: startedAt,
       source: caption.source,
       target: caption.target,
       latency: Date.now() - startedAt,
     })
   } catch (err: any) {
-    if (state.stopped) return
+    if (state.stopped || session.sourceEpoch !== sourceEpoch) return
     // The frame did not make it through: clear the gate so the next tick can
     // retry the same picture. Three consecutive failures stop the channel.
     state.lastSignature = []
@@ -280,5 +293,6 @@ async function tick(state: ScreenState): Promise<void> {
   } finally {
     clearTimeout(timeout)
     state.inFlight = false
+    await endSourceRequest(session, sourceEpoch)
   }
 }

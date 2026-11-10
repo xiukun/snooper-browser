@@ -26,6 +26,8 @@ export interface SubtitleEntry {
   source: string
   target: string
   latency: number
+  /** ADR-043: burned-in screen text, not speech. */
+  kind?: 'screen'
 }
 
 export interface MessageEntry {
@@ -65,6 +67,11 @@ export interface SessionState {
   streamingSubtitle: StreamingSubtitle | null
   /** True when the capture is alive but no audio above the gate is arriving. */
   audioSilent: boolean
+  /** ADR-043: wall-clock time of the last screen-caption line (0 = never). */
+  lastScreenAt: number
+  /** ADR-043: the user has the screen-caption channel on for this session. */
+  screenCaption: 'off' | 'on' | 'error'
+  screenCaptionError: string
 }
 
 export interface SafeSession {
@@ -77,6 +84,8 @@ export interface SafeSession {
   transcriptId: string | null
   streamingSubtitle: StreamingSubtitle | null
   audioSilent: boolean
+  screenCaption: 'off' | 'on' | 'error'
+  screenCaptionError: string
 }
 
 export const sessions = new Map<number, SessionState>()
@@ -115,6 +124,9 @@ export function createSession(tabId: number): SessionState {
     transcriptId: null,
     streamingSubtitle: null,
     audioSilent: false,
+    lastScreenAt: 0,
+    screenCaption: 'off',
+    screenCaptionError: '',
   }
   sessions.set(tabId, s)
   return s
@@ -151,6 +163,8 @@ export function safeSession(s: SessionState): SafeSession {
     transcriptId: s.transcriptId ?? null,
     streamingSubtitle: s.streamingSubtitle,
     audioSilent: s.audioSilent,
+    screenCaption: s.screenCaption,
+    screenCaptionError: s.screenCaptionError,
   }
 }
 

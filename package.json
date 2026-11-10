@@ -1,7 +1,7 @@
 {
   "name": "snooper-browser",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.8.1",
   "type": "module",
   "description": "Open-source multimodal workspace for real-time translation, conversations and visual understanding.",
   "license": "Apache-2.0",
@@ -22,6 +22,7 @@
     "test:subtitle-order": "node scripts/test-subtitle-order.mjs",
     "test:video-presence": "node scripts/test-video-presence.mjs",
     "test:content-refs": "node scripts/test-content-refs.mjs",
+    "test:screen-caption": "node scripts/test-screen-caption.mjs",
     "test:content-install": "node scripts/test-content-install.mjs",
     "test:deep-link": "node scripts/test-deep-link.mjs",
     "test:markdown": "node scripts/test-markdown.mjs",

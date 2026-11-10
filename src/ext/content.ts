@@ -31,6 +31,7 @@ import { readVideoContext } from './content/video-context'
 import { createVideoClock } from './content/video-clock'
 import { onAfterSeek, seekTo } from './content/video-seek'
 import { createToolsMenu } from './content/tools-menu'
+import { bindScreenCaptionToggle } from './content/screen-caption-toggle'
 import { bindActions } from './content/actions'
 import { bindObsidianExport } from './content/obsidian-export'
 import { createImageGen } from './content/image-gen'
@@ -272,7 +273,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     chatNewTopic, chatHistoryBtn, chatHistoryPopover, chatHistoryList, chatHistoryEmpty, chatHistoryClose,
     chatBtn, chatAttachBtn, chatFile, chatAttachments, sendBtn,
     fsWarn, hideBtn, showBtn,
-    noteBtn, summaryBtn, imageBtn, screenshotBtn,
+    noteBtn, summaryBtn, imageBtn, screenshotBtn, screenBtn,
     notesCount, notesBadge, notesBtn, notesList, notesAdd, obsidianBtn,
     settingsModal, settingsClose,
     cfgBaseUrl, cfgApiKey, cfgToggleKey, cfgLlm, cfgAudio, cfgImage,
@@ -413,6 +414,16 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
   });
   const openSettings = settingsPanel.openSettings;
 
+  /* ===== Screen captions (ADR-043) ===== */
+  const screenToggle = bindScreenCaptionToggle({
+    button: screenBtn,
+    getSession: () => session,
+    bg,
+    toast,
+    adoptSession: (next) => adoptBackgroundSession(next),
+    openSettings,
+  });
+
   /* ===== Subtitle overlay ===== */
   const subtitleView = createSubtitleView({
     refs: {
@@ -439,7 +450,8 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     renderNotes: () => renderNotes(),
     openShotPreview: (url, saved, insertable) => openShotPreview(url, saved, insertable),
   });
-  const render = subtitleView.render;
+  const renderBase = subtitleView.render;
+  const render = () => { renderBase(); screenToggle.sync(); };
   const updateChat = subtitleView.updateChat;
   const renderStreaming = subtitleView.renderStreaming;
   const clearStreaming = subtitleView.clearStreaming;

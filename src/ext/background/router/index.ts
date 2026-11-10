@@ -11,6 +11,7 @@ import { configHandlers } from './config'
 import { historyHandlers } from './history'
 import { imageHandlers } from './image'
 import { obsidianHandlers } from './obsidian'
+import { screenCaptionHandlers } from './screen-caption'
 import { sessionHandlers } from './session'
 import { videoClockHandlers } from './video-clock'
 import type { MessageHandlerMap } from './types'
@@ -19,6 +20,7 @@ export const backgroundHandlers: MessageHandlerMap = {
   ...configHandlers,
   ...imageHandlers,
   ...sessionHandlers,
+  ...screenCaptionHandlers,
   ...captureHandlers,
   ...obsidianHandlers,
   ...historyHandlers,

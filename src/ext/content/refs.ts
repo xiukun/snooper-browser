@@ -67,6 +67,7 @@ export interface ContentRefs {
   summaryBtn: HTMLElement
   imageBtn: HTMLElement
   screenshotBtn: HTMLButtonElement
+  screenBtn: HTMLButtonElement
   notesCount: HTMLElement
   notesBadge: HTMLElement
   notesBtn: HTMLElement

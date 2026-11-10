@@ -1,5 +1,112 @@
 (() => {
   // src/lib/models.ts
+  var MODEL_CATALOG = [
+    {
+      id: "moss-vl-1.0",
+      label: "MOSS VL 1.0",
+      kind: "chat",
+      blurb: "\u901A\u7528\u591A\u6A21\u6001\u7406\u89E3\uFF0C\u6587\u672C\u5BF9\u8BDD / \u7FFB\u8BD1 / OCR \u5168\u80FD",
+      badge: "\u63A8\u8350"
+    },
+    {
+      id: "moss-vl-realtime-1.0",
+      label: "MOSS VL Realtime",
+      kind: "vision",
+      blurb: "\u4F4E\u5EF6\u8FDF\u89C6\u9891\u5E27\u6D41\u5F0F\u7406\u89E3\uFF08WebSocket\uFF09"
+    },
+    {
+      id: "moss-transcribe-1.0",
+      label: "MOSS Transcribe",
+      kind: "audio",
+      blurb: "\u8BED\u97F3\u8F6C\u5199\uFF0C\u5B9E\u65F6\u5B57\u5E55\u7BA1\u7EBF\u6838\u5FC3"
+    },
+    {
+      id: "moss-transcribe-diarize-pro",
+      label: "Transcribe Diarize Pro",
+      kind: "audio",
+      blurb: "\u5E26\u8BF4\u8BDD\u4EBA\u5206\u79BB\u7684\u9AD8\u7CBE\u5EA6\u8F6C\u5199"
+    },
+    {
+      id: "moss-transcribe-diarize-flash-2026-09-02",
+      label: "Transcribe Diarize Flash",
+      kind: "audio",
+      blurb: "\u4F4E\u5EF6\u8FDF\u8BF4\u8BDD\u4EBA\u5206\u79BB\u8F6C\u5199"
+    },
+    {
+      id: "moss-tts-1.5-flash",
+      label: "MOSS TTS Flash",
+      kind: "speech",
+      blurb: "\u4F4E\u5EF6\u8FDF\u8BED\u97F3\u5408\u6210"
+    },
+    {
+      id: "moss-tts-1.0-pro",
+      label: "MOSS TTS Pro",
+      kind: "speech",
+      blurb: "\u9AD8\u81EA\u7136\u5EA6\u8BED\u97F3\u5408\u6210"
+    },
+    {
+      id: "moss-ttsd-1.0",
+      label: "MOSS TTSD",
+      kind: "speech",
+      blurb: "\u5BF9\u8BDD\u5F0F\u8BED\u97F3\u5408\u6210"
+    },
+    {
+      id: "moss-speech",
+      label: "MOSS Speech",
+      kind: "speech",
+      blurb: "\u8BED\u97F3\u7406\u89E3\u4E0E\u589E\u5F3A"
+    },
+    {
+      id: "moss-image-prompt-enhancer-1.0",
+      label: "Image Prompt Enhancer",
+      kind: "image",
+      blurb: "\u56FE\u50CF\u751F\u6210\u63D0\u793A\u8BCD\u589E\u5F3A"
+    },
+    {
+      id: "moss-image-sft-1.0",
+      label: "MOSS-Image SFT",
+      kind: "image",
+      blurb: "\u5B98\u65B9\u6587\u751F\u56FE\uFF0C\u4E2D\u82F1\u6587\u6587\u5B57\u6E32\u67D3/\u5E03\u5C40\u63A7\u5236\uFF0C\u9650\u65F6\u514D\u8D39",
+      badge: "\u514D\u8D39 \xB7 \u63A8\u8350"
+    },
+    {
+      id: "moss-image-base-1.0",
+      label: "MOSS-Image Base",
+      kind: "image",
+      blurb: "\u57FA\u7840\u6587\u751F\u56FE\u6A21\u578B\uFF0C\u9002\u5408\u98CE\u683C\u5316\u4E0E\u5FAE\u8C03\uFF0C\u9650\u65F6\u514D\u8D39",
+      badge: "\u514D\u8D39"
+    },
+    {
+      id: "moss-image-sft-1.0-2026-10-09",
+      label: "MOSS-Image SFT (\u5FEB\u7167)",
+      kind: "image",
+      blurb: "\u9501\u5B9A\u7248\u672C\u7684 SFT \u5FEB\u7167\uFF0C\u4FDD\u8BC1\u7ED3\u679C\u53EF\u590D\u73B0"
+    },
+    {
+      id: "moss-image-base-1.0-2026-10-09",
+      label: "MOSS-Image Base (\u5FEB\u7167)",
+      kind: "image",
+      blurb: "\u9501\u5B9A\u7248\u672C\u7684 Base \u5FEB\u7167\uFF0C\u4FDD\u8BC1\u7ED3\u679C\u53EF\u590D\u73B0"
+    },
+    {
+      id: "black-forest-labs/FLUX.1-schnell",
+      label: "FLUX.1-schnell",
+      kind: "image",
+      blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u6700\u5FEB\u5F00\u6E90\u751F\u56FE\uFF0C1-4\u6B65\u63A8\u7406\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
+    },
+    {
+      id: "stabilityai/stable-diffusion-3.5-medium",
+      label: "SD 3.5 Medium",
+      kind: "image",
+      blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u8D28\u91CF\u4E0E\u901F\u5EA6\u5747\u8861\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
+    },
+    {
+      id: "stabilityai/stable-diffusion-xl-base-1.0",
+      label: "SDXL 1.0",
+      kind: "image",
+      blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u9AD8\u5206\u8FA8\u7387\u751F\u6210\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
+    }
+  ];
   var SOURCE_LANGUAGES = [
     { code: "auto", label: "\u81EA\u52A8\u68C0\u6D4B", short: "AUTO" },
     { code: "zh", label: "\u7B80\u4F53\u4E2D\u6587", short: "ZH" },
@@ -21,15 +128,513 @@
     (target) => !SOURCE_LANGUAGES.some((source) => source.code === target.code)
   )];
 
+  // src/lib/utils.ts
+  function uid(prefix = "id") {
+    return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
+  }
+
+  // src/lib/brand.ts
+  var STORAGE_KEYS = {
+    activeView: "snooper.active-view.v1",
+    providerConfig: "snooper.provider-config.v1",
+    providerConfigSession: "snooper.provider-config.session.v1"
+  };
+
+  // src/lib/providers.ts
+  var import_meta = {};
+  var MODEL_SUGGESTIONS = {
+    llm: MODEL_CATALOG.filter((model) => model.kind === "chat" || model.kind === "vision").map(
+      (model) => model.id
+    ),
+    audio: MODEL_CATALOG.filter((model) => model.kind === "audio").map((model) => model.id),
+    video: ["moss-vl-realtime-1.0", "moss-vl-1.0"],
+    image: [
+      "moss-image-sft-1.0",
+      "moss-image-base-1.0",
+      "moss-image-sft-1.0-2026-10-09",
+      "moss-image-base-1.0-2026-10-09",
+      "black-forest-labs/FLUX.1-schnell",
+      "stabilityai/stable-diffusion-3.5-medium",
+      "stabilityai/stable-diffusion-xl-base-1.0"
+    ]
+  };
+  var CONFIG_KEY = STORAGE_KEYS.providerConfig;
+  var SESSION_CONFIG_KEY = STORAGE_KEYS.providerConfigSession;
+  var LEGACY_CONFIG_KEYS = ["snooper.moss.config.v1", "rtts.moss.config.v1"];
+  function parseStoredConfig(raw) {
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      const providers = Array.isArray(parsed.providers) && parsed.providers.length ? parsed.providers.map(normalizeProvider) : DEFAULT_CONFIG.providers.map(normalizeProvider);
+      return {
+        providers,
+        routes: {
+          llm: { ...DEFAULT_CONFIG.routes.llm, ...parsed.routes?.llm },
+          audio: { ...DEFAULT_CONFIG.routes.audio, ...parsed.routes?.audio },
+          video: { ...DEFAULT_CONFIG.routes.video, ...parsed.routes?.video },
+          image: { ...DEFAULT_CONFIG.routes.image, ...parsed.routes?.image }
+        }
+      };
+    } catch {
+      return null;
+    }
+  }
+  var env = import_meta.env;
+  var envKey = (env.VITE_MOSS_API_KEY ?? "").trim();
+  var envBaseUrl = (env.VITE_MOSS_BASE_URL ?? "https://api.mosi.cn/v1").trim();
+  function createProvider(partial = {}) {
+    return {
+      id: uid("provider"),
+      name: "\u65B0\u670D\u52A1\u5546",
+      baseUrl: "https://api.mosi.cn/v1",
+      apiKey: "",
+      protocol: "openai",
+      note: "",
+      models: [],
+      lastSyncedAt: null,
+      status: "unknown",
+      lastError: "",
+      ...partial
+    };
+  }
+  var DEFAULT_CONFIG = {
+    providers: [
+      {
+        id: "moss-official",
+        name: "MOSS \u5B98\u65B9",
+        baseUrl: envBaseUrl,
+        apiKey: envKey,
+        protocol: "moss",
+        note: "\u514D\u8D39\u591A\u6A21\u6001\u6A21\u578B\u77E9\u9635 \xB7 \u5B98\u65B9\u7F51\u5173",
+        models: [],
+        lastSyncedAt: null,
+        status: "unknown",
+        lastError: ""
+      }
+    ],
+    routes: {
+      llm: { providerId: "moss-official", model: "moss-vl-1.0" },
+      audio: { providerId: "moss-official", model: "moss-transcribe-1.0" },
+      video: { providerId: "moss-official", model: "moss-vl-realtime-1.0" },
+      image: { providerId: "moss-official", model: "moss-image-sft-1.0" }
+    }
+  };
+  function normalizeProvider(raw) {
+    return {
+      ...createProvider(),
+      ...raw,
+      models: Array.isArray(raw.models) ? raw.models.filter((model) => typeof model === "string") : [],
+      lastSyncedAt: typeof raw.lastSyncedAt === "number" ? raw.lastSyncedAt : null,
+      status: raw.status === "ok" || raw.status === "error" ? raw.status : "unknown",
+      lastError: typeof raw.lastError === "string" ? raw.lastError : ""
+    };
+  }
+  function fromLegacy(legacy) {
+    const provider = normalizeProvider({
+      id: "moss-official",
+      name: "MOSS \u5B98\u65B9",
+      baseUrl: legacy.baseUrl?.trim() || envBaseUrl,
+      apiKey: legacy.apiKey?.trim() || envKey,
+      protocol: "moss",
+      note: "\u4ECE\u65E7\u7248\u5355\u7F51\u5173\u914D\u7F6E\u8FC1\u79FB",
+      status: "unknown"
+    });
+    return {
+      providers: [provider],
+      routes: {
+        llm: { providerId: provider.id, model: legacy.chatModel || legacy.visionModel || "moss-vl-1.0" },
+        audio: { providerId: provider.id, model: legacy.transcribeModel || "moss-transcribe-1.0" },
+        video: { providerId: provider.id, model: legacy.realtimeModel || "moss-vl-realtime-1.0" },
+        image: { providerId: provider.id, model: "moss-image-sft-1.0" }
+      }
+    };
+  }
+  function loadProviderConfig() {
+    try {
+      const sessionRaw = sessionStorage.getItem(SESSION_CONFIG_KEY);
+      const session = parseStoredConfig(sessionRaw);
+      if (session) return session;
+      const raw = localStorage.getItem(CONFIG_KEY);
+      if (raw) {
+        const parsed = parseStoredConfig(raw);
+        if (parsed) {
+          try {
+            sessionStorage.setItem(SESSION_CONFIG_KEY, JSON.stringify(parsed));
+          } catch {
+          }
+          return parsed;
+        }
+      }
+      for (const key of LEGACY_CONFIG_KEYS) {
+        const legacyRaw = localStorage.getItem(key);
+        if (legacyRaw) return fromLegacy(JSON.parse(legacyRaw));
+      }
+    } catch {
+    }
+    return {
+      providers: DEFAULT_CONFIG.providers.map(normalizeProvider),
+      routes: {
+        llm: { ...DEFAULT_CONFIG.routes.llm },
+        audio: { ...DEFAULT_CONFIG.routes.audio },
+        video: { ...DEFAULT_CONFIG.routes.video },
+        image: { ...DEFAULT_CONFIG.routes.image }
+      }
+    };
+  }
+  function getProvider(config, providerId) {
+    return config.providers.find((provider) => provider.id === providerId);
+  }
+  function resolveRoute(config, capability, modelOverride) {
+    const route = config.routes[capability] ?? DEFAULT_CONFIG.routes[capability];
+    const provider = getProvider(config, route.providerId);
+    if (!provider) {
+      if (config.providers.length === 0) {
+        throw new Error("\u5C1A\u672A\u914D\u7F6E\u4EFB\u4F55\u670D\u52A1\u5546\uFF0C\u8BF7\u5148\u5728\u300C\u80FD\u529B\u8BBE\u7F6E\u300D\u4E2D\u6DFB\u52A0\u3002");
+      }
+      throw new Error(`\u80FD\u529B\u300C${capability}\u300D\u7ED1\u5B9A\u7684\u670D\u52A1\u5546\u4E0D\u5B58\u5728\u6216\u5DF2\u88AB\u5220\u9664\uFF0C\u8BF7\u5728\u300C\u80FD\u529B\u8BBE\u7F6E\u300D\u4E2D\u91CD\u65B0\u9009\u62E9\u3002`);
+    }
+    const baseUrl = provider.baseUrl.trim();
+    const apiKey = provider.apiKey.trim();
+    if (!baseUrl) throw new Error(`\u670D\u52A1\u5546\u300C${provider.name}\u300D\u7F3A\u5C11 Base URL\u3002`);
+    if (!apiKey) throw new Error(`\u670D\u52A1\u5546\u300C${provider.name}\u300D\u7F3A\u5C11 API Key\u3002`);
+    const model = (modelOverride || route.model || "").trim();
+    if (!model) throw new Error(`\u80FD\u529B\u300C${capability}\u300D\u5C1A\u672A\u9009\u62E9\u6A21\u578B\u3002`);
+    return {
+      provider,
+      providerId: provider.id,
+      baseUrl,
+      apiKey,
+      model,
+      protocol: provider.protocol
+    };
+  }
+
   // src/lib/transcription-request.ts
   function buildTranscriptionFormData(input) {
     const form = new FormData();
     form.append("model", input.model);
-    form.append("file", input.file, "segment.wav");
+    form.append("file", input.file, input.fileName ?? "segment.wav");
     form.append("response_format", "json");
     form.append("temperature", "0");
     if (input.sourceLang !== "auto") form.append("language", input.sourceLang);
     return form;
+  }
+
+  // src/lib/translation-prompt.ts
+  var LANGUAGE_NAMES = {
+    auto: "\u81EA\u52A8\u68C0\u6D4B",
+    zh: "\u7B80\u4F53\u4E2D\u6587",
+    en: "\u82F1\u8BED",
+    ja: "\u65E5\u8BED",
+    ko: "\u97E9\u8BED",
+    fr: "\u6CD5\u8BED",
+    de: "\u5FB7\u8BED",
+    es: "\u897F\u73ED\u7259\u8BED",
+    ru: "\u4FC4\u8BED",
+    ar: "\u963F\u62C9\u4F2F\u8BED",
+    pt: "\u8461\u8404\u7259\u8BED"
+  };
+  function translationLanguageName(code, fallback) {
+    if (!code) return fallback;
+    return LANGUAGE_NAMES[code] ?? fallback;
+  }
+  function buildTranslationPrompt(input) {
+    const source = translationLanguageName(input.source, "\u81EA\u52A8\u68C0\u6D4B");
+    const target = translationLanguageName(input.target, "\u7B80\u4F53\u4E2D\u6587");
+    const contextBlock = input.context ? `\u3010\u4E0A\u4E0B\u6587\uFF08\u6700\u8FD1\u7684\u5B57\u5E55\uFF09\u3011
+${input.context}
+` : "";
+    return [
+      `\u4F60\u662F\u4E00\u540D\u4E13\u4E1A\u7684\u540C\u58F0\u4F20\u8BD1\u5458\u3002\u6E90\u8BED\u8A00\uFF1A${source}\uFF1B\u76EE\u6807\u8BED\u8A00\uFF1A${target}\u3002`,
+      "\u8F93\u5165\u6765\u81EA\u8BED\u97F3\u8BC6\u522B\uFF0C\u53EF\u80FD\u6709\u9519\u5B57\u3001\u6F0F\u5B57\u6216\u65AD\u53E5\u9519\u8BEF\u3002\u53EA\u7FFB\u8BD1\u4F60\u770B\u5230\u7684\u5185\u5BB9\uFF1A\u4E0D\u5F97\u8865\u5168\u3001\u4E0D\u5F97\u6269\u5199\u3001\u4E0D\u5F97\u6839\u636E\u4E0A\u4E0B\u6587\u7F16\u9020\u672A\u8BF4\u51FA\u7684\u4FE1\u606F\u3002",
+      "\u788E\u7247\u6216\u8BED\u6C14\u8BCD\u5C31\u8BD1\u6210\u788E\u7247\u6216\u8BED\u6C14\u8BCD\uFF0C\u4E0D\u8981\u6539\u5199\u6210\u5B8C\u6574\u53E5\u5B50\u3002",
+      "\u4EBA\u540D\u3001\u5730\u540D\u3001\u4E13\u6709\u540D\u8BCD\u53EA\u4F7F\u7528\u4E0A\u4E0B\u6587\u4E2D\u51FA\u73B0\u8FC7\u7684\u5199\u6CD5\uFF1B\u6CA1\u6709\u628A\u63E1\u65F6\u97F3\u8BD1\uFF0C\u4E0D\u5F97\u865A\u6784\u3002",
+      "\u53EA\u8F93\u51FA\u8BD1\u6587\u672C\u8EAB\uFF0C\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981\u52A0\u5F15\u53F7\u3001\u4E0D\u8981\u91CD\u590D\u539F\u6587\u3001\u4E0D\u8981\u8F93\u51FA\u6807\u7B7E\u6216\u6CE8\u91CA\u3002",
+      "\u4FDD\u6301\u53E3\u8BED\u5316\u3001\u7B80\u6D01\u3001\u9002\u5408\u4F5C\u4E3A\u5B9E\u65F6\u5B57\u5E55\u663E\u793A\u3002",
+      contextBlock ? `\u6CE8\u610F\u4FDD\u6301\u4E0E\u4E0A\u4E0B\u6587\u7684\u8FDE\u8D2F\u6027\uFF0C\u4E13\u6709\u540D\u8BCD\u524D\u540E\u4E00\u81F4\u3002
+${contextBlock}` : "",
+      "",
+      input.text
+    ].filter(Boolean).join("\n");
+  }
+  function cleanTranslation(value) {
+    return value.trim().replace(/^["“「『]([\s\S]*)["”」』]$/, "$1").trim();
+  }
+
+  // src/lib/screen-caption.ts
+  var SCREEN_STRIP_RATIO = 0.22;
+  var SCREEN_STRIP_MIN_HEIGHT = 56;
+  var SCREEN_STRIP_MAX_HEIGHT = 200;
+  var SCREEN_STRIP_MAX_WIDTH = 960;
+  var SCREEN_SAMPLE_INTERVAL_MS = 900;
+  var SCREEN_SIGNATURE_THRESHOLD = 6;
+  function computeStripRect(videoWidth, videoHeight, maxWidth = SCREEN_STRIP_MAX_WIDTH) {
+    if (!Number.isFinite(videoWidth) || !Number.isFinite(videoHeight)) return null;
+    if (videoWidth <= 0 || videoHeight <= 0) return null;
+    const rawHeight = Math.round(videoHeight * SCREEN_STRIP_RATIO);
+    const height = Math.min(
+      SCREEN_STRIP_MAX_HEIGHT,
+      Math.max(SCREEN_STRIP_MIN_HEIGHT, Math.min(videoHeight, rawHeight))
+    );
+    const width = Math.min(videoWidth, maxWidth);
+    return {
+      x: Math.round((videoWidth - width) / 2),
+      y: videoHeight - height,
+      width,
+      height
+    };
+  }
+  function frameSignature(rgba, width, height, cols = 64, rows = 8) {
+    const out = [];
+    if (width <= 0 || height <= 0) return out;
+    for (let row = 0; row < rows; row++) {
+      const y0 = Math.floor(row * height / rows);
+      const y1 = Math.max(y0 + 1, Math.floor((row + 1) * height / rows));
+      for (let col = 0; col < cols; col++) {
+        const x0 = Math.floor(col * width / cols);
+        const x1 = Math.max(x0 + 1, Math.floor((col + 1) * width / cols));
+        let sum = 0;
+        let count = 0;
+        for (let y = y0; y < y1 && y < height; y++) {
+          for (let x = x0; x < x1 && x < width; x++) {
+            const i = (y * width + x) * 4;
+            sum += 0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2];
+            count++;
+          }
+        }
+        out.push(count ? sum / count : 0);
+      }
+    }
+    return out;
+  }
+  function signatureDistance(a, b) {
+    if (!a.length || a.length !== b.length) return Number.POSITIVE_INFINITY;
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+    return sum / a.length;
+  }
+  function isSameFrame(previous, next, threshold = SCREEN_SIGNATURE_THRESHOLD) {
+    if (!previous.length) return false;
+    return signatureDistance(previous, next) < threshold;
+  }
+  var EMPTY_CAPTION = { source: "", target: "" };
+  function extractCaptionPayload(text) {
+    if (!text) return null;
+    const cleaned = text.replace(/```json/gi, "```");
+    const start = cleaned.indexOf("{");
+    if (start === -1) return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < cleaned.length; i++) {
+      const ch = cleaned[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          try {
+            const parsed = JSON.parse(cleaned.slice(start, i + 1));
+            return parsed && typeof parsed === "object" ? parsed : null;
+          } catch {
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+  function parseScreenCaption(text) {
+    const payload = extractCaptionPayload(text);
+    if (!payload) return { ...EMPTY_CAPTION };
+    const source = typeof payload.source === "string" ? payload.source.trim() : "";
+    const target = typeof payload.target === "string" ? payload.target.trim() : "";
+    if (!source) return { ...EMPTY_CAPTION };
+    return { source, target: target || source };
+  }
+  function isDuplicateCaption(last, next) {
+    if (!last) return false;
+    return last.source === next.source && last.target === next.target;
+  }
+
+  // src/lib/moss-messages.ts
+  function flattenMessages(messages) {
+    const systemText = messages.filter((message) => message.role === "system").map((message) => contentToText(message.content)).filter(Boolean).join("\n\n");
+    const turns = messages.filter((message) => message.role !== "system");
+    const prefix = systemText ? `\u3010\u7CFB\u7EDF\u6307\u4EE4\u3011
+${systemText}
+
+\u3010\u5BF9\u8BDD\u8BB0\u5F55\u3011` : turns.length > 1 ? "\u3010\u5BF9\u8BDD\u8BB0\u5F55\u3011" : "";
+    const lines = prefix ? [prefix] : [];
+    const images = [];
+    for (const message of turns) {
+      const label = message.role === "user" ? "\u7528\u6237" : "\u52A9\u624B";
+      const text = contentToText(message.content);
+      const attached = contentToImages(message.content);
+      if (text) lines.push(`${label}\uFF1A${text}`);
+      if (attached.length) {
+        lines.push(`${label}\u4E0A\u4F20\u4E86 ${attached.length} \u5F20\u56FE\u7247\u3002`);
+        images.push(...attached);
+      }
+    }
+    const parts = [];
+    if (lines.length) parts.push({ type: "text", text: lines.join("\n") });
+    parts.push(...images);
+    if (!parts.length) parts.push({ type: "text", text: "\u4F60\u597D" });
+    return parts;
+  }
+  function contentToText(content) {
+    if (typeof content === "string") return content;
+    return content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+  }
+  function contentToImages(content) {
+    if (typeof content === "string") return [];
+    return content.filter((part) => part.type === "image_url");
+  }
+
+  // src/lib/moss.ts
+  var MossError = class extends Error {
+    status;
+    code;
+    constructor(message, status = 0, code) {
+      super(message);
+      this.name = "MossError";
+      this.status = status;
+      this.code = code;
+    }
+  };
+  function endpoint(baseUrl, path) {
+    return `${baseUrl.replace(/\/+$/, "")}${path}`;
+  }
+  function authHeaders(apiKey) {
+    return {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    };
+  }
+  async function readError(res) {
+    let message = `\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${res.status}\uFF09`;
+    let code;
+    try {
+      const text = await res.text();
+      if (text) {
+        try {
+          const json = JSON.parse(text);
+          message = json.error?.message ?? json.message ?? text.slice(0, 240);
+          code = json.error?.code;
+        } catch {
+          message = text.slice(0, 240);
+        }
+      }
+    } catch {
+    }
+    return new MossError(message, res.status, code);
+  }
+  function extractText(payload) {
+    const data = payload;
+    const choice = data.choices?.[0];
+    if (choice?.message?.content) {
+      if (typeof choice.message.content === "string") return choice.message.content;
+      return choice.message.content.map((part) => part.text ?? "").join("");
+    }
+    if (choice?.text) return choice.text;
+    if (data.output_text) return data.output_text;
+    const output = data.output?.flatMap((item) => item.content ?? []).map((part) => part.text ?? "").join("");
+    return output ?? "";
+  }
+  async function completeChat(options) {
+    const config = options.config ?? loadProviderConfig();
+    const route = resolveRoute(config, options.capability ?? "llm", options.model);
+    const res = await fetch(endpoint(route.baseUrl, "/chat/completions"), {
+      method: "POST",
+      headers: authHeaders(route.apiKey),
+      body: JSON.stringify({
+        model: route.model,
+        messages: [{ role: "user", content: flattenMessages(options.messages) }],
+        temperature: options.temperature ?? 0.4,
+        max_tokens: options.maxTokens ?? 2048,
+        stream: false
+      }),
+      signal: options.signal
+    });
+    if (!res.ok) throw await readError(res);
+    const payload = await res.json();
+    const text = extractText(payload);
+    if (!text) throw new MossError("\u6A21\u578B\u8FD4\u56DE\u4E86\u7A7A\u5185\u5BB9\uFF0C\u8BF7\u91CD\u8BD5", 502, "empty_response");
+    return text;
+  }
+  async function readScreenCaption(options) {
+    const config = options.config ?? loadProviderConfig();
+    const route = resolveRoute(config, "video");
+    const model = /realtime/i.test(route.model) ? "moss-vl-1.0" : route.model;
+    const prompt = buildScreenCaptionPrompt(
+      translationLanguageName(options.targetLang, "\u7B80\u4F53\u4E2D\u6587")
+    );
+    const text = await completeChat({
+      config,
+      capability: "video",
+      model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: options.imageDataUrl } }
+          ]
+        }
+      ],
+      temperature: 0,
+      maxTokens: 220,
+      signal: options.signal
+    });
+    return parseScreenCaption(text);
+  }
+  async function transcribeAudio(blob, options = {}) {
+    const config = options.config ?? loadProviderConfig();
+    const route = resolveRoute(config, "audio", options.model);
+    const form = buildTranscriptionFormData({
+      model: route.model,
+      file: blob,
+      sourceLang: options.sourceLang ?? "auto",
+      fileName: options.fileName ?? "segment.webm"
+    });
+    let controller = null;
+    let timedOut = false;
+    let timer;
+    if (options.timeoutMs) {
+      controller = new AbortController();
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller?.abort();
+      }, options.timeoutMs);
+      options.signal?.addEventListener("abort", () => controller?.abort(), { once: true });
+    }
+    try {
+      const res = await fetch(endpoint(route.baseUrl, "/audio/transcriptions"), {
+        method: "POST",
+        headers: { Authorization: `Bearer ${route.apiKey}` },
+        body: form,
+        signal: controller?.signal ?? options.signal
+      });
+      if (!res.ok) throw await readError(res);
+      const payload = await res.json();
+      return (payload.text ?? "").trim();
+    } catch (error) {
+      if (timedOut && options.timeoutMs) {
+        throw new MossError(
+          `\u8F6C\u5199\u670D\u52A1 ${Math.round(options.timeoutMs / 1e3)} \u79D2\u672A\u54CD\u5E94\uFF0C\u5DF2\u653E\u5F03\u8BE5\u6BB5`
+        );
+      }
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   // src/ext/offscreen/audio.ts
@@ -226,22 +831,9 @@
   }
 
   // src/ext/offscreen/api.ts
-  var LANG_NAMES = {};
-  for (const lang of LANGUAGES) {
-    LANG_NAMES[lang.code] = lang.label;
-  }
   function validateRoute(config, capability) {
-    if (!config || !config.routes || !config.providers) {
-      throw new Error("\u914D\u7F6E\u7F3A\u5931");
-    }
-    const route = config.routes[capability];
-    if (!route) throw new Error(`\u80FD\u529B "${capability}" \u672A\u914D\u7F6E\u8DEF\u7531`);
-    const provider = config.providers.find((p) => p.id === route.providerId);
-    if (!provider) throw new Error(`\u670D\u52A1\u5546 "${route.providerId}" \u672A\u627E\u5230`);
-    if (!provider.baseUrl) throw new Error(`\u670D\u52A1\u5546 "${provider.name}" \u7F3A\u5C11 Base URL`);
-    if (!provider.apiKey) throw new Error(`\u670D\u52A1\u5546 "${provider.name}" \u7F3A\u5C11 API Key`);
-    if (!route.model) throw new Error(`\u80FD\u529B "${capability}" \u672A\u9009\u62E9\u6A21\u578B`);
-    return { provider, route };
+    const resolved = resolveRoute(config, capability);
+    return { provider: resolved.provider, route: config.routes[capability] };
   }
   async function apiFetch(url, options) {
     const res = await fetch(url, options);
@@ -264,64 +856,25 @@
     return res.json();
   }
   var ASR_TIMEOUT_MS = 15e3;
-  async function transcribeAudio(wavBlob, config, sourceLang) {
-    const { provider, route } = validateRoute(config, "audio");
-    const form = buildTranscriptionFormData({
-      model: route.model,
-      file: wavBlob,
-      sourceLang
+  async function transcribeAudio2(wavBlob, config, sourceLang) {
+    return transcribeAudio(wavBlob, {
+      config,
+      sourceLang,
+      fileName: "segment.wav",
+      timeoutMs: ASR_TIMEOUT_MS
     });
-    const baseUrl = provider.baseUrl.replace(/\/+$/, "");
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ASR_TIMEOUT_MS);
-    try {
-      const json = await apiFetch(`${baseUrl}/audio/transcriptions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${provider.apiKey}`
-        },
-        body: form,
-        signal: controller.signal
-      });
-      return (json.text || "").trim();
-    } catch (err) {
-      if (controller.signal.aborted) {
-        throw new Error("\u8F6C\u5199\u670D\u52A1 15 \u79D2\u672A\u54CD\u5E94\uFF0C\u5DF2\u653E\u5F03\u8BE5\u6BB5");
-      }
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  function buildTranslatePrompt(options, text) {
-    const source = LANG_NAMES[options.source || "auto"] || "\u81EA\u52A8\u68C0\u6D4B";
-    const target = LANG_NAMES[options.target || "zh"] || "\u7B80\u4F53\u4E2D\u6587";
-    const contextBlock = options.context ? `\u3010\u4E0A\u4E0B\u6587\uFF08\u6700\u8FD1\u7684\u5B57\u5E55\uFF09\u3011
-${options.context}
-
-` : "";
-    return [
-      `\u4F60\u662F\u4E00\u540D\u4E13\u4E1A\u7684\u540C\u58F0\u4F20\u8BD1\u5458\u3002\u6E90\u8BED\u8A00\uFF1A${source}\uFF1B\u76EE\u6807\u8BED\u8A00\uFF1A${target}\u3002`,
-      "\u8F93\u5165\u6765\u81EA\u8BED\u97F3\u8BC6\u522B\uFF0C\u53EF\u80FD\u6709\u9519\u5B57\u3001\u6F0F\u5B57\u6216\u65AD\u53E5\u9519\u8BEF\u3002\u53EA\u7FFB\u8BD1\u4F60\u770B\u5230\u7684\u5185\u5BB9\uFF1A\u4E0D\u5F97\u8865\u5168\u3001\u4E0D\u5F97\u6269\u5199\u3001\u4E0D\u5F97\u6839\u636E\u4E0A\u4E0B\u6587\u7F16\u9020\u672A\u8BF4\u51FA\u7684\u4FE1\u606F\u3002",
-      "\u788E\u7247\u6216\u8BED\u6C14\u8BCD\u5C31\u8BD1\u6210\u788E\u7247\u6216\u8BED\u6C14\u8BCD\uFF0C\u4E0D\u8981\u6539\u5199\u6210\u5B8C\u6574\u53E5\u5B50\u3002",
-      "\u4EBA\u540D\u3001\u5730\u540D\u3001\u4E13\u6709\u540D\u8BCD\u53EA\u4F7F\u7528\u4E0A\u4E0B\u6587\u4E2D\u51FA\u73B0\u8FC7\u7684\u5199\u6CD5\uFF1B\u6CA1\u6709\u628A\u63E1\u65F6\u97F3\u8BD1\uFF0C\u4E0D\u5F97\u865A\u6784\u3002",
-      "\u53EA\u8F93\u51FA\u8BD1\u6587\u672C\u8EAB\uFF0C\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981\u52A0\u5F15\u53F7\u3001\u4E0D\u8981\u91CD\u590D\u539F\u6587\u3001\u4E0D\u8981\u8F93\u51FA\u6807\u7B7E\u6216\u6CE8\u91CA\u3002",
-      "\u4FDD\u6301\u53E3\u8BED\u5316\u3001\u7B80\u6D01\u3001\u9002\u5408\u4F5C\u4E3A\u5B9E\u65F6\u5B57\u5E55\u663E\u793A\u3002",
-      contextBlock ? `\u6CE8\u610F\u4FDD\u6301\u4E0E\u4E0A\u4E0B\u6587\u7684\u8FDE\u8D2F\u6027\uFF0C\u4E13\u6709\u540D\u8BCD\u524D\u540E\u4E00\u81F4\u3002
-${contextBlock}` : "",
-      "",
-      text
-    ].filter(Boolean).join("\n");
-  }
-  function cleanTranslation(value) {
-    return value.trim().replace(/^["“「『]([\s\S]*)["”」』]$/, "$1").trim();
   }
   var streamCapabilityCache = /* @__PURE__ */ new Map();
   async function translateTextStream(text, options) {
     if (!text) return "";
     const { onDelta } = options;
     const { provider, route } = validateRoute(options.config, "llm");
-    const promptText = buildTranslatePrompt(options, text);
+    const promptText = buildTranslationPrompt({
+      text,
+      source: options.source,
+      target: options.target,
+      context: options.context
+    });
     const baseUrl = provider.baseUrl.replace(/\/+$/, "");
     const probeKey = `${baseUrl}::${route.model}`;
     let fullTranslation = "";
@@ -406,7 +959,12 @@ ${contextBlock}` : "",
             content: [
               {
                 type: "text",
-                text: buildTranslatePrompt(options, text)
+                text: buildTranslationPrompt({
+                  text,
+                  source: options.source,
+                  target: options.target,
+                  context: options.context
+                })
               }
             ]
           }
@@ -459,6 +1017,9 @@ ${question}`
       signal
     });
     return extractChatText(json).trim();
+  }
+  async function readScreenCaption2(options) {
+    return readScreenCaption(options);
   }
   function extractChatText(json) {
     const choice = json.choices?.[0];
@@ -1387,7 +1948,7 @@ ${question}`
     try {
       const wavBlob = createWavBlob(pcmData, TARGET_SAMPLE_RATE);
       const t0 = performance.now();
-      const transcription = await transcribeAudio(wavBlob, session.config, session.sourceLang);
+      const transcription = await transcribeAudio2(wavBlob, session.config, session.sourceLang);
       if (session.aborted) return;
       if (!transcription) return;
       const asrMs = Math.round(performance.now() - t0);
@@ -1643,6 +2204,207 @@ ${question}`
     }
   }
 
+  // src/ext/offscreen/screen-caption.ts
+  var REQUEST_TIMEOUT_MS = 2e4;
+  var MAX_CONSECUTIVE_FAILURES = 3;
+  var SIGNATURE_COLS = 64;
+  var SIGNATURE_ROWS = 8;
+  var SIGNATURE_WIDTH = 128;
+  var states = /* @__PURE__ */ new Map();
+  function emit(message) {
+    chrome.runtime.sendMessage(message).catch(() => {
+    });
+  }
+  function emitStatus(state, status, error = "") {
+    emit({
+      type: "CAPTURE_SCREEN_STATUS",
+      tabId: state.tabId,
+      generation: state.generation,
+      status,
+      error
+    });
+  }
+  function isScreenCaptionActive(tabId) {
+    return states.has(tabId);
+  }
+  function setScreenCaptionLang(tabId, targetLang) {
+    const state = states.get(tabId);
+    if (state && targetLang) state.targetLang = targetLang;
+  }
+  function startScreenCaption(options) {
+    const session = captureSessions.get(options.tabId);
+    if (!session || session.aborted || !session.videoEl) {
+      return { ok: false, error: "\u8BF7\u5148\u5F00\u59CB\u5F55\u97F3\uFF1A\u753B\u9762\u5B57\u5E55\u9700\u8981\u5F55\u5236\u4E2D\u7684\u89C6\u9891\u753B\u9762" };
+    }
+    if (session.generation !== options.generation) {
+      return { ok: false, error: "\u4F1A\u8BDD\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u5F00\u59CB\u5F55\u97F3" };
+    }
+    stopScreenCaption(options.tabId);
+    const state = {
+      tabId: options.tabId,
+      generation: options.generation,
+      config: options.config,
+      targetLang: options.targetLang,
+      timer: null,
+      inFlight: false,
+      stopped: false,
+      failures: 0,
+      lastSignature: [],
+      lastCaption: null,
+      lastRequestAt: 0,
+      canvas: null
+    };
+    states.set(options.tabId, state);
+    state.timer = setInterval(() => void tick(state), SCREEN_SAMPLE_INTERVAL_MS);
+    emitStatus(state, "active");
+    return { ok: true };
+  }
+  function stopScreenCaption(tabId) {
+    const state = states.get(tabId);
+    if (!state) return;
+    state.stopped = true;
+    if (state.timer) clearInterval(state.timer);
+    state.timer = null;
+    state.canvas = null;
+    states.delete(tabId);
+    emitStatus(state, "stopped");
+  }
+  function stopWithError(state, error) {
+    if (state.stopped) return;
+    state.stopped = true;
+    if (state.timer) clearInterval(state.timer);
+    state.timer = null;
+    states.delete(state.tabId);
+    emitStatus(state, "error", error);
+  }
+  function ensureCanvas(state) {
+    if (!state.canvas) state.canvas = document.createElement("canvas");
+    return state.canvas;
+  }
+  function sampleStrip(state, video) {
+    const rect = computeStripRect(video.videoWidth, video.videoHeight);
+    if (!rect) return null;
+    const gate = ensureCanvas(state);
+    gate.width = SIGNATURE_WIDTH;
+    gate.height = SIGNATURE_ROWS;
+    const gateCtx = gate.getContext("2d", { willReadFrequently: true });
+    if (!gateCtx) return null;
+    gateCtx.drawImage(
+      video,
+      rect.x,
+      rect.y,
+      rect.width,
+      rect.height,
+      0,
+      0,
+      SIGNATURE_WIDTH,
+      SIGNATURE_ROWS
+    );
+    const pixels = gateCtx.getImageData(0, 0, SIGNATURE_WIDTH, SIGNATURE_ROWS).data;
+    const signature = frameSignature(pixels, SIGNATURE_WIDTH, SIGNATURE_ROWS, SIGNATURE_COLS, SIGNATURE_ROWS);
+    const full = document.createElement("canvas");
+    full.width = rect.width;
+    full.height = rect.height;
+    const ctx = full.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(
+      video,
+      rect.x,
+      rect.y,
+      rect.width,
+      rect.height,
+      0,
+      0,
+      rect.width,
+      rect.height
+    );
+    return { dataUrl: full.toDataURL("image/jpeg", 0.72), signature };
+  }
+  async function tick(state) {
+    if (state.stopped || state.inFlight) return;
+    const session = captureSessions.get(state.tabId);
+    if (!session || session.aborted || !session.videoEl) {
+      stopScreenCaption(state.tabId);
+      return;
+    }
+    if (session.generation !== state.generation) {
+      stopScreenCaption(state.tabId);
+      return;
+    }
+    const video = session.videoEl;
+    if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+    const now = Date.now();
+    if (now - state.lastRequestAt < SCREEN_SAMPLE_INTERVAL_MS) return;
+    let sample = null;
+    try {
+      sample = sampleStrip(state, video);
+    } catch {
+      return;
+    }
+    if (!sample) return;
+    if (isSameFrame(state.lastSignature, sample.signature)) return;
+    state.lastSignature = sample.signature;
+    state.lastRequestAt = now;
+    state.inFlight = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const startedAt = Date.now();
+    try {
+      const caption = await readScreenCaption2({
+        imageDataUrl: sample.dataUrl,
+        targetLang: state.targetLang,
+        config: state.config,
+        signal: controller.signal
+      });
+      state.failures = 0;
+      if (!caption.source) {
+        emit({
+          type: "CAPTURE_SCREEN_SUBTITLE",
+          tabId: state.tabId,
+          generation: state.generation,
+          at: startedAt,
+          source: "",
+          target: "",
+          latency: Date.now() - startedAt
+        });
+        return;
+      }
+      if (isDuplicateCaption(state.lastCaption, caption)) {
+        emit({
+          type: "CAPTURE_SCREEN_SUBTITLE",
+          tabId: state.tabId,
+          generation: state.generation,
+          at: startedAt,
+          source: caption.source,
+          target: caption.target,
+          latency: Date.now() - startedAt,
+          duplicate: true
+        });
+        return;
+      }
+      state.lastCaption = caption;
+      emit({
+        type: "CAPTURE_SCREEN_SUBTITLE",
+        tabId: state.tabId,
+        generation: state.generation,
+        at: startedAt,
+        source: caption.source,
+        target: caption.target,
+        latency: Date.now() - startedAt
+      });
+    } catch (err) {
+      if (state.stopped) return;
+      state.lastSignature = [];
+      state.failures += 1;
+      if (state.failures >= MAX_CONSECUTIVE_FAILURES) {
+        stopWithError(state, err?.message || "\u753B\u9762\u5B57\u5E55\u8FDE\u7EED\u5931\u8D25\uFF0C\u5DF2\u505C\u6B62");
+      }
+    } finally {
+      clearTimeout(timeout);
+      state.inFlight = false;
+    }
+  }
+
   // src/ext/offscreen.ts
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (sender.id !== chrome.runtime.id) return false;
@@ -1655,6 +2417,7 @@ ${question}`
       }
       case "STOP_CAPTURE": {
         const tabId = message.tabId;
+        stopScreenCaption(tabId);
         stopTabCapture(tabId, message.generation, message.drain === true).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }));
         return true;
       }
@@ -1677,7 +2440,23 @@ ${question}`
           if (message.sourceLang) session.sourceLang = message.sourceLang;
           if (message.targetLang) session.targetLang = message.targetLang;
         }
+        if (message.targetLang) setScreenCaptionLang(tabId, message.targetLang);
         sendResponse({ ok: true });
+        return false;
+      }
+      case "START_SCREEN_CAPTION": {
+        const { tabId, generation, config, targetLang } = message;
+        const result = startScreenCaption({ tabId, generation, config, targetLang });
+        sendResponse(result);
+        return false;
+      }
+      case "STOP_SCREEN_CAPTION": {
+        stopScreenCaption(message.tabId);
+        sendResponse({ ok: true });
+        return false;
+      }
+      case "GET_SCREEN_CAPTION": {
+        sendResponse({ ok: true, active: isScreenCaptionActive(message.tabId) });
         return false;
       }
       case "CAPTURE_FRAME": {

@@ -43,6 +43,28 @@ video is paused or silent.
   a quiet listening row instead of going blank.
 - Built-in demo stream, so the subtitle animation can be reviewed without any key.
 
+### Screen captions (burned-in subtitles)
+
+Recorded videos often carry their own subtitles in the picture. The audio
+pipeline can mishear those lines and cannot read on-screen text that is never
+spoken. **画面字幕** reads the bottom strip of the captured tab video and shows
+it as a subtitle line, marked **画面** so it is never confused with speech.
+
+- Turn it on from the **…** menu in the page toolbar while a capture is running.
+  It is off by default: each changed frame costs one vision request.
+- Only the changed frames are sent — the bottom 22 % of the picture, at most one
+  request per second. A static line costs exactly one request.
+- Screen lines take precedence: while a screen line is fresh (8 s), audio lines
+  are not added, so the overlay follows the burned-in text instead of a
+  misheard version of it. After 8 s without new on-screen text, audio resumes.
+- The on-screen text and its translation are both kept, so exports and history
+  show what the picture said and how it was translated.
+- The round trip is roughly 3 s, so a line appears shortly after it is painted.
+- Vision requests use the **Video** route. If that route points at a realtime
+  model id, the channel uses the equivalent HTTP vision model. The realtime
+  WebSocket itself is not used: the gateway requires the API key in the
+  `Authorization` header, which a browser `WebSocket` cannot send.
+
 ### Chat
 
 - Multimodal input: text, images and code in the same thread.
@@ -72,7 +94,7 @@ video is paused or silent.
 ### Provider management
 
 - **Multiple providers side by side**: official gateway, third-party relay, or a self-hosted endpoint, each with its own base URL and key.
-- **Three independent capability routes**: `LLM` (chat / vision / translation), `Audio` (ASR) and `Video` (low-latency frame understanding) may point at different providers and models.
+- **Three independent capability routes**: `LLM` (chat / vision / translation), `Audio` (ASR) and `Video` (frame understanding, including the screen-caption channel) may point at different providers and models.
 - **Model discovery** via `GET /models`, cached per provider with status and the raw error message.
 - Works with any OpenAI-compatible relay; the MOSS protocol is built in.
 - Configuration and keys live only in `localStorage`.
@@ -198,7 +220,8 @@ The ZIP is intentionally readable and contains no encrypted or remotely loaded c
 3. Choose separate **LLM**, **Audio**, **Video**, and **Image** routes when your provider setup needs it.
 4. Start microphone or tab-audio transcription. Grant the browser capture permission when prompted.
 5. Use the in-page toolbar to pause, stop, save notes, export subtitles, or ask the configured model about the current page.
-6. Open the side panel to review notes and transcription history, export Markdown, delete records, or configure optional Obsidian sync.
+6. To read burned-in subtitles, open **… → 画面字幕** while recording. The channel is manual and per capture.
+7. Open the side panel to review notes and transcription history, export Markdown, delete records, or configure optional Obsidian sync.
 
 ### Screenshots, notes, and citations
 
@@ -294,7 +317,7 @@ button on that row to open the plugin settings and copy its API key.
 | `management` | Read-only: when another extension holds the capture stream, the error hint lists which extensions hold the `tabCapture` permission. |
 | `<all_urls>` | Allows the user-invoked toolbar to work on arbitrary websites. |
 
-Audio goes to the configured Audio provider only during transcription. Chat text and images go to the configured LLM or Image provider only when submitted. Notes, history, and API keys stay in the browser unless the user explicitly exports a file or enables Obsidian sync. See [SECURITY.md](./SECURITY.md) for the threat model.
+Audio goes to the configured Audio provider only during transcription. While **画面字幕** is on, bottom-of-frame images go to the configured Video provider; stopping the channel stops those requests. Chat text and images go to the configured LLM or Image provider only when submitted. Notes, history, and API keys stay in the browser unless the user explicitly exports a file or enables Obsidian sync. See [SECURITY.md](./SECURITY.md) for the threat model.
 
 ### Troubleshooting
 
@@ -302,6 +325,8 @@ Audio goes to the configured Audio provider only during transcription. Chat text
 - **No audio is captured:** grant microphone or tab-audio permission, check that the tab has audio, and stop any other capture extension using the same tab.
 - **Requests fail:** verify the provider base URL, API key, protocol, CORS policy, and selected model. Use **Fetch models** when the provider exposes `/models`; otherwise enter the model id manually.
 - **The side panel cannot open:** use a normal web page and invoke the extension from a user gesture. Browser settings pages do not allow content injection.
+- **画面字幕 does nothing:** start recording first; the channel samples the captured video, so it has no frames without an active capture. On a static screen it sends one request and then waits for the picture to change.
+- **画面字幕 stops by itself:** three consecutive vision failures stop it and show the provider error. Check the Video route and key, then turn it on again.
 - **Obsidian sync fails:** install and enable Obsidian Local REST API, verify the port and token, and use **测试连接** before saving.
 
 ### Store submission

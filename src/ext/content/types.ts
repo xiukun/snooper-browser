@@ -9,7 +9,7 @@ import { renderMarkdownLite } from './markdown'
  * objects. Export paths only read the optional-safe fields, so the local
  * entry shape is a lenient SubtitleLine.
  */
-export type SubtitleEntry = Partial<SubtitleLine> & { id?: string }
+export type SubtitleEntry = Partial<SubtitleLine> & { id?: string; kind?: 'screen' }
 
 export interface StreamingSubtitle {
   at?: number
@@ -38,6 +38,9 @@ export interface SessionState {
   transcriptId?: string | null
   streamingSubtitle?: StreamingSubtitle | null
   audioSilent?: boolean
+  /** ADR-043: screen-caption channel state for this capture. */
+  screenCaption?: 'off' | 'on' | 'error'
+  screenCaptionError?: string
   notes: NoteDocument[]
   activeNoteId: string | null
   isDemoMode: boolean

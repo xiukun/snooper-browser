@@ -25,6 +25,12 @@ import {
   startTabCapture,
   stopTabCapture,
 } from './offscreen/capture'
+import {
+  isScreenCaptionActive,
+  setScreenCaptionLang,
+  startScreenCaption,
+  stopScreenCaption,
+} from './offscreen/screen-caption'
 
 chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: any) => {
   if (sender.id !== chrome.runtime.id) return false
@@ -41,6 +47,9 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
 
     case 'STOP_CAPTURE': {
       const tabId = message.tabId
+      // The sampler reads the capture video element; it must stop before the
+      // element is torn down.
+      stopScreenCaption(tabId)
       stopTabCapture(tabId, message.generation, message.drain === true).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }))
       return true
     }
@@ -65,7 +74,26 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         if (message.sourceLang) session.sourceLang = message.sourceLang
         if (message.targetLang) session.targetLang = message.targetLang
       }
+      if (message.targetLang) setScreenCaptionLang(tabId, message.targetLang)
       sendResponse({ ok: true })
+      return false
+    }
+
+    case 'START_SCREEN_CAPTION': {
+      const { tabId, generation, config, targetLang } = message
+      const result = startScreenCaption({ tabId, generation, config, targetLang })
+      sendResponse(result)
+      return false
+    }
+
+    case 'STOP_SCREEN_CAPTION': {
+      stopScreenCaption(message.tabId)
+      sendResponse({ ok: true })
+      return false
+    }
+
+    case 'GET_SCREEN_CAPTION': {
+      sendResponse({ ok: true, active: isScreenCaptionActive(message.tabId) })
       return false
     }
 

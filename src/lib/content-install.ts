@@ -41,6 +41,14 @@ export function shouldSkipContentInstall(marker: unknown): boolean {
   }
 }
 
+interface ChromeLike {
+  chrome?: {
+    runtime?: {
+      getManifest?: () => unknown
+    }
+  }
+}
+
 /**
  * Liveness probe used by the content script itself. `chrome.runtime` is
  * revoked in an orphaned content script, so `getManifest()` throwing is the
@@ -49,8 +57,13 @@ export function shouldSkipContentInstall(marker: unknown): boolean {
 export function createContentInstallMarker(): ContentInstallMarker {
   return {
     alive: () => {
+      // `chrome` only exists inside the extension. The SPA type-checks this
+      // module too, so the global is reached through globalThis instead of
+      // relying on the extension-only ambient declaration.
+      const runtime = (globalThis as ChromeLike).chrome?.runtime
+      if (!runtime || typeof runtime.getManifest !== 'function') return false
       try {
-        chrome.runtime.getManifest()
+        runtime.getManifest()
         return true
       } catch {
         return false

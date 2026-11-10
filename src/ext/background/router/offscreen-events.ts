@@ -22,6 +22,7 @@ import {
 } from '../transcript-store'
 import { resolveVideoTimeAt } from '../video-clock'
 import { insertByStart } from '../../../lib/subtitle-order'
+import { shouldYieldAudio } from '../../../lib/screen-caption'
 
 /**
  * The last line of an explicit stop arrives after the background has already
@@ -84,6 +85,8 @@ export function registerOffscreenEventRouter(): void {
           s.configSnapshot = null
           s.streamingSubtitle = null
           s.audioSilent = false
+          s.screenCaption = 'off'
+          s.screenCaptionError = ''
           // The track ended outside the STOP path. Finalize the full record
           // so a crashed or externally-ended capture still reaches history.
           if (s.transcriptId || s.subtitles.length > 0) {
@@ -106,6 +109,11 @@ export function registerOffscreenEventRouter(): void {
         // Previously a stray tab-lifecycle stop left the offscreen capture
         // alive, so subtitles kept streaming into a "stopped" toolbar.
         if (s.state !== 'running' && s.state !== 'starting') {
+          return false
+        }
+        // ADR-043: a fresh screen line owns the overlay; do not paint a
+        // partial speech line on top of it.
+        if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
           return false
         }
 
@@ -136,6 +144,11 @@ export function registerOffscreenEventRouter(): void {
         if (!s || (s.generation !== message.generation && !isStoppingGeneration(s, message.generation))) {
           // Stale result – ignore unless it is the final line of the capture
           // the user just stopped (ADR-031 tail drain).
+          return false
+        }
+        // ADR-043: burned-in subtitles win while they are fresh. The audio
+        // line is dropped, not queued: a delayed duplicate adds nothing.
+        if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
           return false
         }
         const tail = s.generation !== message.generation
@@ -184,6 +197,59 @@ export function registerOffscreenEventRouter(): void {
         // A tail line is not pushed: the panel already shows the stopped
         // state and must not flash back to "recording" for its last row.
         if (!tail) pushSession(message.tabId)
+        return false
+      }
+
+      case 'CAPTURE_SCREEN_SUBTITLE': {
+        const s = sessions.get(message.tabId)
+        if (!s || s.generation !== message.generation) return false
+        if (s.state !== 'running' && s.state !== 'starting') return false
+
+        // Any screen result — including "no text" and a repeat of the same
+        // line — refreshes the yield window: the strip is still on screen.
+        s.lastScreenAt = Date.now()
+        s.streamingSubtitle = null
+        if (!message.source || message.duplicate) {
+          pushStreamingUpdate(message.tabId)
+          return false
+        }
+
+        const at = message.at || Date.now()
+        const entry: SubtitleEntry = {
+          id: `scr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          at,
+          endedAt: null,
+          videoTime: resolveVideoTimeAt(message.tabId, at),
+          source: message.source || '',
+          target: message.target || '',
+          latency: message.latency || 0,
+          kind: 'screen',
+        }
+        insertByStart(s.subtitles, entry)
+        if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
+          s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW)
+        }
+        if (s.transcriptId) {
+          void appendTranscriptLine(s.transcriptId, entry)
+        } else {
+          void ensureTranscript(s).then((id) => {
+            if (id) void appendTranscriptLine(id, entry)
+          })
+        }
+        pushSession(message.tabId)
+        return false
+      }
+
+      case 'CAPTURE_SCREEN_STATUS': {
+        const s = sessions.get(message.tabId)
+        if (!s || s.generation !== message.generation) return false
+        s.screenCaption = message.status === 'active'
+          ? 'on'
+          : message.status === 'error'
+            ? 'error'
+            : 'off'
+        s.screenCaptionError = message.error || ''
+        pushSession(message.tabId)
         return false
       }
 

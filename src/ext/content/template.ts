@@ -64,6 +64,10 @@ export const CONTENT_HTML = `
           <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg></span>
           <span class="rtts-menu-text"><b>页面截图</b><small>录制中也能截取视频画面</small></span>
         </button>
+        <button id="rtts-screen-btn" class="rtts-menu-item" type="button" role="menuitem" aria-pressed="false">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M6 12h5M13 12h5M8 21h8"/></svg></span>
+          <span class="rtts-menu-text"><b>画面字幕</b><small>读取画面里的硬字幕并翻译</small></span>
+        </button>
         <button id="rtts-image-btn" class="rtts-menu-item" type="button" role="menuitem">
           <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></span>
           <span class="rtts-menu-text"><b>生成配图</b><small>根据提示词生成图片</small></span>

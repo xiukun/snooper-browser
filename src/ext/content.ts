@@ -262,7 +262,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
   const {
     bar, barGrip, recordBtn, recordLabelEl, moreBtn, toolsMenu,
     langBtn, langLabel, langPicker, sourceLangsEl, targetLangsEl,
-    subBox, subHandle, subResize, subScroll, subRows, subPlaceholder, subStatus,
+    subBox, subHandle, subResize, subScroll, subRows, subPlaceholder, subStatus, subListening,
     copyBtn, exportTxtBtn, exportMdBtn,
     streamingRow, streamingText, streamingSource, streamingLabel,
     drawer, chatEl, chatComposer, chatEditor, chatPreview, mdPreviewBtn,

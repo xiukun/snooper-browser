@@ -15,7 +15,8 @@ interface Snapshot {
   scopes:(TranscriptScope|NoteScope)[]
   scopeIndex:number; offset:number; scanned:number; step:number; changed:boolean; expiresAt:number
 }
-function parseCursor(cursor:string):{id:string;step:number} {
+function parseCursor(cursor:unknown):{id:string;step:number} {
+  if(typeof cursor!=='string') throw new LibraryError('INVALID_INPUT','查询游标必须是文本')
   const match=/^([a-f\d-]{36}):(\d+)$/.exec(cursor)
   if(!match) throw new LibraryError('CURSOR_EXPIRED','查询游标无效或过期，请重新查询')
   return {id:match[1]!,step:Number(match[2])}
@@ -68,17 +69,18 @@ export function searchLibrary(input:{query:string;favoritesOnly:boolean;cursor?:
           const byId=new Map(note.entries.map(e=>[e.id,e]))
           for(const entryId of wanted) {
             const value=byId.get(entryId)
-            if(!value) {state.changed=true;continue}
+            if(!value) {state.changed=true;state.offset++;continue}
             const entry=noteEntry(note,value)
             if(include(entry.ref) && matchesQuery(entry,query)) result.hits.push(highlightEntry({...entry,favorite:favoriteSet.has(refKey(entry.ref))},query))
-            state.scanned++
+            // Commit each consumed entry with its returned hit/count. If a
+            // later entry is malformed, continuation starts at that entry.
+            state.scanned++;state.offset++
           }
-          state.offset+=wanted.length
         }
         if(state.offset>=scope.count) {state.scopeIndex++;state.offset=0}
       } catch(error) {
         result.errors.push({kind:scope.kind,id:scope.id,message:error instanceof Error ? error.message : String(error)})
-        break // Persist successful work, retry this exact missing page next time.
+        break // Persist successful work; retry the failed page/entry next time.
       }
     }
     result.scanned=state.scanned;result.changed=state.changed

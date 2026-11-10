@@ -69,5 +69,32 @@ h.local[a.transcripts.LEGACY_HISTORY_KEY]=[{id:'count-only',subtitleCount:7,page
 a=await h.load()
 const missing=await a.search.searchLibrary({query:'电脑',favoritesOnly:false})
 assert.equal(missing.complete,false);assert.equal(missing.errors.length,1);assert.ok(missing.cursor)
-console.log('✅ library-search: 150 recordings, 451 rows, source/target/note coverage, restart per batch, missing-block retry, cancel/deletion and frozen live snapshot passed')
+// A malformed legacy entry must pause at that entry, not replay earlier hits.
+for(const key of Object.keys(h.local)) delete h.local[key]
+for(const key of Object.keys(h.session)) delete h.session[key]
+a=await h.load()
+const malformedLegacy=[{id:'legacy-note',title:'旧笔记',createdAt:1,updatedAt:1,entries:[noteEntry('good','手机'),noteEntry('bad','手机',{source:42}),noteEntry('tail','手机')]}]
+const migrated=await a.notes.listNotesWithMigration(malformedLegacy)
+assert.equal(migrated.legacyAcknowledged,true,'supported legacy ingestion preserves its acknowledgement')
+const malformedBody=structuredClone(h.local[a.notes.NOTES_STORAGE_KEY])
+let broken=await a.search.searchLibrary({query:'手机',favoritesOnly:false})
+assert.equal(broken.complete,false);assert.equal(broken.errors.length,1);assert.ok(broken.cursor)
+const accumulated=[...broken.hits]
+const firstScanned=broken.scanned
+a=await h.load()
+broken=await a.search.searchLibrary({query:'手机',favoritesOnly:false,cursor:broken.cursor})
+assert.deepEqual(broken.hits,[],'retry must not replay a consumed good entry before the malformed entry')
+assert.equal(broken.scanned,firstScanned,'retry must not inflate the count')
+assert.equal(broken.complete,false);assert.equal(broken.errors.length,1)
+assert.deepEqual(h.local[a.notes.NOTES_STORAGE_KEY],malformedBody,'search must not coerce or rewrite the malformed saved body')
+// Repair only the corrupt fixture field, then resume the persisted cursor in a fresh worker.
+h.local[a.notes.NOTES_STORAGE_KEY][0].entries[1].source='已修复原文'
+a=await h.load()
+const repaired=await a.search.searchLibrary({query:'手机',favoritesOnly:false,cursor:broken.cursor})
+accumulated.push(...repaired.hits)
+assert.equal(repaired.complete,true);assert.deepEqual(repaired.errors,[])
+assert.deepEqual(accumulated.map(hit=>hit.ref.entryId),['good','bad','tail'])
+assert.equal(new Set(accumulated.map(hit=>JSON.stringify(hit.ref))).size,3)
+assert.equal(repaired.scanned,3,'each repaired saved entry must be counted exactly once')
+console.log('✅ library-search: 150 recordings, 451 rows, source/target/note coverage, restart per batch, missing-block retry, cancel/deletion, frozen live snapshot and malformed-note retry checkpoints passed')
 } finally {h.close()}

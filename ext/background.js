@@ -2099,6 +2099,7 @@ var configHandlers = {
 var PREFIX = "snooper.library.search.v1.";
 var WORK_UNITS = 4;
 function parseCursor(cursor) {
+  if (typeof cursor !== "string") throw new LibraryError("INVALID_INPUT", "\u67E5\u8BE2\u6E38\u6807\u5FC5\u987B\u662F\u6587\u672C");
   const match = /^([a-f\d-]{36}):(\d+)$/.exec(cursor);
   if (!match) throw new LibraryError("CURSOR_EXPIRED", "\u67E5\u8BE2\u6E38\u6807\u65E0\u6548\u6216\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u67E5\u8BE2");
   return { id: match[1], step: Number(match[2]) };
@@ -2172,13 +2173,14 @@ function searchLibrary(input) {
             const value = byId.get(entryId);
             if (!value) {
               state.changed = true;
+              state.offset++;
               continue;
             }
             const entry = noteEntry(note, value);
             if (include(entry.ref) && matchesQuery(entry, query)) result.hits.push(highlightEntry({ ...entry, favorite: favoriteSet.has(refKey(entry.ref)) }, query));
             state.scanned++;
+            state.offset++;
           }
-          state.offset += wanted.length;
         }
         if (state.offset >= scope.count) {
           state.scopeIndex++;
@@ -2223,7 +2225,7 @@ var libraryHandlers = {
   LIBRARY_RETRY_DELETE: handler((message) => retryDelete(message.operationId)),
   LIBRARY_USAGE: handler(() => libraryUsage()),
   LIBRARY_OPEN_SOURCE: handler((message, { tabId }) => {
-    if (message.tabId !== void 0 && (!Number.isInteger(message.tabId) || message.tabId < 0)) throw new Error("\u6807\u7B7E\u9875 ID \u65E0\u6548");
+    if (message.tabId !== void 0 && (!Number.isInteger(message.tabId) || message.tabId < 0)) throw new LibraryError("INVALID_INPUT", "\u6807\u7B7E\u9875 ID \u65E0\u6548");
     return openLibrarySource({ ref: message.ref, recordId: message.recordId, seconds: message.seconds }, tabId ?? message.tabId);
   })
 };

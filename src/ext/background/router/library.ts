@@ -1,5 +1,5 @@
 import { cancelSearch, searchLibrary } from '../library-search'
-import { confirmDelete, libraryContext, libraryUsage, openLibrarySource, prepareDelete, retryDelete, setFavorite } from '../library-store'
+import { confirmDelete, libraryContext, libraryUsage, openLibrarySource, prepareDelete, retryDelete, setFavorite, LibraryError } from '../library-store'
 import { waitForRecovery } from '../session-store'
 import type { MessageHandler, MessageHandlerMap, RouterContext } from './types'
 
@@ -19,7 +19,7 @@ export const libraryHandlers: MessageHandlerMap = {
   LIBRARY_RETRY_DELETE: handler(message=>retryDelete(message.operationId)),
   LIBRARY_USAGE: handler(()=>libraryUsage()),
   LIBRARY_OPEN_SOURCE: handler((message,{tabId})=>{
-    if(message.tabId!==undefined && (!Number.isInteger(message.tabId) || message.tabId<0)) throw new Error('标签页 ID 无效')
+    if(message.tabId!==undefined && (!Number.isInteger(message.tabId) || message.tabId<0)) throw new LibraryError('INVALID_INPUT','标签页 ID 无效')
     return openLibrarySource({ref:message.ref,recordId:message.recordId,seconds:message.seconds},tabId ?? message.tabId)
   }),
 }

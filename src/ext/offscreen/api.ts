@@ -57,6 +57,13 @@ async function apiFetch(url: string, options: RequestInit): Promise<any> {
 
 /* ===== Speech-to-text ===== */
 
+/**
+ * ADR-042: a hung ASR request holds one of the three queue slots forever.
+ * Three hung requests stop segmentation entirely, which the user experiences
+ * as "waiting forever with no subtitles". The bound releases the slot.
+ */
+const ASR_TIMEOUT_MS = 15000
+
 /** Transcribe one speech segment through the non-streaming MOSS endpoint. */
 export async function transcribeAudio(
   wavBlob: Blob,
@@ -71,15 +78,27 @@ export async function transcribeAudio(
   })
 
   const baseUrl = provider.baseUrl.replace(/\/+$/, '')
-  const json = await apiFetch(`${baseUrl}/audio/transcriptions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${provider.apiKey}`,
-    },
-    body: form,
-  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), ASR_TIMEOUT_MS)
+  try {
+    const json = await apiFetch(`${baseUrl}/audio/transcriptions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+      },
+      body: form,
+      signal: controller.signal,
+    })
 
-  return (json.text || '').trim()
+    return (json.text || '').trim()
+  } catch (err: any) {
+    if (controller.signal.aborted) {
+      throw new Error('转写服务 15 秒未响应，已放弃该段')
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /* ===== Translation ===== */

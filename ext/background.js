@@ -110,10 +110,6 @@ async function saveConfig(config) {
   }
   const json = JSON.stringify(config);
   await chrome.storage.local.set({ [CONFIG_KEY]: json });
-  try {
-    await chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
-  } catch {
-  }
 }
 
 // src/ext/capture-recovery.ts

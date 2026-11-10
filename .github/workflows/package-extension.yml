@@ -55,6 +55,8 @@ jobs:
           npm run test:subtitle-order
           npm run test:video-presence
           npm run test:content-refs
+          npm run test:screen-caption
+          npm run test:toolbar-visibility
           npm run test:content-install
           npm run test:deep-link
           npm run test:markdown

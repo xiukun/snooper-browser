@@ -3110,7 +3110,7 @@
         session.isDemoMode = false;
         session.subtitles = [];
       }
-      deps.ensureToolbarVisible();
+      deps.ensureToolbarVisible("capture");
       session.state = "starting";
       deps.render();
       const res = await deps.bg("START", {
@@ -3123,12 +3123,12 @@
         deps.toast(message, needsSetup ? "info" : "err");
         if (needsSetup) deps.openSettings();
         await deps.syncSession();
-        deps.ensureToolbarVisible();
+        deps.ensureToolbarVisible("manual");
         return;
       }
       if (res.session) deps.adoptSession(res.session);
       else await deps.syncSession();
-      deps.ensureToolbarVisible();
+      deps.ensureToolbarVisible("capture");
     });
   }
 
@@ -4930,6 +4930,17 @@ ${context}`;
     };
   }
 
+  // src/ext/content/visibility-policy.ts
+  function shouldRestoreUiHidden(storedHidden, storedScope, captureActive) {
+    if (storedHidden === null || storedHidden === void 0) return false;
+    if (captureActive) return true;
+    return storedScope === "video";
+  }
+  function settleAfterCapture(visible, hasPlayer) {
+    if (!visible) return "hidden";
+    return hasPlayer ? "keep" : "hide";
+  }
+
   // src/ext/content/demo.ts
   var DEMO_SUBTITLES = [
     { source: "Welcome to snooper-browser", target: "\u6B22\u8FCE\u4F7F\u7528 snooper-browser", delay: 2e3 },
@@ -5006,12 +5017,15 @@ ${context}`;
       isDemoMode: false
     };
     const UI_HIDDEN_KEY = "snooper.ui-hidden.v1";
+    const UI_SCOPE_KEY = "snooper.ui-scope.v1";
+    const CAPTURE_STARTED_KEY = "snooper.ui-capture-open.v1";
     let uiHidden = true;
     let hasBeenShownOnce = false;
     let autoShowDismissed = false;
     let lastVideoProbeAt = 0;
     const AUTO_SHOW_PROBE_GAP_MS = 800;
     let autoShown = false;
+    let captureShown = false;
     let autoShowUrl = "";
     let autoHideTimer = null;
     const AUTO_HIDE_PROBE_MS = 1500;
@@ -5021,13 +5035,34 @@ ${context}`;
       } catch {
       }
     }
-    function ensureToolbarVisible() {
+    function restoreUiHidden() {
+      let stored = null;
+      let scope = null;
+      try {
+        stored = localStorage.getItem(UI_HIDDEN_KEY);
+        scope = localStorage.getItem(UI_SCOPE_KEY);
+      } catch {
+        return;
+      }
+      const running = session.state === "running" || session.state === "starting";
+      if (!shouldRestoreUiHidden(stored, scope, running)) return;
+      uiHidden = stored === "1";
+    }
+    function persistUiScope() {
+      try {
+        localStorage.setItem(UI_SCOPE_KEY, hasPresentableVideo() ? "video" : "other");
+      } catch {
+      }
+    }
+    function ensureToolbarVisible(reason = "manual") {
       hasBeenShownOnce = true;
       autoShown = false;
+      captureShown = reason === "capture";
       stopAutoHideWatch();
       if (!uiHidden) return;
       uiHidden = false;
       persistUiHidden();
+      persistUiScope();
       applyUiHidden();
       render();
     }
@@ -5063,6 +5098,7 @@ ${context}`;
       if (now - lastVideoProbeAt < AUTO_SHOW_PROBE_GAP_MS) return;
       lastVideoProbeAt = now;
       if (!hasPresentableVideo()) return;
+      captureShown = false;
       ensureToolbarVisible();
       autoShown = true;
       autoShowUrl = location.href;
@@ -5091,6 +5127,23 @@ ${context}`;
       if (autoHideTimer === null) return;
       clearInterval(autoHideTimer);
       autoHideTimer = null;
+    }
+    function settleToolbarAfterCapture() {
+      if (!captureShown) return;
+      captureShown = false;
+      const settle = settleAfterCapture(!uiHidden, hasPresentableVideo());
+      if (settle === "hidden") return;
+      if (settle === "keep") {
+        autoShown = true;
+        autoShowUrl = location.href;
+        startAutoHideWatch();
+        return;
+      }
+      uiHidden = true;
+      autoShowDismissed = true;
+      persistUiHidden();
+      persistUiScope();
+      applyUiHidden();
     }
     let demoInterval = null;
     let demoIndex = 0;
@@ -5396,6 +5449,7 @@ ${context}`;
     const render = () => {
       renderBase();
       screenToggle.sync();
+      if (session.state !== "running" && session.state !== "starting") settleToolbarAfterCapture();
     };
     const updateChat = subtitleView.updateChat;
     const renderStreaming = subtitleView.renderStreaming;
@@ -5603,6 +5657,7 @@ ${context}`;
       uiHidden = true;
       autoShowDismissed = true;
       autoShown = false;
+      captureShown = false;
       stopAutoHideWatch();
       persistUiHidden();
       applyUiHidden();
@@ -5612,9 +5667,11 @@ ${context}`;
       uiHidden = false;
       autoShowDismissed = false;
       autoShown = false;
+      captureShown = false;
       stopAutoHideWatch();
       hasBeenShownOnce = true;
       persistUiHidden();
+      persistUiScope();
       applyUiHidden();
       render();
     });
@@ -5803,8 +5860,10 @@ ${context}`;
           uiHidden = false;
           autoShowDismissed = false;
           autoShown = false;
+          captureShown = false;
           stopAutoHideWatch();
           persistUiHidden();
+          persistUiScope();
           applyUiHidden();
           render();
           wakeSubtitleBox();
@@ -5815,6 +5874,7 @@ ${context}`;
           uiHidden = true;
           autoShowDismissed = true;
           autoShown = false;
+          captureShown = false;
           stopAutoHideWatch();
           persistUiHidden();
           applyUiHidden();
@@ -5870,6 +5930,8 @@ ${context}`;
       }
       session.isDemoMode = false;
       await syncSessionFromBackground();
+      restoreUiHidden();
+      applyUiHidden();
       render();
       renderNotes();
       for (const type of ["loadedmetadata", "canplay", "play"]) {

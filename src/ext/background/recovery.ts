@@ -1,6 +1,6 @@
 import { drainSource, failSourceBinding } from './source-sessions'
 import { getTranscriptRecord } from './transcript-store'
-import { allSourceSessions } from './session-store'
+import { allSourceSessions, validateSessionTranscriptOwnership } from './session-store'
 /**
  * Recover sessions after a service-worker restart.
  *
@@ -83,8 +83,8 @@ export async function recoverSessions(): Promise<void> {
         s.streamId = ''
         s.configSnapshot = null
         s.streamingSubtitle = null
-        if (!recoveryError && !s.pendingTranscriptLines?.length) s.transcriptId = null
-      } else if (liveTranscriptId) {
+        if (!s.sourceEpoch && !recoveryError && !s.pendingTranscriptLines?.length) s.transcriptId = null
+      } else if (!s.sourceEpoch && liveTranscriptId) {
         s.transcriptId = liveTranscriptId
       }
       s.pendingTranscriptLines ||= []
@@ -92,6 +92,11 @@ export async function recoverSessions(): Promise<void> {
       sessions.set(tabId, s)
       if (recoveryError) markTranscriptSaveError(s, recoveryError)
       else if (allSourceSessions(s).some(epoch => epoch.pendingTranscriptLines?.length)) markTranscriptSaveError(s, '上次保存中断')
+      // The tab-level map is only a legacy fallback. Scoped owners retain and
+      // validate their own IDs, including stopped captures with several queues.
+      for (const owner of allSourceSessions(s)) {
+        await validateSessionTranscriptOwnership(owner).catch(error => markTranscriptSaveError(owner, error))
+      }
       if (typeof liveGeneration === 'number' && !s.sourceEpoch) await failSourceBinding(s)
       if (typeof liveGeneration === 'number' && s.sourceEpoch) {
         const provenance = live.sources?.[tabIdStr]

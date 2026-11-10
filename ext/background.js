@@ -893,6 +893,20 @@ function markTranscriptSaveError(s, error) {
 function allSourceSessions(s) {
   return [...s.retiringSources || [], s];
 }
+async function validateSessionTranscriptOwnership(s) {
+  if (!s.sourceEpoch || !s.transcriptId) return;
+  if (!s.pendingTranscriptLines?.length && !s.subtitles?.length) return;
+  const record = await getTranscriptRecord(s.transcriptId);
+  if (!record || record.tabId !== s.tabId || record.sourceEpoch !== s.sourceEpoch || !s.sourceRef || record.sourceRef?.key !== s.sourceRef.key) {
+    throw new Error("\u8F6C\u5199\u8BFE\u8282\u7ED1\u5B9A\u65E0\u6CD5\u6838\u9A8C\uFF0C\u672A\u4FDD\u5B58\u5185\u5BB9\u5DF2\u4FDD\u7559\uFF0C\u8BF7\u5BFC\u51FA\u540E\u91CD\u65B0\u5F00\u59CB");
+  }
+  if (record.status === "completed" && s.pendingTranscriptLines?.length) {
+    const savedIds = new Set((await readTranscript(record.id)).map((line) => line.id));
+    if (s.pendingTranscriptLines.some((line) => !savedIds.has(line.id))) {
+      throw new Error("\u8F6C\u5199\u8BB0\u5F55\u5DF2\u7ED3\u675F\u4F46\u4ECD\u6709\u672A\u4FDD\u5B58\u5185\u5BB9\uFF0C\u8BF7\u5BFC\u51FA\u540E\u91CD\u65B0\u5F00\u59CB");
+    }
+  }
+}
 async function retrySessionTranscript(s) {
   for (const epoch of s.retiringSources || []) {
     await retryOneTranscript(epoch);
@@ -908,6 +922,7 @@ function retryOneTranscript(s) {
   if (existing) return existing;
   const run = (async () => {
     s.pendingTranscriptLines ||= [];
+    await validateSessionTranscriptOwnership(s);
     const id = await ensureTranscript(s);
     do {
       while (s.pendingTranscriptLines.length) {
@@ -1216,7 +1231,10 @@ function transitionSource(tabId, source) {
       await failSourceBinding(previous);
       throw new Error("\u7F3A\u5C11\u65E7\u8BFE\u8282\u7ED1\u5B9A\uFF0C\u8BF7\u91CD\u65B0\u5F00\u59CB\u5F55\u97F3");
     }
+    const generation = previous.generation;
+    const previousSourceEpoch = previous.sourceEpoch;
     const sourceEpoch = crypto.randomUUID();
+    const ownsTransition = (owner, epoch) => sessions.get(tabId) === owner && owner.state === "running" && owner.generation === generation && owner.sourceEpoch === epoch;
     const next = {
       ...previous,
       sourceEpoch,
@@ -1236,22 +1254,28 @@ function transitionSource(tabId, source) {
       pendingAskRequestId: null
     };
     previous.pendingAskRequestId = null;
+    let installed = false;
     try {
-      const paused = await sendToOffscreen({ type: "PREPARE_CAPTURE_SOURCE", tabId, generation: previous.generation, sourceEpoch: previous.sourceEpoch });
+      const paused = await sendToOffscreen({ type: "PREPARE_CAPTURE_SOURCE", tabId, generation, sourceEpoch: previousSourceEpoch });
+      if (!ownsTransition(previous, previousSourceEpoch)) return sessions.get(tabId);
       if (!paused?.ok) throw new Error(paused?.error || "\u65E0\u6CD5\u6682\u505C\u8BFE\u8282\u8FB9\u754C\u91C7\u96C6");
       await ensureTranscript(next);
-      if (sessions.get(tabId) !== previous || previous.state !== "running" || previous.generation !== next.generation) {
+      if (!ownsTransition(previous, previousSourceEpoch)) {
         await finishSessionTranscript({ ...next, retiringSources: [] });
         return sessions.get(tabId);
       }
       previous.retiringSources = [];
       sessions.set(tabId, next);
+      installed = true;
       await persistSessionsStrict();
-      const reply = await sendToOffscreen({ type: "SET_CAPTURE_SOURCE", tabId, generation: next.generation, previousSourceEpoch: previous.sourceEpoch, sourceEpoch, sourceRef: next.sourceRef });
+      if (!ownsTransition(next, sourceEpoch)) return sessions.get(tabId);
+      const reply = await sendToOffscreen({ type: "SET_CAPTURE_SOURCE", tabId, generation, previousSourceEpoch, sourceEpoch, sourceRef: next.sourceRef });
+      if (!ownsTransition(next, sourceEpoch)) return sessions.get(tabId);
       if (!reply?.ok) throw new Error(reply?.error || "\u8BFE\u8282\u5207\u6362\u672A\u786E\u8BA4");
       pushSession(tabId);
       return next;
     } catch (error) {
+      if (!ownsTransition(installed ? next : previous, installed ? sourceEpoch : previousSourceEpoch)) return sessions.get(tabId);
       sessions.set(tabId, next);
       markTranscriptSaveError(next, error);
       await failSourceBinding(next);
@@ -1324,8 +1348,8 @@ async function recoverSessions() {
         s.streamId = "";
         s.configSnapshot = null;
         s.streamingSubtitle = null;
-        if (!recoveryError && !s.pendingTranscriptLines?.length) s.transcriptId = null;
-      } else if (liveTranscriptId) {
+        if (!s.sourceEpoch && !recoveryError && !s.pendingTranscriptLines?.length) s.transcriptId = null;
+      } else if (!s.sourceEpoch && liveTranscriptId) {
         s.transcriptId = liveTranscriptId;
       }
       s.pendingTranscriptLines ||= [];
@@ -1333,6 +1357,9 @@ async function recoverSessions() {
       sessions.set(tabId, s);
       if (recoveryError) markTranscriptSaveError(s, recoveryError);
       else if (allSourceSessions(s).some((epoch) => epoch.pendingTranscriptLines?.length)) markTranscriptSaveError(s, "\u4E0A\u6B21\u4FDD\u5B58\u4E2D\u65AD");
+      for (const owner of allSourceSessions(s)) {
+        await validateSessionTranscriptOwnership(owner).catch((error) => markTranscriptSaveError(owner, error));
+      }
       if (typeof liveGeneration === "number" && !s.sourceEpoch) await failSourceBinding(s);
       if (typeof liveGeneration === "number" && s.sourceEpoch) {
         const provenance = live.sources?.[tabIdStr];

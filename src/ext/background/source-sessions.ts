@@ -40,7 +40,11 @@ export function transitionSource(tabId: number, source: SourceRef): Promise<Sess
       await failSourceBinding(previous)
       throw new Error('缺少旧课节绑定，请重新开始录音')
     }
+    const generation = previous.generation
+    const previousSourceEpoch = previous.sourceEpoch
     const sourceEpoch = crypto.randomUUID()
+    const ownsTransition = (owner: SessionState, epoch: string): boolean =>
+      sessions.get(tabId) === owner && owner.state === 'running' && owner.generation === generation && owner.sourceEpoch === epoch
     const next: SessionState = {
       ...previous,
       sourceEpoch,
@@ -61,22 +65,30 @@ export function transitionSource(tabId: number, source: SourceRef): Promise<Sess
     }
     // Cancel any old answer publication into this tab after navigation.
     previous.pendingAskRequestId = null
+    let installed = false
     try {
-      const paused = await sendToOffscreen({ type: 'PREPARE_CAPTURE_SOURCE', tabId, generation: previous.generation, sourceEpoch: previous.sourceEpoch })
+      const paused = await sendToOffscreen({ type: 'PREPARE_CAPTURE_SOURCE', tabId, generation, sourceEpoch: previousSourceEpoch })
+      if (!ownsTransition(previous, previousSourceEpoch)) return sessions.get(tabId)
       if (!paused?.ok) throw new Error(paused?.error || '无法暂停课节边界采集')
       await ensureTranscript(next)
-      if (sessions.get(tabId) !== previous || previous.state !== 'running' || previous.generation !== next.generation) {
+      if (!ownsTransition(previous, previousSourceEpoch)) {
         await finishSessionTranscript({ ...next, retiringSources: [] })
         return sessions.get(tabId)
       }
       previous.retiringSources = []
       sessions.set(tabId, next)
+      installed = true
       await persistSessionsStrict()
-      const reply = await sendToOffscreen({ type: 'SET_CAPTURE_SOURCE', tabId, generation: next.generation, previousSourceEpoch: previous.sourceEpoch, sourceEpoch, sourceRef: next.sourceRef })
+      if (!ownsTransition(next, sourceEpoch)) return sessions.get(tabId)
+      const reply = await sendToOffscreen({ type: 'SET_CAPTURE_SOURCE', tabId, generation, previousSourceEpoch, sourceEpoch, sourceRef: next.sourceRef })
+      if (!ownsTransition(next, sourceEpoch)) return sessions.get(tabId)
       if (!reply?.ok) throw new Error(reply?.error || '课节切换未确认')
       pushSession(tabId)
       return next
     } catch (error) {
+      // STOP/supersession owns its final state, even if a pending write or
+      // offscreen response fails after cancellation.
+      if (!ownsTransition(installed ? next : previous, installed ? sourceEpoch : previousSourceEpoch)) return sessions.get(tabId)
       // Both bindings remain rescueable; never resume on an uncertain source.
       sessions.set(tabId, next)
       markTranscriptSaveError(next, error)

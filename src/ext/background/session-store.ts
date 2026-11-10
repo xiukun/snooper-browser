@@ -1,5 +1,5 @@
 import type { SaveState, SourceRef } from '../../lib/knowledge-types'
-import { appendTranscriptLine, ensureTranscript, finalizeSessionTranscript, flushTranscript } from './transcript-store'
+import { appendTranscriptLine, ensureTranscript, finalizeSessionTranscript, flushTranscript, getTranscriptRecord, readTranscript } from './transcript-store'
 import { sendToOffscreen } from './offscreen'
 /**
  * Background session store.
@@ -300,6 +300,23 @@ export function markTranscriptSaveError(s: SessionState, error: unknown): void {
 }
 export function allSourceSessions(s: SessionState): SessionState[] { return [...(s.retiringSources || []), s] }
 
+/** A stopped generation changes, but its immutable epoch still owns exactly one record. */
+export async function validateSessionTranscriptOwnership(s: SessionState): Promise<void> {
+  if (!s.sourceEpoch || !s.transcriptId) return
+  // Finalization may have removed an empty record. It has no body to reassign.
+  if (!s.pendingTranscriptLines?.length && !s.subtitles?.length) return
+  const record = await getTranscriptRecord(s.transcriptId)
+  if (!record || record.tabId !== s.tabId || record.sourceEpoch !== s.sourceEpoch || !s.sourceRef || record.sourceRef?.key !== s.sourceRef.key) {
+    throw new Error('转写课节绑定无法核验，未保存内容已保留，请导出后重新开始')
+  }
+  if (record.status === 'completed' && s.pendingTranscriptLines?.length) {
+    const savedIds = new Set((await readTranscript(record.id)).map(line => line.id))
+    if (s.pendingTranscriptLines.some(line => !savedIds.has(line.id))) {
+      throw new Error('转写记录已结束但仍有未保存内容，请导出后重新开始')
+    }
+  }
+}
+
 export async function retrySessionTranscript(s: SessionState): Promise<void> {
   for (const epoch of s.retiringSources || []) {
     await retryOneTranscript(epoch)
@@ -313,6 +330,7 @@ function retryOneTranscript(s: SessionState): Promise<void> {
   if (existing) return existing
   const run = (async () => {
     s.pendingTranscriptLines ||= []
+    await validateSessionTranscriptOwnership(s)
     const id = await ensureTranscript(s)
     do {
       while (s.pendingTranscriptLines.length) {

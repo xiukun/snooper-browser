@@ -23,6 +23,7 @@
     "test:video-presence": "node scripts/test-video-presence.mjs",
     "test:content-refs": "node scripts/test-content-refs.mjs",
     "test:screen-caption": "node scripts/test-screen-caption.mjs",
+    "test:toolbar-visibility": "node scripts/test-toolbar-visibility.mjs",
     "test:content-install": "node scripts/test-content-install.mjs",
     "test:deep-link": "node scripts/test-deep-link.mjs",
     "test:markdown": "node scripts/test-markdown.mjs",

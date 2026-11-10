@@ -22,8 +22,12 @@ export interface RecorderDeps {
    * Make the toolbar visible again. A capture can only be observed through the
    * in-page toolbar, so every start path guarantees it is on screen — a hidden
    * toolbar used to make capture look like "nothing happened".
+   *
+   * `reason: 'capture'` marks the reveal as belonging to the recording, so
+   * `content.ts` can hide the toolbar again when the capture ends on a page
+   * with no player.
    */
-  ensureToolbarVisible: () => void
+  ensureToolbarVisible: (reason?: 'capture' | 'manual') => void
 }
 
 export function bindRecorder(deps: RecorderDeps) {
@@ -55,7 +59,7 @@ export function bindRecorder(deps: RecorderDeps) {
     // Starting a capture always reveals the toolbar: a start click is only
     // reachable from the visible toolbar anyway, so this only repairs a state
     // where something else hid it mid-flight.
-    deps.ensureToolbarVisible()
+    deps.ensureToolbarVisible('capture')
     session.state = 'starting'
     deps.render()
     const res = await deps.bg('START', {
@@ -72,12 +76,13 @@ export function bindRecorder(deps: RecorderDeps) {
       if (needsSetup) deps.openSettings()
       await deps.syncSession()
       // A failed start must leave the UI where the user can see the reason
-      // instead of a toolbar that looks like it closed itself.
-      deps.ensureToolbarVisible()
+      // instead of a toolbar that looks like it closed itself. Nothing was
+      // captured, so this reveal is owned by the user, not by a session.
+      deps.ensureToolbarVisible('manual')
       return
     }
     if (res.session) deps.adoptSession(res.session)
     else await deps.syncSession()
-    deps.ensureToolbarVisible()
+    deps.ensureToolbarVisible('capture')
   })
 }

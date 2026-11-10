@@ -36,6 +36,7 @@ import { bindActions } from './content/actions'
 import { bindObsidianExport } from './content/obsidian-export'
 import { createImageGen } from './content/image-gen'
 import { collectRefs } from './content/refs'
+import { settleAfterCapture, shouldRestoreUiHidden } from './content/visibility-policy'
 import { DEMO_SUBTITLES } from './content/demo'
 import type { SessionState } from './content/types'
 import { createScreenshotCapturer, findBestVideoCandidate } from './screenshot'
@@ -85,6 +86,18 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
 
   /* ===== Toolbar visibility (persisted) ===== */
   const UI_HIDDEN_KEY = 'snooper.ui-hidden.v1';
+  /**
+   * Which page the persisted toolbar choice belongs to.
+   *
+   * `uiHidden` is persisted in `localStorage`, which is shared by every page of
+   * an origin. A capture started on a video site left the toolbar open for
+   * every later same-origin page, including pages with no player at all — the
+   * user asked "why is this here". The choice now only survives navigation
+   * when the old page actually had a real player (ADR-041); on any other page
+   * the next document starts hidden and auto-show decides again.
+   */
+  const UI_SCOPE_KEY = 'snooper.ui-scope.v1';
+  const CAPTURE_STARTED_KEY = 'snooper.ui-capture-open.v1';
   // Toolbar starts hidden on every page load. It reveals itself once a real
   // player is detected (ADR-041: hover previews and tiny embeds do not
   // count), and users can always toggle it from the extension icon. The
@@ -99,6 +112,8 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
   const AUTO_SHOW_PROBE_GAP_MS = 800;
   /** True while the toolbar is visible only because ADR-041 auto-showed it. */
   let autoShown = false;
+  /** A visibility change from a capture start, not from auto-show. */
+  let captureShown = false;
   /** URL that triggered the current auto-show (SPA navigation detector). */
   let autoShowUrl = '';
   /** Watches for the auto-shown toolbar's video disappearing (SPA nav). */
@@ -109,16 +124,54 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     try { localStorage.setItem(UI_HIDDEN_KEY, uiHidden ? '1' : '0'); } catch { /* ignore */ }
   }
 
-  /** Reveal the toolbar and sync every dependent surface (idempotent). */
-  function ensureToolbarVisible() {
+  /**
+   * Read the previous document's choice for this tab.
+   *
+   * `uiHidden` is written to `localStorage`, which every same-origin page
+   * shares. Restoring it blindly carried "toolbar open" from a video page onto
+   * a page with no player. The choice is restored only when the page that
+   * wrote it had a real player, or when a capture is still running in the tab
+   * (the toolbar is the only way to stop it).
+   */
+  function restoreUiHidden(): void {
+    let stored: string | null = null;
+    let scope: string | null = null;
+    try {
+      stored = localStorage.getItem(UI_HIDDEN_KEY);
+      scope = localStorage.getItem(UI_SCOPE_KEY);
+    } catch {
+      return;
+    }
+    const running = session.state === 'running' || session.state === 'starting';
+    if (!shouldRestoreUiHidden(stored, scope, running)) return;
+    uiHidden = stored === '1';
+  }
+
+  /** Mark the persisted choice as belonging to this page's kind. */
+  function persistUiScope(): void {
+    try {
+      localStorage.setItem(UI_SCOPE_KEY, hasPresentableVideo() ? 'video' : 'other');
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * Reveal the toolbar and sync every dependent surface (idempotent).
+   *
+   * `reason` separates a capture start from an explicit reveal. A capture
+   * reveal is temporary: the toolbar goes away again when the capture ends on
+   * a page without a player (see `settleToolbarAfterCapture`).
+   */
+  function ensureToolbarVisible(reason: 'capture' | 'manual' = 'manual') {
     hasBeenShownOnce = true;
     // An explicit reveal (icon click, recording start) owns the toolbar now:
     // the auto-hide watcher must not take it away.
     autoShown = false;
+    captureShown = reason === 'capture';
     stopAutoHideWatch();
     if (!uiHidden) return;
     uiHidden = false;
     persistUiHidden();
+    persistUiScope();
     applyUiHidden();
     render();
   }
@@ -167,6 +220,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     if (now - lastVideoProbeAt < AUTO_SHOW_PROBE_GAP_MS) return;
     lastVideoProbeAt = now;
     if (!hasPresentableVideo()) return;
+    captureShown = false;
     ensureToolbarVisible();
     autoShown = true;
     autoShowUrl = location.href;
@@ -207,6 +261,32 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     if (autoHideTimer === null) return;
     clearInterval(autoHideTimer);
     autoHideTimer = null;
+  }
+
+  /**
+   * A toolbar opened for a capture belongs to that capture only.
+   *
+   * When a recording ends, the page goes back to its default: a page with a
+   * real player may keep the toolbar (auto-show owns it again), every other
+   * page hides it. Without this, closing the capture on a site like B 站 left
+   * the bar sitting on the home feed and on every later page of the origin.
+   */
+  function settleToolbarAfterCapture(): void {
+    if (!captureShown) return;
+    captureShown = false;
+    const settle = settleAfterCapture(!uiHidden, hasPresentableVideo());
+    if (settle === 'hidden') return;
+    if (settle === 'keep') {
+      autoShown = true;
+      autoShowUrl = location.href;
+      startAutoHideWatch();
+      return;
+    }
+    uiHidden = true;
+    autoShowDismissed = true;
+    persistUiHidden();
+    persistUiScope();
+    applyUiHidden();
   }
 
   /* ===== Demo loop (data in ./content/demo) ===== */
@@ -451,7 +531,13 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     openShotPreview: (url, saved, insertable) => openShotPreview(url, saved, insertable),
   });
   const renderBase = subtitleView.render;
-  const render = () => { renderBase(); screenToggle.sync(); };
+  const render = () => {
+    renderBase();
+    screenToggle.sync();
+    // A capture that ends leaves its toolbar behind on pages with no player;
+    // every user-visible state change already goes through render().
+    if (session.state !== 'running' && session.state !== 'starting') settleToolbarAfterCapture();
+  };
   const updateChat = subtitleView.updateChat;
   const renderStreaming = subtitleView.renderStreaming;
   const clearStreaming = subtitleView.clearStreaming;
@@ -703,6 +789,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     uiHidden = true;
     autoShowDismissed = true;
     autoShown = false;
+    captureShown = false;
     stopAutoHideWatch();
     persistUiHidden();
     applyUiHidden();
@@ -712,9 +799,11 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     uiHidden = false;
     autoShowDismissed = false;
     autoShown = false;
+    captureShown = false;
     stopAutoHideWatch();
     hasBeenShownOnce = true;
     persistUiHidden();
+    persistUiScope();
     applyUiHidden();
     render();
   });
@@ -926,8 +1015,11 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
         uiHidden = false;
         autoShowDismissed = false;
         autoShown = false;
+        // An explicit toggle is the user's own choice, not a capture reveal.
+        captureShown = false;
         stopAutoHideWatch();
         persistUiHidden();
+        persistUiScope();
         applyUiHidden();
         render();
         wakeSubtitleBox();
@@ -938,6 +1030,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
         uiHidden = true;
         autoShowDismissed = true;
         autoShown = false;
+        captureShown = false;
         stopAutoHideWatch();
         persistUiHidden();
         applyUiHidden();
@@ -1018,6 +1111,10 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
 
     session.isDemoMode = false;
     await syncSessionFromBackground();
+    // Restore the previous page's choice only when it belongs to this kind of
+    // page (or a capture in this tab is still running).
+    restoreUiHidden();
+    applyUiHidden();
     render();
     renderNotes();
     // ADR-041: a video page reveals the toolbar without an icon click; pages

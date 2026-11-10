@@ -225,8 +225,9 @@ async function loadIndex(): Promise<TranscriptRecord[]> {
     for (const raw of legacy) {
       if (!raw?.id || records.some(r => r.id === raw.id)) continue
       const lines = Array.isArray(raw.subtitles) ? raw.subtitles.map(normalizeLine).filter(Boolean) as TranscriptLine[] : []
-      const record = normalizeRecord({ ...raw, tabId: -1, status: 'completed', subtitleCount: lines.length, chunkCount: Math.ceil(lines.length / TRANSCRIPT_CHUNK_SIZE) })!
-      for (let i = 0; i < record.chunkCount; i++) {
+      const count = lines.length || (Array.isArray(raw.subtitles) ? 0 : Math.max(0, toNumber(raw.subtitleCount)))
+      const record = normalizeRecord({ ...raw, tabId: -1, status: 'completed', subtitleCount: count, chunkCount: Math.ceil(count / TRANSCRIPT_CHUNK_SIZE) })!
+      for (let i = 0; i < Math.ceil(lines.length / TRANSCRIPT_CHUNK_SIZE); i++) {
         await chrome.storage.local.set({ [chunkKey(record.id, i)]: lines.slice(i * TRANSCRIPT_CHUNK_SIZE, (i + 1) * TRANSCRIPT_CHUNK_SIZE) })
       }
       records.push(record)

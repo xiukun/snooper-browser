@@ -2,8 +2,6 @@
 
 import { sessions, allSourceSessions, retrySessionTranscript, finishSessionTranscript } from '../session-store'
 import {
-  clearTranscripts,
-  deleteTranscripts,
   findLatestTranscriptIdForTab,
   getTranscriptRecord,
   listTranscripts,
@@ -76,24 +74,12 @@ export const historyHandlers: MessageHandlerMap = {
     return true
   },
 
-  DELETE_HISTORY: (message, { sendResponse }) => {
-    const ids = Array.isArray(message.ids)
-      ? message.ids.map((id: any) => String(id))
-      : [String(message.id || '')]
-    deleteTranscripts(ids).then((result) => {
-      sendResponse({ ok: true, ...result })
-    }).catch((err) => {
-      sendResponse({ ok: false, error: err.message || '删除失败，请重试' })
-    })
-    return true
+  DELETE_HISTORY: (_message, { sendResponse }) => {
+    sendResponse({ ok: false, code: 'CONFIRMATION_REQUIRED', error: '请先预览删除范围和受影响收藏，再确认删除' })
+    return false
   },
-
   DELETE_ALL_HISTORY: (_message, { sendResponse }) => {
-    clearTranscripts().then((result) => {
-      sendResponse({ ok: true, ...result })
-    }).catch((err) => {
-      sendResponse({ ok: false, error: err.message || '删除失败，请重试' })
-    })
-    return true
+    sendResponse({ ok: false, code: 'CONFIRMATION_REQUIRED', error: '请先预览删除范围和受影响收藏，再确认删除' })
+    return false
   },
 }

@@ -1,4 +1,4 @@
-import { addNoteEntry, deleteNoteDocuments, deleteNoteEntry, listNotesWithMigration } from '../notes-store'
+import { addNoteEntry, listNotesWithMigration } from '../notes-store'
 import type { MessageHandlerMap } from './types'
 
 export const notesHandlers: MessageHandlerMap = {
@@ -10,12 +10,12 @@ export const notesHandlers: MessageHandlerMap = {
     addNoteEntry(message.input).then(notes => sendResponse({ ok: true, notes })).catch(err => sendResponse({ ok: false, error: String(err.message || err) }))
     return true
   },
-  NOTES_DELETE_ENTRY: (message, { sendResponse }) => {
-    deleteNoteEntry(String(message.noteId || ''), String(message.entryId || '')).then(notes => sendResponse({ ok: true, notes })).catch(err => sendResponse({ ok: false, error: String(err.message || err) }))
-    return true
+  NOTES_DELETE_ENTRY: (_message, { sendResponse }) => {
+    sendResponse({ ok: false, code: 'CONFIRMATION_REQUIRED', error: '请先预览删除范围和受影响收藏，再确认删除' })
+    return false
   },
-  NOTES_DELETE_DOCUMENTS: (message, { sendResponse }) => {
-    deleteNoteDocuments(message.ids).then(notes => sendResponse({ ok: true, notes })).catch(err => sendResponse({ ok: false, error: String(err.message || err) }))
-    return true
+  NOTES_DELETE_DOCUMENTS: (_message, { sendResponse }) => {
+    sendResponse({ ok: false, code: 'CONFIRMATION_REQUIRED', error: '请先预览删除范围和受影响收藏，再确认删除' })
+    return false
   },
 }

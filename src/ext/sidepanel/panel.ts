@@ -1,3 +1,4 @@
+import { confirmLibraryDelete } from '../content/library-client'
 import type { SourceRef } from '../../lib/knowledge-types'
 import type { NoteDocument } from '../../lib/types'
 import { loadNotes, deleteNoteDocuments, hasRetainedLegacyNotes, exportRetainedLegacyNotes } from '../content/notes-store'
@@ -349,9 +350,10 @@ import { videoDeepLink } from '../../lib/deep-link'
       delBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>'
       delBtn.addEventListener('click', async (e) => {
         e.stopPropagation()
-        if (!confirm('确定删除这篇笔记？')) return
         try {
-          notes = await deleteNoteDocuments([note.id])
+          const updated = await deleteNoteDocuments([note.id])
+          if (!updated) return
+          notes = updated
           await loadAndRenderNotes()
           showNotice('笔记已删除')
         } catch (error) { showNotice(`删除失败，请重试：${String(error)}`) }
@@ -479,9 +481,10 @@ import { videoDeepLink } from '../../lib/deep-link'
   notesDeleteSelected.addEventListener('click', async () => {
     const ids = getSelectedNoteIds()
     if (ids.length === 0) return
-    if (!confirm(`确定删除选中的 ${ids.length} 篇笔记？此操作不可恢复。`)) return
     try {
-      notes = await deleteNoteDocuments(ids)
+      const updated = await deleteNoteDocuments(ids)
+      if (!updated) return
+      notes = updated
       await loadAndRenderNotes()
       showNotice(`已删除 ${ids.length} 篇笔记`)
     } catch (error) { showNotice(`删除失败，请重试：${String(error)}`) }
@@ -776,14 +779,12 @@ import { videoDeepLink } from '../../lib/deep-link'
       del.disabled = recording
       del.title = recording ? '正在录制的记录不能删除' : ''
       del.addEventListener('click', async () => {
-        if (!confirm(`确定删除「${item.pageTitle || '这条记录'}」？`)) return
-        const res: any = await chrome.runtime.sendMessage({
-          target: 'background',
-          type: 'DELETE_HISTORY',
-          id: item.id,
-        })
-        if (res?.skipped) showNotice('正在录制的记录已跳过', true)
-        await loadAndRenderHistory()
+        try {
+          const res = await confirmLibraryDelete({transcriptIds:[item.id]})
+          if (!res) return
+          if (res.skipped.length) showNotice('正在录制的记录已跳过', true)
+          await loadAndRenderHistory()
+        } catch (error) { showNotice(`删除未完成：${String(error)}`, true) }
       })
       actions.appendChild(del)
       el.appendChild(actions)
@@ -805,17 +806,23 @@ import { videoDeepLink } from '../../lib/deep-link'
   historyDeleteSelected.addEventListener('click', async () => {
     const ids = getSelectedHistoryIds()
     if (ids.length === 0) return
-    if (!confirm(`确定删除选中的 ${ids.length} 条历史记录？此操作不可恢复。`)) return
-    const res: any = await chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_HISTORY', ids })
-    if (res?.skipped) showNotice('正在录制的记录已跳过', true)
-    await loadAndRenderHistory()
+    try {
+      const res = await confirmLibraryDelete({transcriptIds:ids})
+      if (!res) return
+      if (res.skipped.length) showNotice('正在录制的记录已跳过', true)
+      await loadAndRenderHistory()
+    } catch (error) { showNotice(`删除未完成：${String(error)}`, true) }
   })
 
   historyClear.addEventListener('click', async () => {
-    if (!confirm('确定清空全部历史记录？此操作不可恢复。')) return
-    const res: any = await chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_ALL_HISTORY' })
-    if (res?.skipped) showNotice('正在录制的记录已跳过', true)
-    await loadAndRenderHistory()
+    try {
+      const history = await chrome.runtime.sendMessage({target:'background',type:'GET_HISTORY'})
+      if (!history?.ok) throw new Error(history?.error || '无法读取历史记录')
+      const res = await confirmLibraryDelete({transcriptIds:history.history.map((item: HistoryEntry)=>item.id)})
+      if (!res) return
+      if (res.skipped.length) showNotice('正在录制的记录已跳过', true)
+      await loadAndRenderHistory()
+    } catch (error) { showNotice(`删除未完成：${String(error)}`, true) }
   })
 
   function historyMarkdown(item: HistoryEntry, subtitles: HistorySubtitle[]): string {

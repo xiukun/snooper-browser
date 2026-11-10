@@ -1,3 +1,4 @@
+import { recoverLibraryDeletions } from './library-store'
 import { drainSource, failSourceBinding } from './source-sessions'
 import { getTranscriptRecord } from './transcript-store'
 import { allSourceSessions, validateSessionTranscriptOwnership } from './session-store'
@@ -42,6 +43,8 @@ async function readLiveCapture(): Promise<{ sessions: Record<string, number>; so
 }
 
 export async function recoverSessions(): Promise<void> {
+  // Keep failed authorized operations visible; session rescue must still run.
+  await recoverLibraryDeletions().catch(error => console.warn('[RTTS] library deletion recovery pending:', error))
   try {
     const live = await readLiveCapture()
     const liveGenerations = live.sessions

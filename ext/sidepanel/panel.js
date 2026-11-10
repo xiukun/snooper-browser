@@ -1,4 +1,17 @@
 (() => {
+  // src/ext/content/library-client.ts
+  async function confirmLibraryDelete(selection) {
+    const preview = await chrome.runtime.sendMessage({ target: "background", type: "LIBRARY_PREPARE_DELETE", ...selection });
+    if (!preview?.ok) throw new Error(preview?.error || "\u65E0\u6CD5\u9884\u89C8\u5220\u9664\u8303\u56F4\uFF0C\u8BF7\u91CD\u8BD5");
+    const count = preview.targets.length;
+    if (!count) throw new Error(preview.skipped[0]?.reason || "\u6CA1\u6709\u53EF\u5220\u9664\u7684\u8D44\u6599");
+    if (!confirm(`\u786E\u5B9A\u5220\u9664 ${count} \u9879\u8D44\u6599\uFF1F\u5C06\u540C\u65F6\u79FB\u9664 ${preview.favoriteCount} \u6761\u6536\u85CF\u3002\u72EC\u7ACB\u53E6\u5B58\u7684\u7B14\u8BB0\u4F1A\u4FDD\u7559\u3002\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002`)) return null;
+    const result = await chrome.runtime.sendMessage({ target: "background", type: "LIBRARY_DELETE", token: preview.token });
+    if (!result?.ok) throw new Error(result?.error || "\u5220\u9664\u672A\u5B8C\u6210\uFF0C\u8BF7\u91CD\u8BD5");
+    if (result.pending.length) throw new Error(`\u90E8\u5206\u5220\u9664\u672A\u5B8C\u6210\uFF1A${result.pending[0].error}\u3002\u64CD\u4F5C ID\uFF1A${result.operationId}\uFF0C\u53EF\u5728\u8D44\u6599\u5E93\u91CD\u8BD5`);
+    return result;
+  }
+
   // src/ext/content/notes-store.ts
   var NOTES_STORAGE_KEY = "snooper.notes.v1";
   var retainedLegacySnapshot = null;
@@ -53,8 +66,9 @@
     }
     return result.notes;
   }
-  function deleteNoteDocuments(ids) {
-    return request("NOTES_DELETE_DOCUMENTS", { ids });
+  async function deleteNoteDocuments(ids) {
+    if (!await confirmLibraryDelete({ noteIds: ids })) return null;
+    return request("NOTES_LIST");
   }
 
   // src/ext/action-flow.ts
@@ -622,9 +636,10 @@ ${line.target}`).join("\n\n");
         delBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>';
         delBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
-          if (!confirm("\u786E\u5B9A\u5220\u9664\u8FD9\u7BC7\u7B14\u8BB0\uFF1F")) return;
           try {
-            notes = await deleteNoteDocuments([note.id]);
+            const updated = await deleteNoteDocuments([note.id]);
+            if (!updated) return;
+            notes = updated;
             await loadAndRenderNotes();
             showNotice("\u7B14\u8BB0\u5DF2\u5220\u9664");
           } catch (error) {
@@ -737,9 +752,10 @@ ${line.target}`).join("\n\n");
     notesDeleteSelected.addEventListener("click", async () => {
       const ids = getSelectedNoteIds();
       if (ids.length === 0) return;
-      if (!confirm(`\u786E\u5B9A\u5220\u9664\u9009\u4E2D\u7684 ${ids.length} \u7BC7\u7B14\u8BB0\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002`)) return;
       try {
-        notes = await deleteNoteDocuments(ids);
+        const updated = await deleteNoteDocuments(ids);
+        if (!updated) return;
+        notes = updated;
         await loadAndRenderNotes();
         showNotice(`\u5DF2\u5220\u9664 ${ids.length} \u7BC7\u7B14\u8BB0`);
       } catch (error) {
@@ -996,14 +1012,14 @@ ${subtitle.target || ""}`).join("\n\n");
         del.disabled = recording;
         del.title = recording ? "\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u4E0D\u80FD\u5220\u9664" : "";
         del.addEventListener("click", async () => {
-          if (!confirm(`\u786E\u5B9A\u5220\u9664\u300C${item.pageTitle || "\u8FD9\u6761\u8BB0\u5F55"}\u300D\uFF1F`)) return;
-          const res2 = await chrome.runtime.sendMessage({
-            target: "background",
-            type: "DELETE_HISTORY",
-            id: item.id
-          });
-          if (res2?.skipped) showNotice("\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u5DF2\u8DF3\u8FC7", true);
-          await loadAndRenderHistory();
+          try {
+            const res2 = await confirmLibraryDelete({ transcriptIds: [item.id] });
+            if (!res2) return;
+            if (res2.skipped.length) showNotice("\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u5DF2\u8DF3\u8FC7", true);
+            await loadAndRenderHistory();
+          } catch (error) {
+            showNotice(`\u5220\u9664\u672A\u5B8C\u6210\uFF1A${String(error)}`, true);
+          }
         });
         actions.appendChild(del);
         el.appendChild(actions);
@@ -1021,16 +1037,26 @@ ${subtitle.target || ""}`).join("\n\n");
     historyDeleteSelected.addEventListener("click", async () => {
       const ids = getSelectedHistoryIds();
       if (ids.length === 0) return;
-      if (!confirm(`\u786E\u5B9A\u5220\u9664\u9009\u4E2D\u7684 ${ids.length} \u6761\u5386\u53F2\u8BB0\u5F55\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002`)) return;
-      const res = await chrome.runtime.sendMessage({ target: "background", type: "DELETE_HISTORY", ids });
-      if (res?.skipped) showNotice("\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u5DF2\u8DF3\u8FC7", true);
-      await loadAndRenderHistory();
+      try {
+        const res = await confirmLibraryDelete({ transcriptIds: ids });
+        if (!res) return;
+        if (res.skipped.length) showNotice("\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u5DF2\u8DF3\u8FC7", true);
+        await loadAndRenderHistory();
+      } catch (error) {
+        showNotice(`\u5220\u9664\u672A\u5B8C\u6210\uFF1A${String(error)}`, true);
+      }
     });
     historyClear.addEventListener("click", async () => {
-      if (!confirm("\u786E\u5B9A\u6E05\u7A7A\u5168\u90E8\u5386\u53F2\u8BB0\u5F55\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002")) return;
-      const res = await chrome.runtime.sendMessage({ target: "background", type: "DELETE_ALL_HISTORY" });
-      if (res?.skipped) showNotice("\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u5DF2\u8DF3\u8FC7", true);
-      await loadAndRenderHistory();
+      try {
+        const history = await chrome.runtime.sendMessage({ target: "background", type: "GET_HISTORY" });
+        if (!history?.ok) throw new Error(history?.error || "\u65E0\u6CD5\u8BFB\u53D6\u5386\u53F2\u8BB0\u5F55");
+        const res = await confirmLibraryDelete({ transcriptIds: history.history.map((item) => item.id) });
+        if (!res) return;
+        if (res.skipped.length) showNotice("\u6B63\u5728\u5F55\u5236\u7684\u8BB0\u5F55\u5DF2\u8DF3\u8FC7", true);
+        await loadAndRenderHistory();
+      } catch (error) {
+        showNotice(`\u5220\u9664\u672A\u5B8C\u6210\uFF1A${String(error)}`, true);
+      }
     });
     function historyMarkdown(item, subtitles) {
       const anchored = subtitles.some(

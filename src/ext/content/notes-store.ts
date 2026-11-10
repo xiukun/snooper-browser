@@ -1,3 +1,4 @@
+import { confirmLibraryDelete } from './library-client'
 /** Notes are written only by the serialized background operation queue. */
 import type { NoteDocument, NoteEntry } from '../../lib/types'
 export const NOTES_STORAGE_KEY = 'snooper.notes.v1'
@@ -55,11 +56,13 @@ export async function loadNotes(): Promise<NoteDocument[]> {
 export function addNoteEntry(note: NoteDocument, entry: NoteEntry): Promise<NoteDocument[]> {
   return request('NOTES_ADD_ENTRY', { input: { noteId: note.id, title: note.title, createdAt: note.createdAt, sessionInfo: note.sessionInfo, entry } })
 }
-export function deleteNoteEntry(noteId: string, entryId: string): Promise<NoteDocument[]> {
-  return request('NOTES_DELETE_ENTRY', { noteId, entryId })
+export async function deleteNoteEntry(noteId: string, entryId: string): Promise<NoteDocument[] | null> {
+  if(!await confirmLibraryDelete({noteEntries:[{noteId,entryId}]})) return null
+  return request('NOTES_LIST')
 }
-export function deleteNoteDocuments(ids: string[]): Promise<NoteDocument[]> {
-  return request('NOTES_DELETE_DOCUMENTS', { ids })
+export async function deleteNoteDocuments(ids: string[]): Promise<NoteDocument[] | null> {
+  if(!await confirmLibraryDelete({noteIds:ids})) return null
+  return request('NOTES_LIST')
 }
 export function createNoteDocument(title: string, source: NoteDocument['sessionInfo']): NoteDocument {
   const now = Date.now()

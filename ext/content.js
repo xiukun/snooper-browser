@@ -1658,6 +1658,19 @@
     <div id="rtts-toasts" aria-live="polite"></div>
   `;
 
+  // src/ext/content/library-client.ts
+  async function confirmLibraryDelete(selection) {
+    const preview = await chrome.runtime.sendMessage({ target: "background", type: "LIBRARY_PREPARE_DELETE", ...selection });
+    if (!preview?.ok) throw new Error(preview?.error || "\u65E0\u6CD5\u9884\u89C8\u5220\u9664\u8303\u56F4\uFF0C\u8BF7\u91CD\u8BD5");
+    const count = preview.targets.length;
+    if (!count) throw new Error(preview.skipped[0]?.reason || "\u6CA1\u6709\u53EF\u5220\u9664\u7684\u8D44\u6599");
+    if (!confirm(`\u786E\u5B9A\u5220\u9664 ${count} \u9879\u8D44\u6599\uFF1F\u5C06\u540C\u65F6\u79FB\u9664 ${preview.favoriteCount} \u6761\u6536\u85CF\u3002\u72EC\u7ACB\u53E6\u5B58\u7684\u7B14\u8BB0\u4F1A\u4FDD\u7559\u3002\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002`)) return null;
+    const result = await chrome.runtime.sendMessage({ target: "background", type: "LIBRARY_DELETE", token: preview.token });
+    if (!result?.ok) throw new Error(result?.error || "\u5220\u9664\u672A\u5B8C\u6210\uFF0C\u8BF7\u91CD\u8BD5");
+    if (result.pending.length) throw new Error(`\u90E8\u5206\u5220\u9664\u672A\u5B8C\u6210\uFF1A${result.pending[0].error}\u3002\u64CD\u4F5C ID\uFF1A${result.operationId}\uFF0C\u53EF\u5728\u8D44\u6599\u5E93\u91CD\u8BD5`);
+    return result;
+  }
+
   // src/ext/content/notes-store.ts
   var NOTES_STORAGE_KEY = "snooper.notes.v1";
   var retainedLegacySnapshot = null;
@@ -1715,8 +1728,9 @@
   function addNoteEntry(note, entry) {
     return request("NOTES_ADD_ENTRY", { input: { noteId: note.id, title: note.title, createdAt: note.createdAt, sessionInfo: note.sessionInfo, entry } });
   }
-  function deleteNoteEntry(noteId, entryId) {
-    return request("NOTES_DELETE_ENTRY", { noteId, entryId });
+  async function deleteNoteEntry(noteId, entryId) {
+    if (!await confirmLibraryDelete({ noteEntries: [{ noteId, entryId }] })) return null;
+    return request("NOTES_LIST");
   }
   function createNoteDocument(title, source) {
     const now = Date.now();
@@ -3563,6 +3577,7 @@
           event.stopPropagation();
           try {
             const notes = await deleteNoteEntry(active.id, entry.id);
+            if (!notes) return;
             pending.delete(`${active.id}:${entry.id}`);
             adopt(notes);
           } catch (error) {

@@ -5,12 +5,7 @@ import type { NoteDocument, NoteEntry } from '../../lib/types'
 export const NOTES_STORAGE_KEY = 'snooper.notes.v1'
 const INITIALIZED_KEY = 'snooper.notes.initialized.v1'
 const MIGRATION_KEY = 'snooper.notes.migration.v1'
-let queue: Promise<unknown> = Promise.resolve()
-function serial<T>(operation: () => Promise<T>): Promise<T> {
-  const run = queue.catch(() => {}).then(operation)
-  queue = run.catch(() => {})
-  return run
-}
+import { withLibraryOperation as serial } from './library-queue'
 function validDocuments(value: unknown): NoteDocument[] {
   if (!Array.isArray(value)) return []
   return value.filter((note): note is NoteDocument => !!note && typeof note.id === 'string' && Array.isArray(note.entries))
@@ -116,4 +111,18 @@ export function deleteNoteDocuments(ids: string[]): Promise<NoteDocument[]> {
     await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true })
     return withProvenance(notes)
   })
+}
+
+/** Only call these while holding withLibraryOperation. Public APIs acquire it. */
+export const notesUnderLibraryLock = {
+  async list(): Promise<NoteDocument[]> { return withProvenance(await read()) },
+  async deleteSelection(noteId: string, entryIds: string[], wholeDocument: boolean): Promise<void> {
+    const notes = await read()
+    const selected = notes.find(note => note.id === noteId)
+    if (!selected) return
+    selected.entries = selected.entries.filter(entry => !entryIds.includes(entry.id))
+    selected.updatedAt = Date.now()
+    const next = wholeDocument && !selected.entries.length ? notes.filter(note => note.id !== noteId) : notes
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: next, [INITIALIZED_KEY]: true })
+  },
 }

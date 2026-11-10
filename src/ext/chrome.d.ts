@@ -34,6 +34,7 @@ declare namespace chrome {
   }
   namespace storage {
     namespace local {
+      function getBytesInUse(keys: null | string | string[]): Promise<number>
       function get(keys: string | string[] | Record<string, any>): Promise<Record<string, any>>
       function set(items: Record<string, any>): Promise<void>
       function remove(keys: string | string[]): Promise<void>
@@ -41,6 +42,7 @@ declare namespace chrome {
     namespace session {
       function get(keys: string | string[] | Record<string, any>): Promise<Record<string, any>>
       function set(items: Record<string, any>): Promise<void>
+      function remove(keys: string | string[]): Promise<void>
     }
   }
   namespace sidePanel {

@@ -494,8 +494,9 @@ async function loadIndex() {
     for (const raw of legacy) {
       if (!raw?.id || records.some((r) => r.id === raw.id)) continue;
       const lines = Array.isArray(raw.subtitles) ? raw.subtitles.map(normalizeLine).filter(Boolean) : [];
-      const record = normalizeRecord({ ...raw, tabId: -1, status: "completed", subtitleCount: lines.length, chunkCount: Math.ceil(lines.length / TRANSCRIPT_CHUNK_SIZE) });
-      for (let i = 0; i < record.chunkCount; i++) {
+      const count = lines.length || (Array.isArray(raw.subtitles) ? 0 : Math.max(0, toNumber(raw.subtitleCount)));
+      const record = normalizeRecord({ ...raw, tabId: -1, status: "completed", subtitleCount: count, chunkCount: Math.ceil(count / TRANSCRIPT_CHUNK_SIZE) });
+      for (let i = 0; i < Math.ceil(lines.length / TRANSCRIPT_CHUNK_SIZE); i++) {
         await chrome.storage.local.set({ [chunkKey(record.id, i)]: lines.slice(i * TRANSCRIPT_CHUNK_SIZE, (i + 1) * TRANSCRIPT_CHUNK_SIZE) });
       }
       records.push(record);
@@ -701,9 +702,6 @@ function deleteTranscripts(ids) {
     const result = await deleteNow(ids.filter((id) => !protectedIds.has(id)));
     return { ...result, skipped: ids.filter((id) => protectedIds.has(id)).length };
   });
-}
-async function clearTranscripts() {
-  return deleteTranscripts((await listTranscripts()).map((r) => r.id));
 }
 function recoverTranscripts(liveGenerations = {}, pendingRecordIds = []) {
   return serial(async () => {
@@ -1189,6 +1187,415 @@ function registerLifecycleListeners() {
   });
 }
 
+// src/lib/knowledge-search.ts
+function fold(text) {
+  return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+function matchRanges(text, query) {
+  const needle = fold(query.trim());
+  if (!needle) return [];
+  const haystack = fold(text);
+  const ranges = [];
+  let from = 0;
+  while (from <= haystack.length - needle.length) {
+    const at = haystack.indexOf(needle, from);
+    if (at < 0) break;
+    ranges.push([at, at + needle.length]);
+    from = at + needle.length;
+  }
+  return ranges;
+}
+function matchesQuery(entry, query) {
+  return !!query.trim() && [entry.source, entry.target, entry.text].some((value) => value && fold(value).includes(fold(query.trim())));
+}
+function refKey(ref) {
+  return ref.kind === "transcript" ? JSON.stringify(["transcript", ref.recordId, ref.lineId]) : JSON.stringify(["note", ref.noteId, ref.entryId]);
+}
+function highlightEntry(entry, query) {
+  return { ...entry, highlights: { source: matchRanges(entry.source, query), target: matchRanges(entry.target, query), text: matchRanges(entry.text, query) } };
+}
+
+// src/ext/background/library-queue.ts
+var queue2 = Promise.resolve();
+function withLibraryOperation(operation) {
+  const run = queue2.catch(() => {
+  }).then(operation);
+  queue2 = run.catch(() => {
+  });
+  return run;
+}
+
+// src/ext/background/notes-store.ts
+var NOTES_STORAGE_KEY = "snooper.notes.v1";
+var INITIALIZED_KEY = "snooper.notes.initialized.v1";
+var MIGRATION_KEY = "snooper.notes.migration.v1";
+function validDocuments(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((note) => !!note && typeof note.id === "string" && Array.isArray(note.entries));
+}
+async function read(legacy) {
+  const got = await chrome.storage.local.get([NOTES_STORAGE_KEY, INITIALIZED_KEY, MIGRATION_KEY]);
+  if (got[INITIALIZED_KEY]) {
+    if (got[MIGRATION_KEY]) await chrome.storage.local.remove(MIGRATION_KEY);
+    return validDocuments(got[NOTES_STORAGE_KEY]);
+  }
+  const notes = Array.isArray(got[NOTES_STORAGE_KEY]) ? validDocuments(got[NOTES_STORAGE_KEY]) : validDocuments(got[MIGRATION_KEY] ?? legacy);
+  if (!Array.isArray(got[NOTES_STORAGE_KEY]) && notes.length === 0) return [];
+  if (notes.length) await chrome.storage.local.set({ [MIGRATION_KEY]: notes });
+  await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
+  if (notes.length) await chrome.storage.local.remove(MIGRATION_KEY);
+  return notes;
+}
+function withProvenance(notes) {
+  return notes.map((note) => ({ ...note, entries: note.entries.map((entry) => ({ ...entry, sourceRef: entry.sourceRef || legacySourceRef(entry.videoUrl || "", note.title, note.id) })) }));
+}
+function includesLegacySnapshot(notes, legacy) {
+  if (!Array.isArray(legacy) || legacy.length === 0 || validDocuments(legacy).length !== legacy.length) return false;
+  return legacy.every((old) => {
+    const saved = notes.find((note) => note.id === old.id);
+    if (!saved) return false;
+    const sameMetadata = Object.entries(old).every(([key, value]) => key === "entries" || key === "updatedAt" || JSON.stringify(saved[key]) === JSON.stringify(value));
+    return sameMetadata && old.entries.every((entry) => saved.entries.some((current) => JSON.stringify(current) === JSON.stringify(entry)));
+  });
+}
+function listNotesWithMigration(legacy) {
+  return withLibraryOperation(async () => {
+    const notes = await read(legacy);
+    return { notes: withProvenance(notes), legacyAcknowledged: includesLegacySnapshot(notes, legacy) };
+  });
+}
+function addNoteEntry(input) {
+  return withLibraryOperation(async () => {
+    if (!input || typeof input.noteId !== "string" || !input.noteId || typeof input.entry?.id !== "string" || !input.entry.id) throw new Error("\u7B14\u8BB0\u7F3A\u5C11\u7A33\u5B9A ID");
+    const entry = input.entry;
+    if (!["subtitle", "image", "svg", "screenshot", "text", "summary"].includes(entry.type) || !Number.isFinite(entry.at)) throw new Error("\u7B14\u8BB0\u7C7B\u578B\u6216\u65F6\u95F4\u65E0\u6548");
+    for (const field of ["source", "target", "text", "imageUrl", "svg", "speaker", "sourceLang", "targetLang", "videoUrl"]) {
+      if (entry[field] !== void 0 && typeof entry[field] !== "string") throw new Error("\u7B14\u8BB0\u6B63\u6587\u683C\u5F0F\u65E0\u6548");
+    }
+    if (entry.videoTime != null && (!Number.isFinite(entry.videoTime) || entry.videoTime < 0)) throw new Error("\u7B14\u8BB0\u89C6\u9891\u65F6\u95F4\u65E0\u6548");
+    const notes = await read();
+    let note = notes.find((n) => n.id === input.noteId);
+    if (!note) {
+      const now = Date.now();
+      note = { id: input.noteId, title: input.title || "\u7B14\u8BB0", createdAt: input.createdAt ?? now, updatedAt: now, entries: [], sessionInfo: input.sessionInfo };
+      notes.push(note);
+    }
+    if (note.entries.some((e) => e.id === input.entry.id)) return withProvenance(notes);
+    note.entries.push(structuredClone(input.entry));
+    note.updatedAt = Date.now();
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
+    return withProvenance(notes);
+  });
+}
+var notesUnderLibraryLock = {
+  async list() {
+    return withProvenance(await read());
+  },
+  async deleteSelection(noteId, entryIds, wholeDocument) {
+    const notes = await read();
+    const selected = notes.find((note) => note.id === noteId);
+    if (!selected) return;
+    selected.entries = selected.entries.filter((entry) => !entryIds.includes(entry.id));
+    selected.updatedAt = Date.now();
+    const next = wholeDocument && !selected.entries.length ? notes.filter((note) => note.id !== noteId) : notes;
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: next, [INITIALIZED_KEY]: true });
+  }
+};
+
+// src/lib/deep-link.ts
+function floorSeconds(seconds) {
+  return Math.max(0, Math.floor(seconds));
+}
+function videoDeepLink(url, seconds) {
+  if (!url || typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const t = floorSeconds(seconds);
+  if (bilibiliKey(parsed)) {
+    const part = bilibiliPart(parsed);
+    if (part === null) return null;
+    return `https://www.bilibili.com${parsed.pathname}?${parsed.searchParams.has("p") ? `p=${part}&` : ""}t=${t}`;
+  }
+  const yt = youtubeId(parsed);
+  if (yt) {
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") return `https://youtu.be/${yt}?t=${t}s`;
+    if (parsed.pathname.startsWith("/shorts/")) return `https://www.youtube.com/shorts/${yt}?t=${t}s`;
+    return `https://www.youtube.com/watch?v=${yt}&t=${t}s`;
+  }
+  return null;
+}
+
+// src/ext/background/source-opening.ts
+async function openSource(source, videoTime, tabId) {
+  let url;
+  try {
+    url = new URL(source?.url);
+  } catch {
+    return { ok: false, error: "\u6CA1\u6709\u53EF\u6253\u5F00\u7684\u6765\u6E90\u5730\u5740" };
+  }
+  if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: "\u6765\u6E90\u5730\u5740\u4EC5\u652F\u6301\u7F51\u9875\u94FE\u63A5" };
+  const exact = source.confidence === "exact" && sourceRefForUrl(source.url).key === source.key;
+  const anchored = exact && typeof videoTime === "number" && Number.isFinite(videoTime) && videoTime >= 0;
+  if (anchored && typeof tabId === "number") {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, { type: "SEEK_VIDEO", expectedSourceKey: source.key, seconds: videoTime });
+      if (response?.seek?.ok === true) return { ok: true, action: "seeked", time: response.seek.time };
+    } catch {
+    }
+  }
+  await chrome.tabs.create({ url: anchored ? videoDeepLink(source.url, videoTime) || source.url : source.url });
+  return { ok: true, action: "opened" };
+}
+
+// src/ext/background/library-store.ts
+var FAVORITES_KEY = "snooper.library.favorites.v1";
+var DELETIONS_KEY = "snooper.library.deletions.v1";
+var PREVIEW_PREFIX = "snooper.library.delete-preview.v1.";
+var LibraryError = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+  code;
+};
+function validId(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 1024;
+}
+function validateRef(value) {
+  if (!value || typeof value !== "object") throw new LibraryError("INVALID_INPUT", "\u6761\u76EE\u5F15\u7528\u65E0\u6548");
+  const ref = value;
+  if (ref.kind === "transcript" && validId(ref.recordId) && validId(ref.lineId)) return { kind: "transcript", recordId: ref.recordId, lineId: ref.lineId };
+  if (ref.kind === "note" && validId(ref.noteId) && validId(ref.entryId)) return { kind: "note", noteId: ref.noteId, entryId: ref.entryId };
+  throw new LibraryError("INVALID_INPUT", "\u6761\u76EE\u5F15\u7528\u65E0\u6548");
+}
+function validateSelection(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new LibraryError("INVALID_INPUT", "\u5220\u9664\u8303\u56F4\u65E0\u6548");
+  for (const values of [input.transcriptIds, input.noteIds]) if (values !== void 0 && (!Array.isArray(values) || !values.every(validId))) throw new LibraryError("INVALID_INPUT", "\u5220\u9664 ID \u65E0\u6548");
+  if (input.noteEntries !== void 0 && (!Array.isArray(input.noteEntries) || !input.noteEntries.every((e) => e && validId(e.noteId) && validId(e.entryId)))) throw new LibraryError("INVALID_INPUT", "\u7B14\u8BB0\u6761\u76EE ID \u65E0\u6548");
+  return { transcriptIds: [...new Set(input.transcriptIds || [])].sort(), noteIds: [...new Set(input.noteIds || [])].sort(), noteEntries: [...new Map((input.noteEntries || []).map((e) => [JSON.stringify([e.noteId, e.entryId]), { noteId: e.noteId, entryId: e.entryId }])).values()].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) };
+}
+function safeSource(source, url, title, fallback) {
+  if (source && typeof source.key === "string" && typeof source.url === "string" && typeof source.title === "string" && ["exact", "legacy", "unknown"].includes(source.confidence)) return { key: source.key, url: source.url, title: source.title, confidence: source.confidence };
+  return legacySourceRef(url, title, fallback);
+}
+function transcriptEntry(record, line) {
+  return { ref: { kind: "transcript", recordId: record.id, lineId: line.id }, sourceRef: safeSource(line.sourceRef || record.sourceRef, record.url, record.pageTitle, record.id), sourceEpoch: record.sourceEpoch, title: record.pageTitle, at: line.at, videoTime: line.videoTime ?? null, source: line.source, target: line.target, text: "", type: line.kind || "subtitle" };
+}
+function noteEntry(note, entry) {
+  return { ref: { kind: "note", noteId: note.id, entryId: entry.id }, sourceRef: safeSource(entry.sourceRef, entry.videoUrl || "", note.title, note.id), title: note.title, at: entry.at, videoTime: entry.videoTime ?? null, source: entry.source || "", target: entry.target || "", text: entry.text || "", type: entry.type };
+}
+async function favoritesUnderLibraryLock() {
+  const raw = (await chrome.storage.local.get(FAVORITES_KEY))[FAVORITES_KEY];
+  if (raw === void 0) return [];
+  if (!Array.isArray(raw)) throw new LibraryError("STORAGE_ERROR", "\u6536\u85CF\u6570\u636E\u65E0\u6CD5\u8BFB\u53D6\uFF0C\u8BF7\u91CD\u8BD5");
+  return raw.map((item) => ({ ref: validateRef(item.ref), createdAt: Number(item.createdAt) || 0 }));
+}
+async function operations() {
+  const value = (await chrome.storage.local.get(DELETIONS_KEY))[DELETIONS_KEY];
+  if (value !== void 0 && !Array.isArray(value)) throw new LibraryError("STORAGE_ERROR", "\u5220\u9664\u65E5\u5FD7\u65E0\u6CD5\u8BFB\u53D6\uFF0C\u8BF7\u91CD\u8BD5");
+  return value || [];
+}
+function affected(ref, target) {
+  return target.kind === "transcript" ? ref.kind === "transcript" && ref.recordId === target.recordId : ref.kind === "note" && ref.noteId === target.noteId && target.entryIds.includes(ref.entryId);
+}
+async function assertAvailable(ref) {
+  if ((await operations()).some((op) => op.pending.some((p) => affected(ref, p.target)))) throw new LibraryError("DELETE_PENDING", "\u6761\u76EE\u6B63\u5728\u5220\u9664\uFF0C\u8BF7\u5B8C\u6210\u6216\u91CD\u8BD5\u5220\u9664");
+}
+async function resolveEntry(ref) {
+  await assertAvailable(ref);
+  if (ref.kind === "note") {
+    const note = (await notesUnderLibraryLock.list()).find((n) => n.id === ref.noteId);
+    const index2 = note?.entries.findIndex((e) => e.id === ref.entryId) ?? -1;
+    if (!note || index2 < 0) throw new LibraryError("NOT_FOUND", "\u7B14\u8BB0\u6761\u76EE\u4E0D\u5B58\u5728\uFF0C\u8BF7\u5237\u65B0\u8D44\u6599\u5E93");
+    return { entry: noteEntry(note, note.entries[index2]), before: note.entries.slice(Math.max(0, index2 - 2), index2).map((e) => noteEntry(note, e)), after: note.entries.slice(index2 + 1, index2 + 3).map((e) => noteEntry(note, e)) };
+  }
+  const record = await getTranscriptRecord(ref.recordId);
+  if (!record) throw new LibraryError("NOT_FOUND", "\u8F6C\u5199\u6761\u76EE\u4E0D\u5B58\u5728\uFF0C\u8BF7\u5237\u65B0\u8D44\u6599\u5E93");
+  const entries = [];
+  for (let i = 0; i < record.chunkCount; i++) entries.push(...(await readTranscriptPage(record.id, i)).lines.map((line) => transcriptEntry(record, line)));
+  entries.sort((a, b) => a.at - b.at);
+  const index = entries.findIndex((e) => refKey(e.ref) === refKey(ref));
+  if (index < 0) throw new LibraryError("NOT_FOUND", "\u8F6C\u5199\u6761\u76EE\u4E0D\u5B58\u5728\uFF0C\u8BF7\u5237\u65B0\u8D44\u6599\u5E93");
+  return { entry: entries[index], before: entries.slice(Math.max(0, index - 2), index), after: entries.slice(index + 1, index + 3) };
+}
+function libraryContext(input) {
+  return withLibraryOperation(async () => {
+    const ref = validateRef(input);
+    const result = await resolveEntry(ref);
+    return { ...result, source: result.entry.sourceRef, favorite: (await favoritesUnderLibraryLock()).some((f) => refKey(f.ref) === refKey(ref)) };
+  });
+}
+function setFavorite(input, favorite) {
+  return withLibraryOperation(async () => {
+    const ref = validateRef(input);
+    if (typeof favorite !== "boolean") throw new LibraryError("INVALID_INPUT", "\u6536\u85CF\u72B6\u6001\u65E0\u6548");
+    await resolveEntry(ref);
+    const old = await favoritesUnderLibraryLock();
+    const next = old.filter((f) => refKey(f.ref) !== refKey(ref));
+    if (favorite) next.push(old.find((f) => refKey(f.ref) === refKey(ref)) || { ref, createdAt: Date.now() });
+    await chrome.storage.local.set({ [FAVORITES_KEY]: next });
+    return { ref, favorite };
+  });
+}
+async function preview(selection) {
+  const records = await listTranscripts(), notes = await notesUnderLibraryLock.list();
+  const targets = [], skipped = [];
+  for (const id of selection.transcriptIds || []) {
+    const record = records.find((r) => r.id === id);
+    if (!record || record.status === "recording") skipped.push({ kind: "transcript", id, reason: record ? "\u6B63\u5728\u5F55\u5236\uFF0C\u5DF2\u8DF3\u8FC7" : "\u8BB0\u5F55\u4E0D\u5B58\u5728" });
+    else targets.push({ kind: "transcript", recordId: id });
+  }
+  const noteIds = [.../* @__PURE__ */ new Set([...selection.noteIds || [], ...(selection.noteEntries || []).map((e) => e.noteId)])].sort();
+  for (const id of noteIds) {
+    const note = notes.find((n) => n.id === id);
+    if (!note) {
+      skipped.push({ kind: "note", id, reason: "\u7B14\u8BB0\u4E0D\u5B58\u5728" });
+      continue;
+    }
+    const wholeDocument = !!selection.noteIds?.includes(id);
+    const requested = selection.noteEntries?.filter((e) => e.noteId === id).map((e) => e.entryId) || [];
+    const entryIds = note.entries.filter((e) => wholeDocument || requested.includes(e.id)).map((e) => e.id).sort();
+    for (const missing of requested.filter((e) => !entryIds.includes(e))) skipped.push({ kind: "note", id: missing, reason: "\u7B14\u8BB0\u6761\u76EE\u4E0D\u5B58\u5728" });
+    if (wholeDocument || entryIds.length) targets.push({ kind: "note", noteId: id, entryIds, wholeDocument });
+  }
+  const favorites = (await favoritesUnderLibraryLock()).filter((f) => targets.some((t) => affected(f.ref, t))).sort((a, b) => refKey(a.ref).localeCompare(refKey(b.ref)));
+  return { selection, targets, skipped, favorites, signature: JSON.stringify({ targets, skipped, favorites }), expiresAt: Date.now() + 10 * 6e4 };
+}
+async function saveLibrarySessionCache(prefix, id, value) {
+  const registryKey = `${prefix}index`;
+  const raw = (await chrome.storage.session.get(registryKey))[registryKey];
+  const previous = Array.isArray(raw) ? raw.filter((item) => item && typeof item.id === "string" && /^[a-f\d-]{36}$/.test(item.id) && Number.isFinite(item.expiresAt)) : [];
+  const retained = previous.filter((item) => item.id !== id && item.expiresAt > Date.now()).slice(-15);
+  const expired = previous.filter((item) => item.id !== id && !retained.some((kept) => kept.id === item.id));
+  if (expired.length) await chrome.storage.session.remove(expired.map((item) => prefix + item.id));
+  await chrome.storage.session.set({ [prefix + id]: value, [registryKey]: [...retained, { id, expiresAt: value.expiresAt }] });
+}
+function prepareDelete(input) {
+  return withLibraryOperation(async () => {
+    const value = await preview(validateSelection(input)), token = crypto.randomUUID();
+    await saveLibrarySessionCache(PREVIEW_PREFIX, token, value);
+    return { token, targets: value.targets, favoriteCount: value.favorites.length, skipped: value.skipped, expiresAt: value.expiresAt };
+  });
+}
+async function saveOperation(operation) {
+  const all = await operations();
+  await chrome.storage.local.set({ [DELETIONS_KEY]: [...all.filter((o) => o.operationId !== operation.operationId), operation] });
+}
+async function execute(operation) {
+  for (const target of [...operation.pending.map((p) => p.target)]) {
+    try {
+      if (target.kind === "transcript") {
+        const result = await deleteTranscripts([target.recordId]);
+        if (result.skipped) throw new Error("\u8BB0\u5F55\u6B63\u5728\u5F55\u5236\uFF0C\u5C1A\u672A\u5220\u9664");
+        if (await getTranscriptRecord(target.recordId)) throw new Error("\u8F6C\u5199\u5220\u9664\u5C1A\u672A\u5B8C\u6210");
+      } else await notesUnderLibraryLock.deleteSelection(target.noteId, target.entryIds, target.wholeDocument);
+      const favorites = await favoritesUnderLibraryLock();
+      await chrome.storage.local.set({ [FAVORITES_KEY]: favorites.filter((f) => !affected(f.ref, target)) });
+      operation.pending = operation.pending.filter((p) => JSON.stringify(p.target) !== JSON.stringify(target));
+      operation.completed.push(target);
+    } catch (error) {
+      const item = operation.pending.find((p) => JSON.stringify(p.target) === JSON.stringify(target));
+      if (item) item.error = error instanceof Error ? error.message : String(error);
+    }
+    try {
+      await saveOperation(operation);
+    } catch (error) {
+      const durable = (await operations()).find((o) => o.operationId === operation.operationId);
+      if (!durable) throw error;
+      return { operationId: durable.operationId, completed: durable.completed, pending: durable.pending.map((p) => ({ ...p, error: "\u5220\u9664\u8FDB\u5EA6\u672A\u80FD\u4FDD\u5B58\uFF0C\u8BF7\u91CD\u8BD5" })), skipped: durable.skipped };
+    }
+  }
+  return { operationId: operation.operationId, completed: operation.completed, pending: operation.pending, skipped: operation.skipped };
+}
+function confirmDelete(token) {
+  return withLibraryOperation(async () => {
+    if (!validId(token)) throw new LibraryError("INVALID_INPUT", "\u5220\u9664\u786E\u8BA4\u65E0\u6548");
+    const existing = (await operations()).find((o) => o.operationId === token);
+    if (existing) return execute(existing);
+    const saved = (await chrome.storage.session.get(PREVIEW_PREFIX + token))[PREVIEW_PREFIX + token];
+    if (!saved || saved.expiresAt < Date.now()) throw new LibraryError("CONFIRMATION_STALE", "\u5220\u9664\u786E\u8BA4\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u786E\u8BA4");
+    if ((await preview(saved.selection)).signature !== saved.signature) throw new LibraryError("CONFIRMATION_STALE", "\u8D44\u6599\u6216\u6536\u85CF\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u786E\u8BA4\u5220\u9664\u8303\u56F4");
+    const operation = { operationId: token, targets: saved.targets, createdAt: Date.now(), completed: [], pending: saved.targets.map((target) => ({ target, error: "" })), skipped: saved.skipped };
+    await saveOperation(operation);
+    await chrome.storage.session.remove(PREVIEW_PREFIX + token);
+    return execute(operation);
+  });
+}
+function retryDelete(operationId) {
+  return withLibraryOperation(async () => {
+    if (!validId(operationId)) throw new LibraryError("INVALID_INPUT", "\u5220\u9664\u64CD\u4F5C ID \u65E0\u6548");
+    const operation = (await operations()).find((o) => o.operationId === operationId);
+    if (!operation) throw new LibraryError("NOT_FOUND", "\u5220\u9664\u64CD\u4F5C\u4E0D\u5B58\u5728\uFF0C\u8BF7\u5237\u65B0\u8D44\u6599\u5E93");
+    return execute(operation);
+  });
+}
+function recoverLibraryDeletions() {
+  return withLibraryOperation(async () => {
+    for (const operation of await operations()) if (operation.pending.length) await execute(operation);
+  });
+}
+function libraryUsage() {
+  return withLibraryOperation(async () => {
+    const errors = [];
+    async function stat(area, read2) {
+      try {
+        return await read2();
+      } catch (error) {
+        errors.push({ area, message: error instanceof Error ? error.message : String(error) });
+        return null;
+      }
+    }
+    const deletions = await stat("deletions", operations);
+    const transcripts = await stat("transcripts", listTranscripts);
+    const notes = await stat("notes", notesUnderLibraryLock.list);
+    const favorites = await stat("favorites", favoritesUnderLibraryLock);
+    const migration = await stat("noteMigration", async () => !!(await chrome.storage.local.get("snooper.notes.migration.v1"))["snooper.notes.migration.v1"]);
+    const pending2 = [...sessions.values()].flatMap(allSourceSessions).filter((s) => s.pendingTranscriptLines?.length);
+    const bytes = await stat("bytes", () => chrome.storage.local.getBytesInUse(null));
+    return {
+      complete: errors.length === 0,
+      errors,
+      bytes,
+      transcriptCount: transcripts?.length ?? null,
+      noteCount: notes?.length ?? null,
+      noteEntryCount: notes ? notes.reduce((sum, note) => sum + note.entries.length, 0) : null,
+      favoriteCount: favorites?.length ?? null,
+      pendingWrites: { transcriptLines: pending2.reduce((sum, s) => sum + s.pendingTranscriptLines.length, 0), sessions: pending2.length, noteMigration: migration },
+      pendingDeletes: deletions ? deletions.filter((o) => o.pending.length).map(({ operationId, completed, pending: pending3, skipped }) => ({ operationId, completed, pending: pending3, skipped })) : null
+    };
+  });
+}
+function openLibrarySource(input, tabId) {
+  return withLibraryOperation(async () => {
+    let source, seconds;
+    if (input.ref) {
+      const result2 = await resolveEntry(validateRef(input.ref));
+      source = result2.entry.sourceRef;
+      seconds = result2.entry.videoTime;
+    } else {
+      if (!validId(input.recordId)) throw new LibraryError("INVALID_INPUT", "\u7F3A\u5C11\u5DF2\u4FDD\u5B58\u7684\u6765\u6E90\u5F15\u7528");
+      const record = await getTranscriptRecord(input.recordId);
+      if (!record) throw new LibraryError("NOT_FOUND", "\u6765\u6E90\u8BB0\u5F55\u4E0D\u5B58\u5728");
+      source = safeSource(record.sourceRef, record.url, record.pageTitle, record.id);
+      if (input.seconds != null && (typeof input.seconds !== "number" || !Number.isFinite(input.seconds) || input.seconds < 0)) throw new LibraryError("INVALID_INPUT", "\u6765\u6E90\u65F6\u95F4\u65E0\u6548");
+      seconds = input.seconds ?? null;
+    }
+    const result = await openSource(source, seconds, tabId);
+    return { ...result, ...source.confidence !== "exact" || seconds === null ? { degraded: "\u672A\u4FDD\u5B58\u53EF\u9760\u64AD\u653E\u4F4D\u7F6E\uFF0C\u5DF2\u6253\u5F00\u6765\u6E90\u9875\u9762" } : {} };
+  });
+}
+async function deletingTargetsUnderLibraryLock() {
+  return (await operations()).flatMap((operation) => operation.pending.map((item) => item.target));
+}
+function entryIsDeleting(ref, targets) {
+  return targets.some((target) => affected(ref, target));
+}
+
 // src/lib/keyed-task.ts
 function runKeyedTask(tasks, key, mode, task) {
   const previous = tasks.get(key);
@@ -1313,6 +1720,7 @@ async function readLiveCapture() {
   return { sessions: {} };
 }
 async function recoverSessions() {
+  await recoverLibraryDeletions().catch((error) => console.warn("[RTTS] library deletion recovery pending:", error));
   try {
     const live = await readLiveCapture();
     const liveGenerations = live.sessions;
@@ -1687,96 +2095,138 @@ var configHandlers = {
   }
 };
 
-// src/ext/background/notes-store.ts
-var NOTES_STORAGE_KEY = "snooper.notes.v1";
-var INITIALIZED_KEY = "snooper.notes.initialized.v1";
-var MIGRATION_KEY = "snooper.notes.migration.v1";
-var queue2 = Promise.resolve();
-function serial2(operation) {
-  const run = queue2.catch(() => {
-  }).then(operation);
-  queue2 = run.catch(() => {
-  });
-  return run;
+// src/ext/background/library-search.ts
+var PREFIX = "snooper.library.search.v1.";
+var WORK_UNITS = 4;
+function parseCursor(cursor) {
+  const match = /^([a-f\d-]{36}):(\d+)$/.exec(cursor);
+  if (!match) throw new LibraryError("CURSOR_EXPIRED", "\u67E5\u8BE2\u6E38\u6807\u65E0\u6548\u6216\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u67E5\u8BE2");
+  return { id: match[1], step: Number(match[2]) };
 }
-function validDocuments(value) {
-  if (!Array.isArray(value)) return [];
-  return value.filter((note) => !!note && typeof note.id === "string" && Array.isArray(note.entries));
-}
-async function read(legacy) {
-  const got = await chrome.storage.local.get([NOTES_STORAGE_KEY, INITIALIZED_KEY, MIGRATION_KEY]);
-  if (got[INITIALIZED_KEY]) {
-    if (got[MIGRATION_KEY]) await chrome.storage.local.remove(MIGRATION_KEY);
-    return validDocuments(got[NOTES_STORAGE_KEY]);
-  }
-  const notes = Array.isArray(got[NOTES_STORAGE_KEY]) ? validDocuments(got[NOTES_STORAGE_KEY]) : validDocuments(got[MIGRATION_KEY] ?? legacy);
-  if (!Array.isArray(got[NOTES_STORAGE_KEY]) && notes.length === 0) return [];
-  if (notes.length) await chrome.storage.local.set({ [MIGRATION_KEY]: notes });
-  await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
-  if (notes.length) await chrome.storage.local.remove(MIGRATION_KEY);
-  return notes;
-}
-function withProvenance(notes) {
-  return notes.map((note) => ({ ...note, entries: note.entries.map((entry) => ({ ...entry, sourceRef: entry.sourceRef || legacySourceRef(entry.videoUrl || "", note.title, note.id) })) }));
-}
-function includesLegacySnapshot(notes, legacy) {
-  if (!Array.isArray(legacy) || legacy.length === 0 || validDocuments(legacy).length !== legacy.length) return false;
-  return legacy.every((old) => {
-    const saved = notes.find((note) => note.id === old.id);
-    if (!saved) return false;
-    const sameMetadata = Object.entries(old).every(([key, value]) => key === "entries" || key === "updatedAt" || JSON.stringify(saved[key]) === JSON.stringify(value));
-    return sameMetadata && old.entries.every((entry) => saved.entries.some((current) => JSON.stringify(current) === JSON.stringify(entry)));
+function cancelSearch(cursor) {
+  return withLibraryOperation(async () => {
+    const { id } = parseCursor(cursor);
+    await chrome.storage.session.remove(PREFIX + id);
   });
 }
-function listNotesWithMigration(legacy) {
-  return serial2(async () => {
-    const notes = await read(legacy);
-    return { notes: withProvenance(notes), legacyAcknowledged: includesLegacySnapshot(notes, legacy) };
-  });
-}
-function addNoteEntry(input) {
-  return serial2(async () => {
-    if (!input || typeof input.noteId !== "string" || !input.noteId || typeof input.entry?.id !== "string" || !input.entry.id) throw new Error("\u7B14\u8BB0\u7F3A\u5C11\u7A33\u5B9A ID");
-    const entry = input.entry;
-    if (!["subtitle", "image", "svg", "screenshot", "text", "summary"].includes(entry.type) || !Number.isFinite(entry.at)) throw new Error("\u7B14\u8BB0\u7C7B\u578B\u6216\u65F6\u95F4\u65E0\u6548");
-    for (const field of ["source", "target", "text", "imageUrl", "svg", "speaker", "sourceLang", "targetLang", "videoUrl"]) {
-      if (entry[field] !== void 0 && typeof entry[field] !== "string") throw new Error("\u7B14\u8BB0\u6B63\u6587\u683C\u5F0F\u65E0\u6548");
+function searchLibrary(input) {
+  return withLibraryOperation(async () => {
+    if (!input || typeof input.query !== "string" || typeof input.favoritesOnly !== "boolean" || input.cursor !== void 0 && typeof input.cursor !== "string") throw new LibraryError("INVALID_INPUT", "\u67E5\u8BE2\u53C2\u6570\u65E0\u6548");
+    const query = input.query.trim();
+    const records = await listTranscripts(), notes = await notesUnderLibraryLock.list();
+    const favorites = (await favoritesUnderLibraryLock()).map((f) => refKey(f.ref)).sort();
+    const deleting = await deletingTargetsUnderLibraryLock();
+    const scopes = [...records.map((r) => ({ kind: "transcript", id: r.id, title: r.pageTitle, count: r.subtitleCount })), ...notes.map((n) => ({ kind: "note", id: n.id, title: n.title, count: n.entries.length, entryIds: n.entries.map((e) => e.id), updatedAt: n.updatedAt }))];
+    let id, state;
+    if (input.cursor) {
+      const parsed = parseCursor(input.cursor);
+      id = parsed.id;
+      state = (await chrome.storage.session.get(PREFIX + id))[PREFIX + id];
+      if (!state || state.step !== parsed.step || state.expiresAt < Date.now()) throw new LibraryError("CURSOR_EXPIRED", "\u67E5\u8BE2\u5DF2\u53D6\u6D88\u6216\u6E38\u6807\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u67E5\u8BE2");
+      if (state.query !== query || state.favoritesOnly !== input.favoritesOnly) throw new LibraryError("CURSOR_MISMATCH", "\u67E5\u8BE2\u6761\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u67E5\u8BE2");
+      state.changed ||= JSON.stringify(state.scopes) !== JSON.stringify(scopes) || JSON.stringify(state.favorites) !== JSON.stringify(favorites);
+    } else {
+      id = crypto.randomUUID();
+      state = { query, favoritesOnly: input.favoritesOnly, favorites, scopes, scopeIndex: 0, offset: 0, scanned: 0, step: 0, changed: false, expiresAt: Date.now() + 30 * 6e4 };
     }
-    if (entry.videoTime != null && (!Number.isFinite(entry.videoTime) || entry.videoTime < 0)) throw new Error("\u7B14\u8BB0\u89C6\u9891\u65F6\u95F4\u65E0\u6548");
-    const notes = await read();
-    let note = notes.find((n) => n.id === input.noteId);
-    if (!note) {
-      const now = Date.now();
-      note = { id: input.noteId, title: input.title || "\u7B14\u8BB0", createdAt: input.createdAt ?? now, updatedAt: now, entries: [], sessionInfo: input.sessionInfo };
-      notes.push(note);
+    const result = { hits: [], cursor: null, complete: false, scanned: state.scanned, errors: [], changed: state.changed, scopes: state.scopes.map(({ kind, id: id2, title, count }) => ({ kind, id: id2, title, count })) };
+    if (!query) return { ...result, complete: true };
+    const favoriteSet = new Set(state.favorites);
+    const include = (ref) => (!state.favoritesOnly || favoriteSet.has(refKey(ref))) && !entryIsDeleting(ref, deleting);
+    for (let work = 0; work < WORK_UNITS && state.scopeIndex < state.scopes.length; work++) {
+      const scope = state.scopes[state.scopeIndex];
+      try {
+        if (scope.kind === "transcript") {
+          const current = records.find((r) => r.id === scope.id);
+          if (!current || deleting.some((t) => t.kind === "transcript" && t.recordId === scope.id)) {
+            state.changed = true;
+            state.scopeIndex++;
+            state.offset = 0;
+            continue;
+          }
+          if (!scope.count) {
+            state.scopeIndex++;
+            state.offset = 0;
+            continue;
+          }
+          const page = await readTranscriptPage(scope.id, Math.floor(state.offset / TRANSCRIPT_CHUNK_SIZE));
+          const expected = Math.min(TRANSCRIPT_CHUNK_SIZE, scope.count - state.offset);
+          if (page.lines.length < expected) throw new Error("\u8F6C\u5199\u6B63\u6587\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9");
+          for (const line of page.lines.slice(0, expected)) {
+            const entry = transcriptEntry(page.record, line);
+            if (include(entry.ref) && matchesQuery(entry, query)) result.hits.push(highlightEntry({ ...entry, favorite: favoriteSet.has(refKey(entry.ref)) }, query));
+          }
+          state.scanned += expected;
+          state.offset += expected;
+        } else {
+          const note = notes.find((n) => n.id === scope.id);
+          if (!note) {
+            state.changed = true;
+            state.scopeIndex++;
+            state.offset = 0;
+            continue;
+          }
+          const wanted = scope.entryIds.slice(state.offset, state.offset + TRANSCRIPT_CHUNK_SIZE);
+          const byId = new Map(note.entries.map((e) => [e.id, e]));
+          for (const entryId of wanted) {
+            const value = byId.get(entryId);
+            if (!value) {
+              state.changed = true;
+              continue;
+            }
+            const entry = noteEntry(note, value);
+            if (include(entry.ref) && matchesQuery(entry, query)) result.hits.push(highlightEntry({ ...entry, favorite: favoriteSet.has(refKey(entry.ref)) }, query));
+            state.scanned++;
+          }
+          state.offset += wanted.length;
+        }
+        if (state.offset >= scope.count) {
+          state.scopeIndex++;
+          state.offset = 0;
+        }
+      } catch (error) {
+        result.errors.push({ kind: scope.kind, id: scope.id, message: error instanceof Error ? error.message : String(error) });
+        break;
+      }
     }
-    if (note.entries.some((e) => e.id === input.entry.id)) return withProvenance(notes);
-    note.entries.push(structuredClone(input.entry));
-    note.updatedAt = Date.now();
-    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
-    return withProvenance(notes);
-  });
-}
-function deleteNoteEntry(noteId, entryId) {
-  return serial2(async () => {
-    const notes = await read();
-    const note = notes.find((n) => n.id === noteId);
-    if (note) {
-      note.entries = note.entries.filter((e) => e.id !== entryId);
-      note.updatedAt = Date.now();
+    result.scanned = state.scanned;
+    result.changed = state.changed;
+    result.complete = state.scopeIndex === state.scopes.length && !result.errors.length;
+    if (result.complete) await chrome.storage.session.remove(PREFIX + id);
+    else {
+      state.step++;
+      if (input.cursor) await chrome.storage.session.set({ [PREFIX + id]: state });
+      else await saveLibrarySessionCache(PREFIX, id, state);
+      result.cursor = `${id}:${state.step}`;
     }
-    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
-    return withProvenance(notes);
+    return result;
   });
 }
-function deleteNoteDocuments(ids) {
-  return serial2(async () => {
-    if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) throw new Error("\u7B14\u8BB0 ID \u65E0\u6548");
-    const notes = (await read()).filter((n) => !ids.includes(n.id));
-    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
-    return withProvenance(notes);
-  });
+
+// src/ext/background/router/library.ts
+function handler(run) {
+  return (message, context) => {
+    void waitForRecovery().then(() => run(message, context)).then((result) => context.sendResponse({ ok: true, ...result })).catch((error) => context.sendResponse({ ok: false, code: error.code || "STORAGE_ERROR", error: error.message || String(error) }));
+    return true;
+  };
 }
+var libraryHandlers = {
+  LIBRARY_SEARCH: handler((message) => searchLibrary({ query: message.query, favoritesOnly: message.favoritesOnly, cursor: message.cursor })),
+  LIBRARY_CANCEL_SEARCH: handler(async (message) => {
+    await cancelSearch(message.cursor);
+    return { cancelled: true };
+  }),
+  LIBRARY_CONTEXT: handler((message) => libraryContext(message.ref)),
+  LIBRARY_FAVORITE: handler((message) => setFavorite(message.ref, message.favorite)),
+  LIBRARY_PREPARE_DELETE: handler((message) => prepareDelete({ transcriptIds: message.transcriptIds, noteIds: message.noteIds, noteEntries: message.noteEntries })),
+  LIBRARY_DELETE: handler((message) => confirmDelete(message.token)),
+  LIBRARY_RETRY_DELETE: handler((message) => retryDelete(message.operationId)),
+  LIBRARY_USAGE: handler(() => libraryUsage()),
+  LIBRARY_OPEN_SOURCE: handler((message, { tabId }) => {
+    if (message.tabId !== void 0 && (!Number.isInteger(message.tabId) || message.tabId < 0)) throw new Error("\u6807\u7B7E\u9875 ID \u65E0\u6548");
+    return openLibrarySource({ ref: message.ref, recordId: message.recordId, seconds: message.seconds }, tabId ?? message.tabId);
+  })
+};
 
 // src/ext/background/router/notes.ts
 var notesHandlers = {
@@ -1788,13 +2238,13 @@ var notesHandlers = {
     addNoteEntry(message.input).then((notes) => sendResponse({ ok: true, notes })).catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
     return true;
   },
-  NOTES_DELETE_ENTRY: (message, { sendResponse }) => {
-    deleteNoteEntry(String(message.noteId || ""), String(message.entryId || "")).then((notes) => sendResponse({ ok: true, notes })).catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
-    return true;
+  NOTES_DELETE_ENTRY: (_message, { sendResponse }) => {
+    sendResponse({ ok: false, code: "CONFIRMATION_REQUIRED", error: "\u8BF7\u5148\u9884\u89C8\u5220\u9664\u8303\u56F4\u548C\u53D7\u5F71\u54CD\u6536\u85CF\uFF0C\u518D\u786E\u8BA4\u5220\u9664" });
+    return false;
   },
-  NOTES_DELETE_DOCUMENTS: (message, { sendResponse }) => {
-    deleteNoteDocuments(message.ids).then((notes) => sendResponse({ ok: true, notes })).catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
-    return true;
+  NOTES_DELETE_DOCUMENTS: (_message, { sendResponse }) => {
+    sendResponse({ ok: false, code: "CONFIRMATION_REQUIRED", error: "\u8BF7\u5148\u9884\u89C8\u5220\u9664\u8303\u56F4\u548C\u53D7\u5F71\u54CD\u6536\u85CF\uFF0C\u518D\u786E\u8BA4\u5220\u9664" });
+    return false;
   }
 };
 
@@ -1871,22 +2321,13 @@ var historyHandlers = {
     });
     return true;
   },
-  DELETE_HISTORY: (message, { sendResponse }) => {
-    const ids = Array.isArray(message.ids) ? message.ids.map((id) => String(id)) : [String(message.id || "")];
-    deleteTranscripts(ids).then((result) => {
-      sendResponse({ ok: true, ...result });
-    }).catch((err) => {
-      sendResponse({ ok: false, error: err.message || "\u5220\u9664\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
-    });
-    return true;
+  DELETE_HISTORY: (_message, { sendResponse }) => {
+    sendResponse({ ok: false, code: "CONFIRMATION_REQUIRED", error: "\u8BF7\u5148\u9884\u89C8\u5220\u9664\u8303\u56F4\u548C\u53D7\u5F71\u54CD\u6536\u85CF\uFF0C\u518D\u786E\u8BA4\u5220\u9664" });
+    return false;
   },
   DELETE_ALL_HISTORY: (_message, { sendResponse }) => {
-    clearTranscripts().then((result) => {
-      sendResponse({ ok: true, ...result });
-    }).catch((err) => {
-      sendResponse({ ok: false, error: err.message || "\u5220\u9664\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
-    });
-    return true;
+    sendResponse({ ok: false, code: "CONFIRMATION_REQUIRED", error: "\u8BF7\u5148\u9884\u89C8\u5220\u9664\u8303\u56F4\u548C\u53D7\u5F71\u54CD\u6536\u85CF\uFF0C\u518D\u786E\u8BA4\u5220\u9664" });
+    return false;
   }
 };
 
@@ -3386,56 +3827,6 @@ var sessionHandlers = {
   }
 };
 
-// src/lib/deep-link.ts
-function floorSeconds(seconds) {
-  return Math.max(0, Math.floor(seconds));
-}
-function videoDeepLink(url, seconds) {
-  if (!url || typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  const t = floorSeconds(seconds);
-  if (bilibiliKey(parsed)) {
-    const part = bilibiliPart(parsed);
-    if (part === null) return null;
-    return `https://www.bilibili.com${parsed.pathname}?${parsed.searchParams.has("p") ? `p=${part}&` : ""}t=${t}`;
-  }
-  const yt = youtubeId(parsed);
-  if (yt) {
-    const host = parsed.hostname.replace(/^www\./, "");
-    if (host === "youtu.be") return `https://youtu.be/${yt}?t=${t}s`;
-    if (parsed.pathname.startsWith("/shorts/")) return `https://www.youtube.com/shorts/${yt}?t=${t}s`;
-    return `https://www.youtube.com/watch?v=${yt}&t=${t}s`;
-  }
-  return null;
-}
-
-// src/ext/background/source-opening.ts
-async function openSource(source, videoTime, tabId) {
-  let url;
-  try {
-    url = new URL(source?.url);
-  } catch {
-    return { ok: false, error: "\u6CA1\u6709\u53EF\u6253\u5F00\u7684\u6765\u6E90\u5730\u5740" };
-  }
-  if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: "\u6765\u6E90\u5730\u5740\u4EC5\u652F\u6301\u7F51\u9875\u94FE\u63A5" };
-  const exact = source.confidence === "exact" && sourceRefForUrl(source.url).key === source.key;
-  const anchored = exact && typeof videoTime === "number" && Number.isFinite(videoTime) && videoTime >= 0;
-  if (anchored && typeof tabId === "number") {
-    try {
-      const response = await chrome.tabs.sendMessage(tabId, { type: "SEEK_VIDEO", expectedSourceKey: source.key, seconds: videoTime });
-      if (response?.seek?.ok === true) return { ok: true, action: "seeked", time: response.seek.time };
-    } catch {
-    }
-  }
-  await chrome.tabs.create({ url: anchored ? videoDeepLink(source.url, videoTime) || source.url : source.url });
-  return { ok: true, action: "opened" };
-}
-
 // src/ext/background/router/video-clock.ts
 var MAX_SAMPLE_SKEW_MS = 12e4;
 var videoClockHandlers = {
@@ -3471,6 +3862,7 @@ var backgroundHandlers = {
   ...obsidianHandlers,
   ...historyHandlers,
   ...notesHandlers,
+  ...libraryHandlers,
   ...videoClockHandlers
 };
 function registerBackgroundRouters() {
@@ -3489,12 +3881,12 @@ function registerBackgroundRouters() {
       sendResponse({ ok: false, error: "\u672A\u7ECF\u6388\u6743\u7684\u6765\u6E90" });
       return false;
     }
-    const handler = backgroundHandlers[message.type];
-    if (!handler) {
+    const handler2 = backgroundHandlers[message.type];
+    if (!handler2) {
       sendResponse({ ok: false, error: `\u672A\u77E5\u6D88\u606F\u7C7B\u578B: ${message.type}` });
       return false;
     }
-    return handler(message, {
+    return handler2(message, {
       tabId,
       sender,
       sendResponse

@@ -255,6 +255,7 @@ export function createNotes(deps: NotesDeps) {
         event.stopPropagation()
         try {
           const notes = await deleteNoteEntry(active.id, entry.id)
+          if (!notes) return
           pending.delete(`${active.id}:${entry.id}`)
           adopt(notes)
         } catch (error) { deps.toast(`删除失败，请重试：${String(error)}`, 'err') }

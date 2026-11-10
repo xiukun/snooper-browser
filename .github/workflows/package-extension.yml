@@ -62,6 +62,7 @@ jobs:
           npm run test:markdown
           npm run test:session-state
           npm run test:image-material
+          npm run test:ext-provider-env
           npm run test:ext-globals
           node scripts/test-agent.mjs
           node scripts/test-languages.mjs

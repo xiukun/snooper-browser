@@ -1,4 +1,7 @@
 (() => {
+  // <define:import.meta.env>
+  var define_import_meta_env_default = {};
+
   // src/lib/models.ts
   var MODEL_CATALOG = [
     {
@@ -141,7 +144,6 @@
   };
 
   // src/lib/providers.ts
-  var import_meta = {};
   var MODEL_SUGGESTIONS = {
     llm: MODEL_CATALOG.filter((model) => model.kind === "chat" || model.kind === "vision").map(
       (model) => model.id
@@ -179,7 +181,7 @@
       return null;
     }
   }
-  var env = import_meta.env;
+  var env = define_import_meta_env_default ?? {};
   var envKey = (env.VITE_MOSS_API_KEY ?? "").trim();
   var envBaseUrl = (env.VITE_MOSS_BASE_URL ?? "https://api.mosi.cn/v1").trim();
   function createProvider(partial = {}) {

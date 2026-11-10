@@ -4879,6 +4879,7 @@ ${context}`;
       summaryBtn: shadow.getElementById("rtts-summary-btn"),
       imageBtn: shadow.getElementById("rtts-image-btn"),
       screenshotBtn: shadow.getElementById("rtts-screenshot-btn"),
+      screenBtn: shadow.getElementById("rtts-screen-btn"),
       notesCount: shadow.getElementById("rtts-notes-count"),
       notesBadge: shadow.getElementById("rtts-notes-badge"),
       notesBtn: shadow.getElementById("rtts-notes-btn"),

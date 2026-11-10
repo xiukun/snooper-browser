@@ -4872,10 +4872,35 @@ ${context}`;
     return rect.width * rect.height / viewportArea >= AUTO_SHOW_MIN_VIEWPORT_RATIO;
   }
 
+  // src/lib/content-install.ts
+  function shouldSkipContentInstall(marker) {
+    if (!marker) return false;
+    if (typeof marker !== "object") return false;
+    const alive = marker.alive;
+    if (typeof alive !== "function") return false;
+    try {
+      return alive() === true;
+    } catch {
+      return false;
+    }
+  }
+  function createContentInstallMarker() {
+    return {
+      alive: () => {
+        try {
+          chrome.runtime.getManifest();
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    };
+  }
+
   // src/ext/content.ts
   (() => {
-    if (window.__rttsContentInstalled) return;
-    window.__rttsContentInstalled = true;
+    const INSTALL_MARKER_KEY = "__rttsContentInstalled";
+    if (shouldSkipContentInstall(window[INSTALL_MARKER_KEY])) return;
     const HOST_ID = "rtts-extension-host";
     let host = document.getElementById(HOST_ID);
     if (host) host.remove();
@@ -5671,6 +5696,7 @@ ${context}`;
         adoptBackgroundSession(msg.session);
       }
     });
+    window[INSTALL_MARKER_KEY] = createContentInstallMarker();
     try {
       chrome.storage?.onChanged?.addListener((changes, area) => {
         if (area !== "local" || !changes?.[NOTES_STORAGE_KEY]) return;

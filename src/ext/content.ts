@@ -39,12 +39,16 @@ import { DEMO_SUBTITLES } from './content/demo'
 import type { SessionState } from './content/types'
 import { createScreenshotCapturer, findBestVideoCandidate } from './screenshot'
 import { isPresentableVideo } from '../lib/video-presence'
+import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/content-install'
 
 /* ===== Note + Obsidian persistence: see ./content/notes-store, ./content/obsidian-config ===== */
 
 (() => {
-  if ((window as any).__rttsContentInstalled) return;
-  (window as any).__rttsContentInstalled = true;
+  // ADR-042: a marker left by a content script whose extension context died
+  // (extension reload/update) must not block this fresh initialization, or
+  // the toolbar stays unreachable until the page is refreshed.
+  const INSTALL_MARKER_KEY = '__rttsContentInstalled';
+  if (shouldSkipContentInstall((window as any)[INSTALL_MARKER_KEY])) return;
 
   const HOST_ID = 'rtts-extension-host';
   let host = document.getElementById(HOST_ID);
@@ -888,6 +892,11 @@ import { isPresentableVideo } from '../lib/video-presence'
       adoptBackgroundSession(msg.session);
     }
   });
+
+  // Mark the page as served only after the message listener exists: a script
+  // that threw during construction stays retryable, and `alive()` lets a
+  // post-reload injection replace an orphaned instance (ADR-042).
+  (window as any)[INSTALL_MARKER_KEY] = createContentInstallMarker();
 
   // The side panel owns the same notes array. Adopt external edits and
   // deletions so a later in-page note write cannot resurrect deleted notes.

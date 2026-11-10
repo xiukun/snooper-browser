@@ -1030,6 +1030,13 @@ function closeOffscreenAfterStop(stop) {
 async function injectContentScript(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId },
+    world: "ISOLATED",
+    func: () => {
+      delete globalThis.__rttsContentInstalled;
+    }
+  });
+  await chrome.scripting.executeScript({
+    target: { tabId },
     files: [CONTENT_SCRIPT_FILE]
   });
 }

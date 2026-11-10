@@ -8,7 +8,7 @@ import {
 } from './providers'
 import { buildTranscriptionFormData } from './transcription-request'
 import { buildTranslationPrompt, cleanTranslation, translationLanguageName } from './translation-prompt'
-import { parseScreenCaption } from './screen-caption'
+import { buildScreenCaptionPrompt, parseScreenCaption } from './screen-caption'
 import { sleep } from './utils'
 
 const STREAM_CAPABILITY_KEY = 'snooper.moss.stream-capability.v1'

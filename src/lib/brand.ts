@@ -7,7 +7,7 @@ export const BRAND = {
   name: 'snooper',
   repo: 'snooper-browser',
   product: 'snooper-browser',
-  version: '0.8.1',
+  version: '0.8.2',
   tagline: 'See it. Translate it. Understand it.',
   description:
     'Open-source multimodal workspace for real-time translation, conversations and visual understanding.',

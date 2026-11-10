@@ -1,5 +1,5 @@
 import type { NoteDocument } from '../../lib/types'
-import { loadNotes, deleteNoteDocuments } from '../content/notes-store'
+import { loadNotes, deleteNoteDocuments, hasRetainedLegacyNotes, exportRetainedLegacyNotes } from '../content/notes-store'
 /**
  * snooper-browser Side Panel — notes history + Obsidian integration.
  *
@@ -246,10 +246,28 @@ import { videoDeepLink } from '../../lib/deep-link'
     } catch (error) { showNotice(`保存状态读取失败：${String(error)}`) }
   }
 
+  const legacyWarning = document.createElement('p')
+  notesList.before(legacyWarning)
+  function renderLegacyWarning(): void {
+    legacyWarning.textContent = ''
+    legacyWarning.hidden = !hasRetainedLegacyNotes()
+    if (hasRetainedLegacyNotes()) {
+      legacyWarning.className = 'empty-hint'
+      legacyWarning.setAttribute('role', 'status')
+      legacyWarning.textContent = '侧栏旧版笔记尚未确认合并，原副本已保留。请导出旧副本；检索只包含已保存资料。'
+      const exportLegacy = document.createElement('button')
+      exportLegacy.textContent = '导出旧版副本'
+      exportLegacy.className = 'btn btn-sm btn-secondary'
+      exportLegacy.addEventListener('click', exportRetainedLegacyNotes)
+      legacyWarning.appendChild(exportLegacy)
+    }
+  }
+
   async function loadAndRenderNotes() {
     await renderSaveFailures()
     try { notes = await loadNotes() }
     catch (error) { showNotice(`笔记读取失败，请点刷新重试：${String(error)}`); return }
+    finally { renderLegacyWarning() }
 
     notesList.textContent = ''
     if (notes.length === 0) {

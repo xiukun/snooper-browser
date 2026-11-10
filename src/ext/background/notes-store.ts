@@ -25,14 +25,42 @@ async function read(legacy?: NoteDocument[]): Promise<NoteDocument[]> {
   const notes = Array.isArray(got[NOTES_STORAGE_KEY])
     ? validDocuments(got[NOTES_STORAGE_KEY])
     : validDocuments(got[MIGRATION_KEY] ?? legacy)
+  // A sidepanel/other origin with no old data must not consume the first
+  // real legacy import. A stored empty array still denotes an explicit write
+  // or deletion and remains authoritative.
+  if (!Array.isArray(got[NOTES_STORAGE_KEY]) && notes.length === 0) return []
   if (notes.length) await chrome.storage.local.set({ [MIGRATION_KEY]: notes })
   await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true })
   if (notes.length) await chrome.storage.local.remove(MIGRATION_KEY)
   return notes
 }
-/** Optional legacy snapshot is accepted only during the one-time initialization. */
-export function listNotes(legacy?: NoteDocument[]): Promise<NoteDocument[]> {
-  return serial(() => read(legacy))
+export interface NotesListResult {
+  notes: NoteDocument[]
+  /** True only when the supplied legacy document/entry bodies are present. */
+  legacyAcknowledged: boolean
+}
+function includesLegacySnapshot(notes: NoteDocument[], legacy: unknown): boolean {
+  if (!Array.isArray(legacy) || legacy.length === 0 || validDocuments(legacy).length !== legacy.length) return false
+  return (legacy as NoteDocument[]).every(old => {
+    const saved = notes.find(note => note.id === old.id)
+    if (!saved) return false
+    // updatedAt may advance after an earlier import. Every other supplied
+    // document field and every complete entry must still be represented.
+    const sameMetadata = Object.entries(old).every(([key, value]) =>
+      key === 'entries' || key === 'updatedAt' || JSON.stringify((saved as unknown as Record<string, unknown>)[key]) === JSON.stringify(value))
+    return sameMetadata && old.entries.every(entry => saved.entries.some(current => JSON.stringify(current) === JSON.stringify(entry)))
+  })
+}
+/** Legacy import is conservative once an explicit shared write/delete exists. */
+export function listNotesWithMigration(legacy?: NoteDocument[]): Promise<NotesListResult> {
+  return serial(async () => {
+    const notes = await read(legacy)
+    return { notes, legacyAcknowledged: includesLegacySnapshot(notes, legacy) }
+  })
+}
+/** Always returns authoritative saved data; retained page mirrors stay separate. */
+export async function listNotes(legacy?: NoteDocument[]): Promise<NoteDocument[]> {
+  return (await listNotesWithMigration(legacy)).notes
 }
 export interface AddNoteEntryInput {
   noteId: string
@@ -60,7 +88,7 @@ export function addNoteEntry(input: AddNoteEntryInput): Promise<NoteDocument[]> 
     if (note.entries.some(e => e.id === input.entry.id)) return notes
     note.entries.push(structuredClone(input.entry))
     note.updatedAt = Date.now()
-    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes })
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true })
     return notes
   })
 }
@@ -71,8 +99,8 @@ export function deleteNoteEntry(noteId: string, entryId: string): Promise<NoteDo
     if (note) {
       note.entries = note.entries.filter(e => e.id !== entryId)
       note.updatedAt = Date.now()
-      await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes })
     }
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true })
     return notes
   })
 }
@@ -81,7 +109,7 @@ export function deleteNoteDocuments(ids: string[]): Promise<NoteDocument[]> {
     if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string')) throw new Error('笔记 ID 无效')
     const notes = (await read()).filter(n => !ids.includes(n.id))
     // Keep an empty authoritative array plus the migration marker.
-    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes })
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true })
     return notes
   })
 }

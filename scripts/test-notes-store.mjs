@@ -37,7 +37,7 @@ assert.equal(mirror.has(notes.NOTES_STORAGE_KEY), false, 'acknowledged migrated 
 // is unsafe after initialization, its original must stay available explicitly.
 const otherOrigin = [{ ...oldNotes[0], id: 'legacy-origin-b' }]
 mirror.set(notes.NOTES_STORAGE_KEY, JSON.stringify(otherOrigin))
-await notes.client.loadNotes()
+assert.deepEqual((await notes.client.loadNotes()).map(n => n.id), ['legacy-origin-a'], 'normal reads expose only authoritative saved data')
 assert.equal(mirror.get(notes.NOTES_STORAGE_KEY), JSON.stringify(otherOrigin))
 assert.equal(notes.client.hasRetainedLegacyNotes(), true)
 assert.equal(notes.client.readRetainedLegacyNotes(), JSON.stringify(otherOrigin))
@@ -49,6 +49,19 @@ await notes.client.loadNotes()
 assert.equal(mirror.get(notes.NOTES_STORAGE_KEY), JSON.stringify(otherOrigin))
 for (const key of Object.keys(values)) delete values[key]
 mirror.clear()
+// A failed migration leaves the original recoverable; retry acknowledges it.
+mirror.set(notes.NOTES_STORAGE_KEY, JSON.stringify(oldNotes))
+fail = 'set'
+await assert.rejects(notes.client.loadNotes(), /injected/)
+assert.equal(mirror.get(notes.NOTES_STORAGE_KEY), JSON.stringify(oldNotes))
+assert.equal(notes.client.hasRetainedLegacyNotes(), true)
+await notes.client.loadNotes()
+assert.equal(mirror.has(notes.NOTES_STORAGE_KEY), false)
+for (const key of Object.keys(values)) delete values[key]
+// Explicit deletion is authoritative even if no previous body was present.
+await notes.deleteNoteDocuments([])
+assert.deepEqual(await notes.listNotes(oldNotes), [])
+for (const key of Object.keys(values)) delete values[key]
 
 await Promise.all([
   notes.addNoteEntry({ noteId: 'n1', entry: entry('e1', '手机') }),

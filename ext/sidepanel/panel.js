@@ -1,24 +1,57 @@
 (() => {
   // src/ext/content/notes-store.ts
   var NOTES_STORAGE_KEY = "snooper.notes.v1";
-  async function request(type, fields = {}) {
+  var retainedLegacySnapshot = null;
+  async function requestResult(type, fields = {}) {
     const result = await chrome.runtime.sendMessage({ target: "background", type, ...fields });
     if (!result?.ok || !Array.isArray(result.notes)) throw new Error(result?.error || "\u7B14\u8BB0\u4FDD\u5B58\u670D\u52A1\u4E0D\u53EF\u7528\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA");
-    return result.notes;
+    return result;
+  }
+  async function request(type, fields = {}) {
+    return (await requestResult(type, fields)).notes;
+  }
+  function hasRetainedLegacyNotes() {
+    return retainedLegacySnapshot !== null;
+  }
+  function readRetainedLegacyNotes() {
+    try {
+      return localStorage.getItem(NOTES_STORAGE_KEY) ?? retainedLegacySnapshot;
+    } catch {
+      return retainedLegacySnapshot;
+    }
+  }
+  function exportRetainedLegacyNotes() {
+    const raw = readRetainedLegacyNotes();
+    if (!raw) return;
+    const url = URL.createObjectURL(new Blob([raw], { type: "application/json" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "snooper-legacy-notes.json";
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2e3);
   }
   async function loadNotes() {
     let legacy;
+    let submitted = null;
     try {
-      const raw = localStorage.getItem(NOTES_STORAGE_KEY);
-      if (raw) legacy = JSON.parse(raw);
+      submitted = localStorage.getItem(NOTES_STORAGE_KEY);
+      if (submitted) legacy = JSON.parse(submitted);
     } catch {
     }
-    const notes = await request("NOTES_LIST", { legacy });
+    retainedLegacySnapshot = submitted;
+    const result = await requestResult("NOTES_LIST", { legacy });
     try {
-      localStorage.removeItem(NOTES_STORAGE_KEY);
+      const current = localStorage.getItem(NOTES_STORAGE_KEY);
+      if (submitted && current === submitted && result.legacyAcknowledged === true) {
+        localStorage.removeItem(NOTES_STORAGE_KEY);
+        retainedLegacySnapshot = null;
+      } else {
+        retainedLegacySnapshot = current;
+        if (current === submitted && Array.isArray(legacy) && legacy.length === 0) retainedLegacySnapshot = null;
+      }
     } catch {
     }
-    return notes;
+    return result.notes;
   }
   function deleteNoteDocuments(ids) {
     return request("NOTES_DELETE_DOCUMENTS", { ids });
@@ -484,6 +517,22 @@ ${line.target}`).join("\n\n");
         showNotice(`\u4FDD\u5B58\u72B6\u6001\u8BFB\u53D6\u5931\u8D25\uFF1A${String(error)}`);
       }
     }
+    const legacyWarning = document.createElement("p");
+    notesList.before(legacyWarning);
+    function renderLegacyWarning() {
+      legacyWarning.textContent = "";
+      legacyWarning.hidden = !hasRetainedLegacyNotes();
+      if (hasRetainedLegacyNotes()) {
+        legacyWarning.className = "empty-hint";
+        legacyWarning.setAttribute("role", "status");
+        legacyWarning.textContent = "\u4FA7\u680F\u65E7\u7248\u7B14\u8BB0\u5C1A\u672A\u786E\u8BA4\u5408\u5E76\uFF0C\u539F\u526F\u672C\u5DF2\u4FDD\u7559\u3002\u8BF7\u5BFC\u51FA\u65E7\u526F\u672C\uFF1B\u68C0\u7D22\u53EA\u5305\u542B\u5DF2\u4FDD\u5B58\u8D44\u6599\u3002";
+        const exportLegacy = document.createElement("button");
+        exportLegacy.textContent = "\u5BFC\u51FA\u65E7\u7248\u526F\u672C";
+        exportLegacy.className = "btn btn-sm btn-secondary";
+        exportLegacy.addEventListener("click", exportRetainedLegacyNotes);
+        legacyWarning.appendChild(exportLegacy);
+      }
+    }
     async function loadAndRenderNotes() {
       await renderSaveFailures();
       try {
@@ -491,6 +540,8 @@ ${line.target}`).join("\n\n");
       } catch (error) {
         showNotice(`\u7B14\u8BB0\u8BFB\u53D6\u5931\u8D25\uFF0C\u8BF7\u70B9\u5237\u65B0\u91CD\u8BD5\uFF1A${String(error)}`);
         return;
+      } finally {
+        renderLegacyWarning();
       }
       notesList.textContent = "";
       if (notes.length === 0) {

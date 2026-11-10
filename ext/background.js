@@ -781,11 +781,13 @@ function retrySessionTranscript(s) {
   const run = (async () => {
     s.pendingTranscriptLines ||= [];
     const id = await ensureTranscript(s);
-    while (s.pendingTranscriptLines.length) {
-      await appendTranscriptLine(id, s.pendingTranscriptLines[0]);
-      s.pendingTranscriptLines.shift();
-    }
-    await flushTranscript(id);
+    do {
+      while (s.pendingTranscriptLines.length) {
+        await appendTranscriptLine(id, s.pendingTranscriptLines[0]);
+        s.pendingTranscriptLines.shift();
+      }
+      await flushTranscript(id);
+    } while (s.pendingTranscriptLines.length);
     s.saveState = { status: "saved" };
     pushSession(s.tabId);
     persistSessions();
@@ -1396,13 +1398,26 @@ async function read(legacy) {
     return validDocuments(got[NOTES_STORAGE_KEY]);
   }
   const notes = Array.isArray(got[NOTES_STORAGE_KEY]) ? validDocuments(got[NOTES_STORAGE_KEY]) : validDocuments(got[MIGRATION_KEY] ?? legacy);
+  if (!Array.isArray(got[NOTES_STORAGE_KEY]) && notes.length === 0) return [];
   if (notes.length) await chrome.storage.local.set({ [MIGRATION_KEY]: notes });
   await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
   if (notes.length) await chrome.storage.local.remove(MIGRATION_KEY);
   return notes;
 }
-function listNotes(legacy) {
-  return serial2(() => read(legacy));
+function includesLegacySnapshot(notes, legacy) {
+  if (!Array.isArray(legacy) || legacy.length === 0 || validDocuments(legacy).length !== legacy.length) return false;
+  return legacy.every((old) => {
+    const saved = notes.find((note) => note.id === old.id);
+    if (!saved) return false;
+    const sameMetadata = Object.entries(old).every(([key, value]) => key === "entries" || key === "updatedAt" || JSON.stringify(saved[key]) === JSON.stringify(value));
+    return sameMetadata && old.entries.every((entry) => saved.entries.some((current) => JSON.stringify(current) === JSON.stringify(entry)));
+  });
+}
+function listNotesWithMigration(legacy) {
+  return serial2(async () => {
+    const notes = await read(legacy);
+    return { notes, legacyAcknowledged: includesLegacySnapshot(notes, legacy) };
+  });
 }
 function addNoteEntry(input) {
   return serial2(async () => {
@@ -1423,7 +1438,7 @@ function addNoteEntry(input) {
     if (note.entries.some((e) => e.id === input.entry.id)) return notes;
     note.entries.push(structuredClone(input.entry));
     note.updatedAt = Date.now();
-    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes });
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
     return notes;
   });
 }
@@ -1434,8 +1449,8 @@ function deleteNoteEntry(noteId, entryId) {
     if (note) {
       note.entries = note.entries.filter((e) => e.id !== entryId);
       note.updatedAt = Date.now();
-      await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes });
     }
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
     return notes;
   });
 }
@@ -1443,7 +1458,7 @@ function deleteNoteDocuments(ids) {
   return serial2(async () => {
     if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) throw new Error("\u7B14\u8BB0 ID \u65E0\u6548");
     const notes = (await read()).filter((n) => !ids.includes(n.id));
-    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes });
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
     return notes;
   });
 }
@@ -1451,7 +1466,7 @@ function deleteNoteDocuments(ids) {
 // src/ext/background/router/notes.ts
 var notesHandlers = {
   NOTES_LIST: (message, { sendResponse }) => {
-    listNotes(message.legacy).then((notes) => sendResponse({ ok: true, notes })).catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
+    listNotesWithMigration(message.legacy).then((result) => sendResponse({ ok: true, ...result })).catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
     return true;
   },
   NOTES_ADD_ENTRY: (message, { sendResponse }) => {

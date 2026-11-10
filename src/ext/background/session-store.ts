@@ -281,11 +281,15 @@ export function retrySessionTranscript(s: SessionState): Promise<void> {
   const run = (async () => {
     s.pendingTranscriptLines ||= []
     const id = await ensureTranscript(s)
-    while (s.pendingTranscriptLines.length) {
-      await appendTranscriptLine(id, s.pendingTranscriptLines[0]!)
-      s.pendingTranscriptLines.shift()
-    }
-    await flushTranscript(id)
+    do {
+      while (s.pendingTranscriptLines.length) {
+        await appendTranscriptLine(id, s.pendingTranscriptLines[0]!)
+        s.pendingTranscriptLines.shift()
+      }
+      await flushTranscript(id)
+      // A row arriving during the awaited flush joins this same save attempt.
+      // Drain it before publishing saved; no subsequent event is required.
+    } while (s.pendingTranscriptLines.length)
     s.saveState = { status: 'saved' }
     pushSession(s.tabId)
     persistSessions()

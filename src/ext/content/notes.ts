@@ -6,7 +6,7 @@
  */
 
 import type { NoteDocument, NoteEntry } from '../../lib/types'
-import { createNoteDocument, addNoteEntry, deleteNoteEntry, loadNotes } from './notes-store'
+import { createNoteDocument, addNoteEntry, deleteNoteEntry, loadNotes, hasRetainedLegacyNotes, exportRetainedLegacyNotes } from './notes-store'
 import { renderMarkdownLite } from './markdown'
 import { seekTo } from './video-seek'
 import type { SessionState } from './types'
@@ -111,6 +111,17 @@ export function createNotes(deps: NotesDeps) {
     r.badge.hidden = count === 0
 
     r.list.textContent = ''
+    if (hasRetainedLegacyNotes()) {
+      const legacyWarning = document.createElement('p')
+      legacyWarning.setAttribute('role', 'status')
+      legacyWarning.textContent = '此页的旧版笔记尚未确认合并，原副本已保留。请导出旧副本；检索只包含已保存资料。'
+      const exportLegacy = document.createElement('button')
+      exportLegacy.textContent = '导出旧版副本'
+      exportLegacy.className = 'rtts-btn-ghost'
+      exportLegacy.addEventListener('click', exportRetainedLegacyNotes)
+      legacyWarning.appendChild(exportLegacy)
+      r.list.appendChild(legacyWarning)
+    }
     if (loadError) {
       const error = document.createElement('p')
       error.textContent = `笔记读取失败：${loadError}`

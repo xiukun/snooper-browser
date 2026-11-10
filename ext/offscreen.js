@@ -40,6 +40,7 @@
   var SILENCE_THRESHOLD_MS = 350;
   var SILENCE_RMS_THRESHOLD = 0.045;
   var MAX_QUEUE_SIZE = 3;
+  var FIRST_RESPONSE_TIMEOUT_MS = 15e3;
   function createWavBlob(pcmData, sampleRate) {
     const numChannels = 1;
     const bitsPerSample = 16;
@@ -88,15 +89,32 @@
   async function streamSSE(url, options, callbacks) {
     const { onDelta, onDone, onError, signal, allowNonStreamingFallback = true } = callbacks;
     let response;
+    const controller = new AbortController();
+    let timedOut = false;
+    const abortFromCaller = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener("abort", abortFromCaller, { once: true });
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, FIRST_RESPONSE_TIMEOUT_MS);
     try {
-      response = await fetch(url, { ...options, signal });
+      response = await fetch(url, { ...options, signal: controller.signal });
     } catch (err) {
+      if (timedOut) {
+        onError(new Error("provider did not respond within 15s"));
+        return;
+      }
       if (err.name === "AbortError") {
         onDone();
         return;
       }
       onError(err);
       return;
+    } finally {
+      clearTimeout(timer);
     }
     if (!response.ok) {
       let errorBody = "";
@@ -245,6 +263,7 @@
     }
     return res.json();
   }
+  var ASR_TIMEOUT_MS = 15e3;
   async function transcribeAudio(wavBlob, config, sourceLang) {
     const { provider, route } = validateRoute(config, "audio");
     const form = buildTranscriptionFormData({
@@ -253,14 +272,26 @@
       sourceLang
     });
     const baseUrl = provider.baseUrl.replace(/\/+$/, "");
-    const json = await apiFetch(`${baseUrl}/audio/transcriptions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${provider.apiKey}`
-      },
-      body: form
-    });
-    return (json.text || "").trim();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ASR_TIMEOUT_MS);
+    try {
+      const json = await apiFetch(`${baseUrl}/audio/transcriptions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${provider.apiKey}`
+        },
+        body: form,
+        signal: controller.signal
+      });
+      return (json.text || "").trim();
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error("\u8F6C\u5199\u670D\u52A1 15 \u79D2\u672A\u54CD\u5E94\uFF0C\u5DF2\u653E\u5F03\u8BE5\u6BB5");
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
   function buildTranslatePrompt(options, text) {
     const source = LANG_NAMES[options.source || "auto"] || "\u81EA\u52A8\u68C0\u6D4B";
@@ -810,6 +841,52 @@ ${question}`
     if (!key) return false;
     return fullWindow.slice(-4).some((candidate) => repeatKey(candidate) === key);
   }
+  var SPARSE_MIN_DURATION_MS = 3e3;
+  var SPARSE_MAX_WORDS = 4;
+  var SPARSE_MIN_WORDS_PER_SECOND = 0.85;
+  var SPARSE_MAX_CJK = 12;
+  var SPARSE_MIN_CJK_PER_SECOND = 1.2;
+  function isLikelySparseTranscript(text, durationMs) {
+    const t = normalize(text);
+    if (!t) return true;
+    if (!Number.isFinite(durationMs) || durationMs < SPARSE_MIN_DURATION_MS) return false;
+    const seconds = durationMs / 1e3;
+    const cjk = countCjk(t);
+    if (cjk > 0) {
+      if (cjk > SPARSE_MAX_CJK) return false;
+      return cjk / seconds < SPARSE_MIN_CJK_PER_SECOND;
+    }
+    const words = normalizeEnglish(t).split(" ").filter(Boolean);
+    if (words.length === 0 || words.length > SPARSE_MAX_WORDS) return false;
+    return words.length / seconds < SPARSE_MIN_WORDS_PER_SECOND;
+  }
+  var ARTIFACT_LINES_EN = /* @__PURE__ */ new Set([
+    "i",
+    "i love you",
+    "thank you",
+    "thanks",
+    "go for it",
+    "winnie the pooh",
+    "three two one",
+    "one two three"
+  ]);
+  var ARTIFACT_LINES_CJK = /* @__PURE__ */ new Set(["\u4E09\u4E8C\u4E00", "\u5C0F\u718A\u7EF4\u5C3C"]);
+  var BARE_MONTH_DATE = /^(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}\s+\d{4}$/;
+  function artifactKey(text) {
+    return normalize(text).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  }
+  function cjkKey(text) {
+    return normalize(text).replace(/[、,，\s。.!！?？…]+/g, "");
+  }
+  function isArtifactLine(text) {
+    const key = artifactKey(text);
+    if (key && (ARTIFACT_LINES_EN.has(key) || BARE_MONTH_DATE.test(key))) return true;
+    return ARTIFACT_LINES_CJK.has(cjkKey(text));
+  }
+  function isLikelyArtifactBurst(recent, text) {
+    if (!isArtifactLine(text)) return false;
+    return recent.slice(-4).some((candidate) => isArtifactLine(candidate) || isFillerOnly(candidate));
+  }
   function countCjk(text) {
     const matches = text.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/g);
     return matches ? matches.length : 0;
@@ -904,10 +981,16 @@ ${question}`
     ].join("|") + ")[\\s.\u3002!\uFF01?\uFF1F\u2026,\uFF0C\u3001~\uFF5E]*$",
     "i"
   );
+  function isFillerOnly(text) {
+    const t = normalize(text);
+    if (!t) return false;
+    return FILLER_ONLY.test(t);
+  }
 
   // src/ext/offscreen/capture.ts
   var WORKLET_PATH = chrome.runtime.getURL("audio-worklet.js");
   var STOP_DRAIN_MS = 4e3;
+  var ASR_EVIDENCE_RESET_MS = 6e4;
   var captureSessions = /* @__PURE__ */ new Map();
   var MAX_CONTEXT_ENTRIES = 5;
   function getContextSummary(session) {
@@ -995,7 +1078,9 @@ ${question}`
       frameLens: [],
       audioSilent: false,
       recentAsrCandidates: [],
-      recentAsrWindow: []
+      recentAsrWindow: [],
+      recentWeakWindow: [],
+      lastAsrAt: 0
     };
     captureSessions.set(tabId, session);
     ensureKeepAlive();
@@ -1322,12 +1407,31 @@ ${question}`
         transcription,
         session.sourceLang
       );
-      if (isHallucination || isRepeatLoop || isLanguageMismatch) {
+      const asrNow = Date.now();
+      if (session.lastAsrAt > 0 && asrNow - session.lastAsrAt > ASR_EVIDENCE_RESET_MS) {
+        session.recentAsrCandidates = [];
+        session.recentAsrWindow = [];
+        session.recentWeakWindow = [];
+      }
+      session.lastAsrAt = asrNow;
+      const isArtifactBurst = isLikelyArtifactBurst(session.recentWeakWindow, transcription);
+      if (isArtifactLine(transcription) || isFillerOnly(transcription)) {
+        session.recentWeakWindow = [
+          ...session.recentWeakWindow.slice(-4),
+          transcription
+        ];
+      } else {
+        session.recentWeakWindow = [];
+      }
+      const isSparse = isLikelySparseTranscript(transcription, durationMs);
+      if (isHallucination || isRepeatLoop || isLanguageMismatch || isSparse || isArtifactBurst) {
         console.warn("[RTTS] dropped likely ASR hallucination:", {
           text: transcription,
           burst: isHallucination,
           repeatLoop: isRepeatLoop,
           languageMismatch: isLanguageMismatch,
+          sparse: isSparse,
+          artifactBurst: isArtifactBurst,
           sourceLang: session.sourceLang,
           durationMs: Math.round(durationMs),
           speechMs,

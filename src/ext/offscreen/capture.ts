@@ -23,6 +23,10 @@ import {
   isLikelyAsrLanguageMismatch,
   isLikelyAsrRepeatLoop,
   isLikelyShortRepeatLoop,
+  isLikelySparseTranscript,
+  isLikelyArtifactBurst,
+  isArtifactLine,
+  isFillerOnly,
 } from '../../lib/asr-guard'
 import {
   computeRMS,
@@ -50,6 +54,12 @@ const WORKLET_PATH = chrome.runtime.getURL('audio-worklet.js')
  * bound keeps the stop response from hanging on a stalled provider.
  */
 const STOP_DRAIN_MS = 4000
+
+/**
+ * ADR-042: evidence windows describe one noise episode. A gap longer than
+ * this means the previous lines can no longer explain the current one.
+ */
+const ASR_EVIDENCE_RESET_MS = 60000
 
 export interface CaptureSession {
   tabId: number
@@ -89,6 +99,14 @@ export interface CaptureSession {
    * so only the current noise episode counts.
    */
   recentAsrCandidates: string[]
+  /**
+   * ADR-042: accepted and rejected weak lines (fillers and stock artifacts)
+   * since the last contentful line. Bounds the artifact-burst rule; cleared
+   * by real content and after a long silence.
+   */
+  recentWeakWindow: string[]
+  /** Wall clock of the last ASR result, used to expire evidence windows. */
+  lastAsrAt: number
   /**
    * All recent ASR lines, accepted and rejected — repeat evidence. Only a
    * loop that survives a real transcript is impossible, so the window resets
@@ -227,6 +245,8 @@ async function startTabCaptureNow({ tabId, streamId, sourceLang, targetLang, con
     audioSilent: false,
     recentAsrCandidates: [],
     recentAsrWindow: [],
+    recentWeakWindow: [],
+    lastAsrAt: 0,
   }
   captureSessions.set(tabId, session)
   ensureKeepAlive()
@@ -675,7 +695,28 @@ async function finalizeSegment(tabId: number) {
       transcription,
       session.sourceLang,
     )
-    if (isHallucination || isRepeatLoop || isLanguageMismatch) {
+    // ADR-042: a stock line that follows a filler or another stock line is
+    // the music-bridge burst. A lone stock line after content is kept.
+    const asrNow = Date.now()
+    if (session.lastAsrAt > 0 && asrNow - session.lastAsrAt > ASR_EVIDENCE_RESET_MS) {
+      session.recentAsrCandidates = []
+      session.recentAsrWindow = []
+      session.recentWeakWindow = []
+    }
+    session.lastAsrAt = asrNow
+    const isArtifactBurst = isLikelyArtifactBurst(session.recentWeakWindow, transcription)
+    if (isArtifactLine(transcription) || isFillerOnly(transcription)) {
+      session.recentWeakWindow = [
+        ...session.recentWeakWindow.slice(-4),
+        transcription,
+      ]
+    } else {
+      session.recentWeakWindow = []
+    }
+    // ADR-042: seconds of continuous audio that the model reduced to a word
+    // or two is a music/noise artifact, not speech.
+    const isSparse = isLikelySparseTranscript(transcription, durationMs)
+    if (isHallucination || isRepeatLoop || isLanguageMismatch || isSparse || isArtifactBurst) {
       // Loud music and encoder noise still reach the model even with energy
       // gating. Drop the stock phrases instead of translating them. The
       // duration and level make it possible to tune the energy gate when a
@@ -685,6 +726,8 @@ async function finalizeSegment(tabId: number) {
         burst: isHallucination,
         repeatLoop: isRepeatLoop,
         languageMismatch: isLanguageMismatch,
+        sparse: isSparse,
+        artifactBurst: isArtifactBurst,
         sourceLang: session.sourceLang,
         durationMs: Math.round(durationMs),
         speechMs,

@@ -71,10 +71,8 @@ export async function saveConfig(config: AppConfig): Promise<void> {
 
   const json = JSON.stringify(config)
   await chrome.storage.local.set({ [CONFIG_KEY]: json })
-  // Ensure only trusted extension contexts can read config
-  try {
-    await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
-  } catch {
-    // Available in Chrome 116+; older versions ignore
-  }
+  // `chrome.storage.local` has no access-level restriction (only
+  // `chrome.storage.session` does), so there is no setAccessLevel call to
+  // make here. The key stays out of the content script by architecture:
+  // content asks the background to act and never reads the config itself.
 }

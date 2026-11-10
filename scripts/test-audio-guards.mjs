@@ -32,6 +32,9 @@ const {
   isLikelyShortRepeatLoop,
   isLikelyAsrLanguageMismatch,
   isFillerOnly,
+  isLikelySparseTranscript,
+  isArtifactLine,
+  isLikelyArtifactBurst,
 } = await import(
   pathToFileURL(bundle('src/lib/asr-guard.ts', 'asr-guard.mjs')).href
 );
@@ -95,6 +98,88 @@ for (const text of hallucinations) {
 }
 for (const text of realLines) {
   check(`keep real line: ${text.slice(0, 24)}`, isLikelyAsrHallucination(text), false);
+}
+
+/* ---------- 2. Sparse transcript (ADR-042) ---------- */
+
+// Reported burst over a music video: each line is a whole 3–4 s segment, so the
+// words-per-second rate is far below speech. The guard is duration-bounded, so
+// the same words in a trimmed short segment survive.
+const sparseDrops = [
+  ['Thank you.', 4000],
+  ['I love you.', 4000],
+  ['Go for it.', 4000],
+  ['Winnie the Pooh.', 4000],
+  ['January 5, 2024.', 4000],
+  ['Three, two, one.', 4000],
+  ['Hmm.', 3500],
+  ['啊。', 3500],
+  ['三、二、一。', 4000],
+];
+for (const [text, ms] of sparseDrops) {
+  check(`drop sparse transcript: ${text} @${ms}ms`, isLikelySparseTranscript(text, ms), true);
+}
+
+const sparseKeeps = [
+  ['That is a good question.', 4000],
+  ['So what do you think about this?', 4000],
+  ['今天我们来讲一下 Midway.js 的过滤器。', 4000],
+  ['好，我们开始吧。', 4000],
+  ['Thank you.', 1200],
+  ['谢谢。', 1200],
+  ['I love you.', 2000],
+  ['Go for it.', 2500],
+];
+for (const [text, ms] of sparseKeeps) {
+  check(`keep normal transcript: ${text} @${ms}ms`, isLikelySparseTranscript(text, ms), false);
+}
+
+// Degenerate durations must not throw or drop.
+check('sparse: zero duration', isLikelySparseTranscript('Thank you.', 0), false);
+check('sparse: NaN duration', isLikelySparseTranscript('Thank you.', NaN), false);
+check('sparse: empty text', isLikelySparseTranscript('', 4000), true);
+
+/* ---------- 3. Artifact burst (ADR-042) ---------- */
+
+const artifacts = [
+  'I.',
+  'I love you.',
+  'Thank you.',
+  'Go for it.',
+  'Winnie the Pooh.',
+  'January 5, 2024.',
+  'Three, two, one.',
+  '三、二、一。',
+];
+for (const text of artifacts) {
+  check(`artifact line: ${text}`, isArtifactLine(text), true);
+}
+for (const text of ['That is a good question.', '今天讲 React 的渲染。', '谢谢。', 'Hmm.']) {
+  check(`not an artifact line: ${text}`, isArtifactLine(text), false);
+}
+
+check('burst: artifact after filler', isLikelyArtifactBurst(['Hmm.'], 'I love you.'), true);
+check('burst: artifact after artifact', isLikelyArtifactBurst(['I love you.'], 'Thank you.'), true);
+check('burst: artifact after content', isLikelyArtifactBurst(['今天讲 React。'], 'Thank you.'), false);
+check('burst: standalone artifact', isLikelyArtifactBurst([], 'Thank you.'), false);
+check('burst: filler after filler is not artifact', isLikelyArtifactBurst(['啊。'], 'Hmm.'), false);
+check('burst: date after filler', isLikelyArtifactBurst(['啊。'], 'January 5, 2024.'), true);
+
+// The reported 01:30–01:49 burst, through the capture state machine: fillers
+// stay (ADR-039 dims them), every stock line after the first filler drops.
+{
+  const reported = ['Hmm.', 'I.', 'I love you.', 'Thank you.', 'Go for it.', 'Winnie the Pooh.', 'January 5, 2024.'];
+  let weak = [];
+  const verdicts = [];
+  for (const text of reported) {
+    verdicts.push(isLikelyArtifactBurst(weak, text));
+    if (isArtifactLine(text) || isFillerOnly(text)) {
+      weak = [...weak.slice(-4), text];
+    }
+  }
+  check('reported burst: Hmm kept', verdicts[0], false);
+  check('reported burst: I dropped', verdicts[1], true);
+  check('reported burst: rest dropped', verdicts.slice(2).every(Boolean), true);
 }
 
 // Generic one-liners can be real dialogue. They become suspicious only when

@@ -258,6 +258,94 @@ export function isLikelyShortRepeatLoop(fullWindow: string[], text: string): boo
   return fullWindow.slice(-4).some((candidate) => repeatKey(candidate) === key);
 }
 
+/* ===== ADR-042: sparse transcript ===== */
+
+/**
+ * Continuous audio for seconds reduced to one to three words is the shape of
+ * a music/noise hallucination, not speech. Real speech emits a clause in that
+ * time; genuine short utterances do not reach the duration floor because
+ * `trimToSpeechBounds` removes their surrounding silence before `durationMs`
+ * is measured (a 0.4 s "谢谢" in 3 s of quiet is a ~0.6 s segment).
+ *
+ * Thresholds are deliberately narrow. A long line (>4 words / >12 CJK) is
+ * never judged here: the stock list and the repeat rules own that class.
+ */
+const SPARSE_MIN_DURATION_MS = 3000
+const SPARSE_MAX_WORDS = 4
+const SPARSE_MIN_WORDS_PER_SECOND = 0.85
+const SPARSE_MAX_CJK = 12
+const SPARSE_MIN_CJK_PER_SECOND = 1.2
+
+export function isLikelySparseTranscript(text: string, durationMs: number): boolean {
+  const t = normalize(text)
+  if (!t) return true;
+  if (!Number.isFinite(durationMs) || durationMs < SPARSE_MIN_DURATION_MS) return false;
+
+  const seconds = durationMs / 1000;
+  const cjk = countCjk(t);
+  if (cjk > 0) {
+    if (cjk > SPARSE_MAX_CJK) return false;
+    return cjk / seconds < SPARSE_MIN_CJK_PER_SECOND;
+  }
+
+  const words = normalizeEnglish(t).split(' ').filter(Boolean);
+  if (words.length === 0 || words.length > SPARSE_MAX_WORDS) return false;
+  return words.length / seconds < SPARSE_MIN_WORDS_PER_SECOND;
+}
+
+/* ===== ADR-042: artifact burst ===== */
+
+/**
+ * Whole lines that are overwhelmingly artifacts when they appear in a run.
+ * They stay valid as a first line after real content: this list is only used
+ * with burst context, never as an unconditional blacklist.
+ */
+const ARTIFACT_LINES_EN = new Set([
+  'i',
+  'i love you',
+  'thank you',
+  'thanks',
+  'go for it',
+  'winnie the pooh',
+  'three two one',
+  'one two three',
+]);
+
+const ARTIFACT_LINES_CJK = new Set(['三二一', '小熊维尼']);
+
+const BARE_MONTH_DATE =
+  /^(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}\s+\d{4}$/;
+
+function artifactKey(text: string): string {
+  return normalize(text).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function cjkKey(text: string): string {
+  return normalize(text).replace(/[、,，\s。.!！?？…]+/g, '');
+}
+
+export function isArtifactLine(text: string): boolean {
+  const key = artifactKey(text);
+  if (key && (ARTIFACT_LINES_EN.has(key) || BARE_MONTH_DATE.test(key))) return true;
+  return ARTIFACT_LINES_CJK.has(cjkKey(text));
+}
+
+/**
+ * A stock line that follows a filler or another stock line is the observed
+ * music-bridge burst ("Hmm. / I. / I love you. / Thank you. / Go for it. /
+ * Winnie the Pooh. / January 5, 2024."). A lone stock line after real speech
+ * is kept: "Thank you." at the end of a talk is dialogue, not a hallucination.
+ *
+ * `recent` must contain accepted and rejected weak lines only (the capture
+ * session clears it on a contentful line and after a long silence).
+ */
+export function isLikelyArtifactBurst(recent: string[], text: string): boolean {
+  if (!isArtifactLine(text)) return false;
+  return recent
+    .slice(-4)
+    .some((candidate) => isArtifactLine(candidate) || isFillerOnly(candidate));
+}
+
 /* ===== ADR-039: short repeats, language mismatch, fillers ===== */
 
 /** CJK ideographs, kana and hangul — the scripts the capture app supports. */

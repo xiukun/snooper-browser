@@ -5785,6 +5785,10 @@ ${context}`;
       }
       maybeAutoShowForVideo();
     })();
-    console.log("[snooper-browser] content script v0.6 loaded");
+    try {
+      console.log(`[snooper-browser] content script v${chrome.runtime.getManifest().version} loaded`);
+    } catch {
+      console.log("[snooper-browser] content script loaded (extension context unavailable)");
+    }
   })();
 })();

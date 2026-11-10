@@ -23,6 +23,13 @@ export const SILENCE_THRESHOLD_MS = 350
 export const SILENCE_RMS_THRESHOLD = 0.045
 export const MAX_QUEUE_SIZE = 3
 
+/**
+ * ADR-042: a provider that accepts the connection but never responds used to
+ * leave the translation promise pending forever. The idle timeout below only
+ * starts after the response headers arrive.
+ */
+const FIRST_RESPONSE_TIMEOUT_MS = 15000
+
 /* ===== WAV encoding ===== */
 
 export function createWavBlob(pcmData: Int16Array, sampleRate: number): Blob {
@@ -111,13 +118,30 @@ export async function streamSSE(
 ): Promise<void> {
   const { onDelta, onDone, onError, signal, allowNonStreamingFallback = true } = callbacks
   let response: Response
+  const controller = new AbortController()
+  let timedOut = false
+  const abortFromCaller = () => controller.abort()
+  if (signal) {
+    if (signal.aborted) controller.abort()
+    else signal.addEventListener('abort', abortFromCaller, { once: true })
+  }
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, FIRST_RESPONSE_TIMEOUT_MS)
 
   try {
-    response = await fetch(url, { ...options, signal })
+    response = await fetch(url, { ...options, signal: controller.signal })
   } catch (err: any) {
+    if (timedOut) {
+      onError(new Error('provider did not respond within 15s'))
+      return
+    }
     if (err.name === 'AbortError') { onDone(); return }
     onError(err)
     return
+  } finally {
+    clearTimeout(timer)
   }
 
   if (!response.ok) {

@@ -26,6 +26,32 @@ export class UnsupportedPageError extends Error {
   }
 }
 
+const CONTENT_SCRIPT_FILE = 'content.js'
+
+/**
+ * Inject the content script after clearing the install marker left by an
+ * orphaned instance (extension-reload recovery).
+ *
+ * Reloading the extension leaves open tabs with the previous script: its
+ * listener cannot answer, but its marker still sits in the page's isolated
+ * world. Injecting over it used to bail out and the retried message failed
+ * with "Receiving end does not exist". This runs only after a send failed, so
+ * no live listener exists and clearing cannot create a duplicate toolbar.
+ */
+export async function injectContentScriptFresh(tabId: number): Promise<void> {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'ISOLATED',
+    func: () => {
+      delete (globalThis as any).__rttsContentInstalled
+    },
+  })
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: [CONTENT_SCRIPT_FILE],
+  })
+}
+
 export function isUnsupportedTabUrl(url?: string): boolean {
   return /^(chrome|chrome-extension|edge|about|devtools|view-source|file):/i.test(url || '')
     || /^https?:\/\/(?:chromewebstore\.google\.com|chrome\.google\.com\/webstore)(?:\/|$)/i.test(url || '')

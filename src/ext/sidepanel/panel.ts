@@ -5,7 +5,7 @@
  * opens it on the active tab without requiring the toolbar to be visible first.
  */
 
-import { sendToPageWithInjection } from '../action-flow'
+import { injectContentScriptFresh, sendToPageWithInjection } from '../action-flow'
 import { buildZip, collectAssets, decodeExportAsset } from '../../lib/export-assets'
 import { formatVideoTime } from '../../lib/video-clock'
 import { videoDeepLink } from '../../lib/deep-link'
@@ -221,12 +221,7 @@ import { videoDeepLink } from '../../lib/deep-link'
       if (!tab?.id) throw new Error('没有活动标签页')
       await sendToPageWithInjection(tab.id, { type: 'OPEN_PAGE_SETTINGS' }, tab.url, {
         sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
-        injectContentScript: async (tabId) => {
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            files: ['content.js'],
-          })
-        },
+        injectContentScript: injectContentScriptFresh,
       })
       showNotice('已打开页面配置')
     } catch (err) {
@@ -514,12 +509,7 @@ import { videoDeepLink } from '../../lib/deep-link'
       if (!tab?.id) return false
       const res: any = await sendToPageWithInjection(tab.id, { type: 'SEEK_VIDEO', seconds }, tab.url, {
         sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
-        injectContentScript: async (tabId) => {
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            files: ['content.js'],
-          })
-        },
+        injectContentScript: injectContentScriptFresh,
         // The content script answers `{ ok, seek }`; the generic envelope
         // discards it, so pass the verdict through explicitly (ADR-036).
         collectResponse: (raw: any) => raw?.seek?.ok === true,

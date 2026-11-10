@@ -10,7 +10,7 @@
  * explicit STOP path, because a destroyed document cannot wait for itself.
  */
 
-import { openToolbarForTab } from '../action-flow'
+import { injectContentScriptFresh, openToolbarForTab } from '../action-flow'
 import { DEFAULT_CONFIG, loadConfig, saveConfig } from './config'
 import { sendToOffscreen } from './offscreen'
 import {
@@ -24,7 +24,6 @@ import {
 import { finalizeSessionTranscript } from './transcript-store'
 import { resetVideoClock } from './video-clock'
 
-const CONTENT_SCRIPT_FILE = 'content.js'
 const FS_BRIDGE_FILE = 'fullscreen-bridge.js'
 
 /**
@@ -34,30 +33,6 @@ const FS_BRIDGE_FILE = 'fullscreen-bridge.js'
  */
 function closeOffscreenAfterStop(stop: Promise<unknown>): void {
   void stop.catch(() => {}).then(() => maybeCloseOffscreen())
-}
-
-async function injectContentScript(tabId: number): Promise<void> {
-  // ADR-042: a tab that was open when the extension reloaded still carries
-  // the previous content script's install marker. That script's extension
-  // APIs are dead, so without clearing the marker the fresh script bails out
-  // and the retried message fails with "Receiving end does not exist" until
-  // the user refreshes the page.
-  //
-  // This runs only after a send failed, i.e. no live listener answered, so
-  // clearing unconditionally is safe. The in-page liveness probe remains as
-  // the guard against a double injection; it is not needed here, where the
-  // missed message is already proof.
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    world: 'ISOLATED',
-    func: () => {
-      delete (globalThis as any).__rttsContentInstalled
-    },
-  })
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: [CONTENT_SCRIPT_FILE],
-  })
 }
 
 function removeSession(tabId: number): void {
@@ -142,7 +117,7 @@ export function registerLifecycleListeners(): void {
     void openToolbarForTab(tab.id, {
       tabUrl: tab.url,
       sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
-      injectContentScript,
+      injectContentScript: injectContentScriptFresh,
     }).catch((err: any) => {
       console.warn('[RTTS] toolbar unavailable:', err.message)
     })

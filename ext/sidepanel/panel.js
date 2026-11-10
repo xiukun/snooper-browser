@@ -7,6 +7,20 @@
       this.name = "UnsupportedPageError";
     }
   };
+  var CONTENT_SCRIPT_FILE = "content.js";
+  async function injectContentScriptFresh(tabId) {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "ISOLATED",
+      func: () => {
+        delete globalThis.__rttsContentInstalled;
+      }
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: [CONTENT_SCRIPT_FILE]
+    });
+  }
   function isUnsupportedTabUrl(url) {
     return /^(chrome|chrome-extension|edge|about|devtools|view-source|file):/i.test(url || "") || /^https?:\/\/(?:chromewebstore\.google\.com|chrome\.google\.com\/webstore)(?:\/|$)/i.test(url || "");
   }
@@ -402,12 +416,7 @@
         if (!tab?.id) throw new Error("\u6CA1\u6709\u6D3B\u52A8\u6807\u7B7E\u9875");
         await sendToPageWithInjection(tab.id, { type: "OPEN_PAGE_SETTINGS" }, tab.url, {
           sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
-          injectContentScript: async (tabId) => {
-            await chrome.scripting.executeScript({
-              target: { tabId },
-              files: ["content.js"]
-            });
-          }
+          injectContentScript: injectContentScriptFresh
         });
         showNotice("\u5DF2\u6253\u5F00\u9875\u9762\u914D\u7F6E");
       } catch (err) {
@@ -648,12 +657,7 @@
         if (!tab?.id) return false;
         const res = await sendToPageWithInjection(tab.id, { type: "SEEK_VIDEO", seconds }, tab.url, {
           sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
-          injectContentScript: async (tabId) => {
-            await chrome.scripting.executeScript({
-              target: { tabId },
-              files: ["content.js"]
-            });
-          },
+          injectContentScript: injectContentScriptFresh,
           // The content script answers `{ ok, seek }`; the generic envelope
           // discards it, so pass the verdict through explicitly (ADR-036).
           collectResponse: (raw) => raw?.seek?.ok === true

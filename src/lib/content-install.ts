@@ -1,5 +1,5 @@
 /**
- * Content-script install marker (ADR-042).
+ * Content-script install marker (extension-reload recovery).
  *
  * The content script must not initialize twice in one page: two toolbars and
  * two `onMessage` listeners would double-handle every message. A global

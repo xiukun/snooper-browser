@@ -1,7 +1,17 @@
+'use strict';
 /**
  * Every element the content script touches, queried once from the shadow
  * root. The factory keeps the entry file free of a hundred getElementById
  * lines.
+ *
+ * ADR-043 ships with a bug worth stating here: `screenBtn` was added to the
+ * interface, destructured in `content.ts` and bound to a listener, but never
+ * collected below. The value was `undefined`, so the first `sync()` inside the
+ * first `render()` threw `Cannot read properties of undefined (reading
+ * 'querySelector')` and the toolbar never finished starting. There is no
+ * TypeScript gate on `src/ext`, so `scripts/test-content-refs.mjs` now asserts
+ * that every declared ref is destructured AND collected AND present in the
+ * template. When adding a ref, add all four pieces.
  */
 
 export interface ContentRefs {
@@ -181,6 +191,7 @@ export function collectRefs(shadow: ShadowRoot): ContentRefs {
     summaryBtn: shadow.getElementById('rtts-summary-btn') as ContentRefs['summaryBtn'],
     imageBtn: shadow.getElementById('rtts-image-btn') as ContentRefs['imageBtn'],
     screenshotBtn: shadow.getElementById('rtts-screenshot-btn') as ContentRefs['screenshotBtn'],
+    screenBtn: shadow.getElementById('rtts-screen-btn') as ContentRefs['screenBtn'],
     notesCount: shadow.getElementById('rtts-notes-count') as ContentRefs['notesCount'],
     notesBadge: shadow.getElementById('rtts-notes-badge') as ContentRefs['notesBadge'],
     notesBtn: shadow.getElementById('rtts-notes-btn') as ContentRefs['notesBtn'],

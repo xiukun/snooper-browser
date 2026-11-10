@@ -33,7 +33,9 @@ if (manifestSynced !== manifestRaw) {
 console.log('🔨 Building extension...');
 
 for (const entry of entries) {
-  const cmd = `npx esbuild ${entry.in} --bundle --format=${entry.format} --platform=browser --target=chrome116 --outfile=${entry.out}`;
+  // Extension settings are stored in chrome.storage; Vite's SPA env is not
+  // present in MV3 pages and must not be embedded into extension bundles.
+  const cmd = `npx esbuild ${entry.in} --bundle --format=${entry.format} --platform=browser --target=chrome116 --define:import.meta.env={} --outfile=${entry.out}`;
   try {
     execSync(cmd, { stdio: 'inherit', cwd: process.cwd() });
     console.log(`  ✅ ${entry.in} → ${entry.out} (${entry.format})`);

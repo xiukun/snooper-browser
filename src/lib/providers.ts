@@ -147,7 +147,9 @@ function parseStoredConfig(raw: string | null): AppConfig | null {
   }
 }
 
-const env = import.meta.env
+// Vite provides `import.meta.env` in the SPA. MV3 extension bundles are built
+// with esbuild, where `import.meta` has no `env` property at runtime.
+const env = import.meta.env ?? {}
 const envKey = (env.VITE_MOSS_API_KEY ?? '').trim()
 const envBaseUrl = (env.VITE_MOSS_BASE_URL ?? 'https://api.mosi.cn/v1').trim()
 

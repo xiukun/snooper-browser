@@ -300,7 +300,10 @@ function createSession(tabId) {
     agentSessionId: null,
     transcriptId: null,
     streamingSubtitle: null,
-    audioSilent: false
+    audioSilent: false,
+    lastScreenAt: 0,
+    screenCaption: "off",
+    screenCaptionError: ""
   };
   sessions.set(tabId, s);
   return s;
@@ -333,7 +336,9 @@ function safeSession(s) {
     agentSessionId: s.agentSessionId ?? null,
     transcriptId: s.transcriptId ?? null,
     streamingSubtitle: s.streamingSubtitle,
-    audioSilent: s.audioSilent
+    audioSilent: s.audioSilent,
+    screenCaption: s.screenCaption,
+    screenCaptionError: s.screenCaptionError
   };
 }
 function hasActiveSession() {
@@ -1171,6 +1176,14 @@ async function recoverSessions() {
   }
 }
 
+// src/lib/screen-caption.ts
+var SCREEN_AUDIO_YIELD_MS = 8e3;
+function shouldYieldAudio(lastScreenAt, now, windowMs = SCREEN_AUDIO_YIELD_MS) {
+  if (!lastScreenAt || lastScreenAt <= 0) return false;
+  const delta = now - lastScreenAt;
+  return delta >= 0 && delta < windowMs;
+}
+
 // src/ext/background/router/offscreen-events.ts
 function isStoppingGeneration(s, generation) {
   return s.state === "stopping" && s.stoppedGeneration === generation;
@@ -1210,6 +1223,8 @@ function registerOffscreenEventRouter() {
           s.configSnapshot = null;
           s.streamingSubtitle = null;
           s.audioSilent = false;
+          s.screenCaption = "off";
+          s.screenCaptionError = "";
           if (s.transcriptId || s.subtitles.length > 0) {
             void finalizeSessionTranscript(s);
           }
@@ -1225,6 +1240,9 @@ function registerOffscreenEventRouter() {
           return false;
         }
         if (s.state !== "running" && s.state !== "starting") {
+          return false;
+        }
+        if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
           return false;
         }
         if (!message.source && !message.partialTarget) {
@@ -1245,6 +1263,9 @@ function registerOffscreenEventRouter() {
       case "CAPTURE_SUBTITLE": {
         const s = sessions.get(message.tabId);
         if (!s || s.generation !== message.generation && !isStoppingGeneration(s, message.generation)) {
+          return false;
+        }
+        if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
           return false;
         }
         const tail = s.generation !== message.generation;
@@ -1273,6 +1294,49 @@ function registerOffscreenEventRouter() {
           });
         }
         if (!tail) pushSession(message.tabId);
+        return false;
+      }
+      case "CAPTURE_SCREEN_SUBTITLE": {
+        const s = sessions.get(message.tabId);
+        if (!s || s.generation !== message.generation) return false;
+        if (s.state !== "running" && s.state !== "starting") return false;
+        s.lastScreenAt = Date.now();
+        s.streamingSubtitle = null;
+        if (!message.source || message.duplicate) {
+          pushStreamingUpdate(message.tabId);
+          return false;
+        }
+        const at = message.at || Date.now();
+        const entry = {
+          id: `scr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          at,
+          endedAt: null,
+          videoTime: resolveVideoTimeAt2(message.tabId, at),
+          source: message.source || "",
+          target: message.target || "",
+          latency: message.latency || 0,
+          kind: "screen"
+        };
+        insertByStart(s.subtitles, entry);
+        if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
+          s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
+        }
+        if (s.transcriptId) {
+          void appendTranscriptLine(s.transcriptId, entry);
+        } else {
+          void ensureTranscript(s).then((id) => {
+            if (id) void appendTranscriptLine(id, entry);
+          });
+        }
+        pushSession(message.tabId);
+        return false;
+      }
+      case "CAPTURE_SCREEN_STATUS": {
+        const s = sessions.get(message.tabId);
+        if (!s || s.generation !== message.generation) return false;
+        s.screenCaption = message.status === "active" ? "on" : message.status === "error" ? "error" : "off";
+        s.screenCaptionError = message.error || "";
+        pushSession(message.tabId);
         return false;
       }
       case "CAPTURE_ERROR": {
@@ -1882,6 +1946,82 @@ var obsidianHandlers = {
     testObsidian(message).then(sendResponse).catch(() => {
       sendResponse({ ok: false, error: "\u65E0\u6CD5\u8FDE\u63A5 Obsidian" });
     });
+    return true;
+  }
+};
+
+// src/ext/background/router/screen-caption.ts
+var screenCaptionHandlers = {
+  START_SCREEN_CAPTION: (message, { sendResponse, tabId }) => {
+    ;
+    (async () => {
+      if (typeof tabId !== "number") {
+        sendResponse({ ok: false, error: "\u65E0\u6CD5\u786E\u5B9A\u5F53\u524D\u6807\u7B7E\u9875" });
+        return;
+      }
+      const s = await reconcileSessionState(tabId);
+      if (s.state !== "running" && s.state !== "starting") {
+        sendResponse({ ok: false, error: "\u8BF7\u5148\u5F00\u59CB\u5F55\u97F3\uFF0C\u753B\u9762\u5B57\u5E55\u4F1A\u8BFB\u53D6\u5F55\u5236\u4E2D\u7684\u89C6\u9891" });
+        return;
+      }
+      const config = s.configSnapshot || await loadConfig();
+      const targetLang = message.targetLang || s.targetLang || "zh";
+      try {
+        const result = await sendToOffscreen({
+          type: "START_SCREEN_CAPTION",
+          tabId,
+          generation: s.generation,
+          config,
+          targetLang
+        });
+        if (!result?.ok) {
+          sendResponse({ ok: false, error: result?.error || "\u753B\u9762\u5B57\u5E55\u542F\u52A8\u5931\u8D25" });
+          return;
+        }
+        s.screenCaption = "on";
+        s.screenCaptionError = "";
+        pushSession(tabId);
+        sendResponse({ ok: true, session: safeSession(s) });
+      } catch (err) {
+        sendResponse({ ok: false, error: err?.message || "\u753B\u9762\u5B57\u5E55\u542F\u52A8\u5931\u8D25" });
+      }
+    })();
+    return true;
+  },
+  STOP_SCREEN_CAPTION: (_message, { sendResponse, tabId }) => {
+    ;
+    (async () => {
+      if (typeof tabId !== "number") {
+        sendResponse({ ok: false, error: "\u65E0\u6CD5\u786E\u5B9A\u5F53\u524D\u6807\u7B7E\u9875" });
+        return;
+      }
+      const s = getOrCreateSession(tabId);
+      try {
+        await sendToOffscreen({ type: "STOP_SCREEN_CAPTION", tabId });
+      } catch {
+      }
+      s.screenCaption = "off";
+      s.screenCaptionError = "";
+      pushSession(tabId);
+      sendResponse({ ok: true, session: safeSession(s) });
+    })();
+    return true;
+  },
+  GET_SCREEN_CAPTION: (_message, { sendResponse, tabId }) => {
+    ;
+    (async () => {
+      if (typeof tabId !== "number") {
+        sendResponse({ ok: false, error: "\u65E0\u6CD5\u786E\u5B9A\u5F53\u524D\u6807\u7B7E\u9875" });
+        return;
+      }
+      const s = await reconcileSessionState(tabId);
+      sendResponse({
+        ok: true,
+        active: s.screenCaption === "on",
+        status: s.screenCaption,
+        error: s.screenCaptionError
+      });
+    })();
     return true;
   }
 };
@@ -2883,6 +3023,7 @@ var backgroundHandlers = {
   ...configHandlers,
   ...imageHandlers,
   ...sessionHandlers,
+  ...screenCaptionHandlers,
   ...captureHandlers,
   ...obsidianHandlers,
   ...historyHandlers,

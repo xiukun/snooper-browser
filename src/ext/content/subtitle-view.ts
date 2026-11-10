@@ -128,7 +128,7 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
       // jitter — a long transcript was recreated just because the audio
       // silence flag flipped. Rebuild only when the rendered content changed.
       const rowsSignature = subs
-        .map((sub) => `${sub.id ?? ''}\u0001${sub.at ?? ''}\u0001${sub.videoTime ?? ''}\u0001${sub.target ?? ''}\u0001${sub.source ?? ''}`)
+        .map((sub) => `${sub.id ?? ''}\u0001${sub.at ?? ''}\u0001${sub.videoTime ?? ''}\u0001${sub.target ?? ''}\u0001${sub.source ?? ''}\u0001${(sub as { kind?: string }).kind ?? ''}`)
         .join('\u0002')
       const rowsChanged = rowsSignature !== lastRowsSignature
       const wasAtBottom = r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 40
@@ -172,6 +172,15 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
               }
             })
             row.appendChild(chip)
+          }
+
+          if (sub.kind === 'screen') {
+            row.classList.add('screen')
+            const badge = document.createElement('span')
+            badge.className = 'sub-screen-badge'
+            badge.textContent = '画面'
+            badge.title = '来自画面硬字幕，不是语音识别'
+            row.appendChild(badge)
           }
 
           const trans = document.createElement('div')

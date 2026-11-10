@@ -412,6 +412,21 @@ export const TOOLBAR_CSS = `
     }
     .sub-row.history:not(.has-time) .sub-source { grid-column: 1; }
 
+    /* ADR-043: a screen line is read from the picture, so it is marked. */
+    .sub-screen-badge {
+      grid-column: 1;
+      justify-self: start;
+      align-self: start;
+      font-size: 9px; line-height: 1.5;
+      letter-spacing: 0.04em;
+      padding: 0 4px;
+      border-radius: 4px;
+      color: #c3b6ff;
+      background: rgba(124,92,255,0.22);
+      user-select: none;
+    }
+    .sub-row.history:not(.has-time) .sub-screen-badge { grid-column: 1; grid-row: 1; margin-bottom: 1px; }
+
     .sub-row.current {
       font-size: 16px; font-weight: 500; color: rgba(255,255,255,0.97); line-height: 1.5;
       text-shadow: 0 1px 3px rgba(0,0,0,0.85);

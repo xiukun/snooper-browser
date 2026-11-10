@@ -12,7 +12,7 @@ import type {
   ProviderProfile,
 } from '../../lib/providers'
 import { resolveRoute } from '../../lib/providers'
-import { transcribeAudio as transcribeSegment } from '../../lib/moss'
+import { readScreenCaption as readScreenCaptionFromMoss, transcribeAudio as transcribeSegment } from '../../lib/moss'
 import { buildTranslationPrompt, cleanTranslation } from '../../lib/translation-prompt'
 import { streamSSE } from './audio'
 
@@ -269,6 +269,19 @@ export async function askQuestion({ question, context, config, sourceLang, targe
   })
 
   return extractChatText(json).trim()
+}
+
+/**
+ * ADR-043: one vision completion over the bottom subtitle strip. The prompt and
+ * reply parsing live in `src/lib/screen-caption`.
+ */
+export async function readScreenCaption(options: {
+  imageDataUrl: string
+  targetLang: string
+  config: AppConfig
+  signal?: AbortSignal
+}): Promise<{ source: string; target: string }> {
+  return readScreenCaptionFromMoss(options)
 }
 
 export function extractChatText(json: any): string {

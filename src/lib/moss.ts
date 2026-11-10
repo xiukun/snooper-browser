@@ -7,7 +7,8 @@ import {
   resolveRoute,
 } from './providers'
 import { buildTranscriptionFormData } from './transcription-request'
-import { buildTranslationPrompt, cleanTranslation } from './translation-prompt'
+import { buildTranslationPrompt, cleanTranslation, translationLanguageName } from './translation-prompt'
+import { parseScreenCaption } from './screen-caption'
 import { sleep } from './utils'
 
 const STREAM_CAPABILITY_KEY = 'snooper.moss.stream-capability.v1'
@@ -308,6 +309,45 @@ export async function analyzeImages(options: AnalyzeImageOptions): Promise<strin
     onDelta: options.onDelta,
     simulateStream: true,
   })
+}
+
+/**
+ * ADR-043: read one burned-in subtitle strip.
+ *
+ * Uses the `video` route but never the realtime model id: `/chat/completions`
+ * does not serve `moss-vl-realtime-1.0`, so a realtime route falls back to
+ * `moss-vl-1.0`.
+ */
+export async function readScreenCaption(options: {
+  imageDataUrl: string
+  targetLang: string
+  config?: AppConfig
+  signal?: AbortSignal
+}): Promise<{ source: string; target: string }> {
+  const config = options.config ?? loadProviderConfig()
+  const route = resolveRoute(config, 'video')
+  const model = /realtime/i.test(route.model) ? 'moss-vl-1.0' : route.model
+  const prompt = buildScreenCaptionPrompt(
+    translationLanguageName(options.targetLang, '简体中文'),
+  )
+  const text = await completeChat({
+    config,
+    capability: 'video',
+    model,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: options.imageDataUrl } },
+        ],
+      },
+    ],
+    temperature: 0,
+    maxTokens: 220,
+    signal: options.signal,
+  })
+  return parseScreenCaption(text)
 }
 
 export async function translateText(

@@ -361,6 +361,143 @@ ${contextBlock}` : "",
     return value.trim().replace(/^["“「『]([\s\S]*)["”」』]$/, "$1").trim();
   }
 
+  // src/lib/screen-caption.ts
+  var SCREEN_STRIP_RATIO = 0.22;
+  var SCREEN_STRIP_MIN_HEIGHT = 56;
+  var SCREEN_STRIP_MAX_HEIGHT = 200;
+  var SCREEN_STRIP_MAX_WIDTH = 960;
+  var SCREEN_SAMPLE_INTERVAL_MS = 900;
+  var SCREEN_SIGNATURE_THRESHOLD = 6;
+  function computeStripRect(videoWidth, videoHeight, maxWidth = SCREEN_STRIP_MAX_WIDTH) {
+    if (!Number.isFinite(videoWidth) || !Number.isFinite(videoHeight)) return null;
+    if (videoWidth <= 0 || videoHeight <= 0) return null;
+    const rawHeight = Math.round(videoHeight * SCREEN_STRIP_RATIO);
+    const height = Math.min(
+      SCREEN_STRIP_MAX_HEIGHT,
+      Math.max(SCREEN_STRIP_MIN_HEIGHT, Math.min(videoHeight, rawHeight))
+    );
+    const width = Math.min(videoWidth, maxWidth);
+    return {
+      x: Math.round((videoWidth - width) / 2),
+      y: videoHeight - height,
+      width,
+      height
+    };
+  }
+  function frameSignature(rgba, width, height, cols = 64, rows = 8) {
+    const out = [];
+    if (width <= 0 || height <= 0) return out;
+    for (let row = 0; row < rows; row++) {
+      const y0 = Math.floor(row * height / rows);
+      const y1 = Math.max(y0 + 1, Math.floor((row + 1) * height / rows));
+      for (let col = 0; col < cols; col++) {
+        const x0 = Math.floor(col * width / cols);
+        const x1 = Math.max(x0 + 1, Math.floor((col + 1) * width / cols));
+        let sum = 0;
+        let count = 0;
+        for (let y = y0; y < y1 && y < height; y++) {
+          for (let x = x0; x < x1 && x < width; x++) {
+            const i = (y * width + x) * 4;
+            sum += 0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2];
+            count++;
+          }
+        }
+        out.push(count ? sum / count : 0);
+      }
+    }
+    return out;
+  }
+  function signatureDistance(a, b) {
+    if (!a.length || a.length !== b.length) return Number.POSITIVE_INFINITY;
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+    return sum / a.length;
+  }
+  function isSameFrame(previous, next, threshold = SCREEN_SIGNATURE_THRESHOLD) {
+    if (!previous.length) return false;
+    return signatureDistance(previous, next) < threshold;
+  }
+  var EMPTY_CAPTION = { source: "", target: "" };
+  function extractCaptionPayload(text) {
+    if (!text) return null;
+    const cleaned = text.replace(/```json/gi, "```");
+    const start = cleaned.indexOf("{");
+    if (start === -1) return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < cleaned.length; i++) {
+      const ch = cleaned[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          try {
+            const parsed = JSON.parse(cleaned.slice(start, i + 1));
+            return parsed && typeof parsed === "object" ? parsed : null;
+          } catch {
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+  function parseScreenCaption(text) {
+    const payload = extractCaptionPayload(text);
+    if (!payload) return { ...EMPTY_CAPTION };
+    const source = typeof payload.source === "string" ? payload.source.trim() : "";
+    const target = typeof payload.target === "string" ? payload.target.trim() : "";
+    if (!source) return { ...EMPTY_CAPTION };
+    return { source, target: target || source };
+  }
+  function isDuplicateCaption(last, next) {
+    if (!last) return false;
+    return last.source === next.source && last.target === next.target;
+  }
+
+  // src/lib/moss-messages.ts
+  function flattenMessages(messages) {
+    const systemText = messages.filter((message) => message.role === "system").map((message) => contentToText(message.content)).filter(Boolean).join("\n\n");
+    const turns = messages.filter((message) => message.role !== "system");
+    const prefix = systemText ? `\u3010\u7CFB\u7EDF\u6307\u4EE4\u3011
+${systemText}
+
+\u3010\u5BF9\u8BDD\u8BB0\u5F55\u3011` : turns.length > 1 ? "\u3010\u5BF9\u8BDD\u8BB0\u5F55\u3011" : "";
+    const lines = prefix ? [prefix] : [];
+    const images = [];
+    for (const message of turns) {
+      const label = message.role === "user" ? "\u7528\u6237" : "\u52A9\u624B";
+      const text = contentToText(message.content);
+      const attached = contentToImages(message.content);
+      if (text) lines.push(`${label}\uFF1A${text}`);
+      if (attached.length) {
+        lines.push(`${label}\u4E0A\u4F20\u4E86 ${attached.length} \u5F20\u56FE\u7247\u3002`);
+        images.push(...attached);
+      }
+    }
+    const parts = [];
+    if (lines.length) parts.push({ type: "text", text: lines.join("\n") });
+    parts.push(...images);
+    if (!parts.length) parts.push({ type: "text", text: "\u4F60\u597D" });
+    return parts;
+  }
+  function contentToText(content) {
+    if (typeof content === "string") return content;
+    return content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+  }
+  function contentToImages(content) {
+    if (typeof content === "string") return [];
+    return content.filter((part) => part.type === "image_url");
+  }
+
   // src/lib/moss.ts
   var MossError = class extends Error {
     status;
@@ -374,6 +511,12 @@ ${contextBlock}` : "",
   };
   function endpoint(baseUrl, path) {
     return `${baseUrl.replace(/\/+$/, "")}${path}`;
+  }
+  function authHeaders(apiKey) {
+    return {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    };
   }
   async function readError(res) {
     let message = `\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${res.status}\uFF09`;
@@ -392,6 +535,65 @@ ${contextBlock}` : "",
     } catch {
     }
     return new MossError(message, res.status, code);
+  }
+  function extractText(payload) {
+    const data = payload;
+    const choice = data.choices?.[0];
+    if (choice?.message?.content) {
+      if (typeof choice.message.content === "string") return choice.message.content;
+      return choice.message.content.map((part) => part.text ?? "").join("");
+    }
+    if (choice?.text) return choice.text;
+    if (data.output_text) return data.output_text;
+    const output = data.output?.flatMap((item) => item.content ?? []).map((part) => part.text ?? "").join("");
+    return output ?? "";
+  }
+  async function completeChat(options) {
+    const config = options.config ?? loadProviderConfig();
+    const route = resolveRoute(config, options.capability ?? "llm", options.model);
+    const res = await fetch(endpoint(route.baseUrl, "/chat/completions"), {
+      method: "POST",
+      headers: authHeaders(route.apiKey),
+      body: JSON.stringify({
+        model: route.model,
+        messages: [{ role: "user", content: flattenMessages(options.messages) }],
+        temperature: options.temperature ?? 0.4,
+        max_tokens: options.maxTokens ?? 2048,
+        stream: false
+      }),
+      signal: options.signal
+    });
+    if (!res.ok) throw await readError(res);
+    const payload = await res.json();
+    const text = extractText(payload);
+    if (!text) throw new MossError("\u6A21\u578B\u8FD4\u56DE\u4E86\u7A7A\u5185\u5BB9\uFF0C\u8BF7\u91CD\u8BD5", 502, "empty_response");
+    return text;
+  }
+  async function readScreenCaption(options) {
+    const config = options.config ?? loadProviderConfig();
+    const route = resolveRoute(config, "video");
+    const model = /realtime/i.test(route.model) ? "moss-vl-1.0" : route.model;
+    const prompt = buildScreenCaptionPrompt(
+      translationLanguageName(options.targetLang, "\u7B80\u4F53\u4E2D\u6587")
+    );
+    const text = await completeChat({
+      config,
+      capability: "video",
+      model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: options.imageDataUrl } }
+          ]
+        }
+      ],
+      temperature: 0,
+      maxTokens: 220,
+      signal: options.signal
+    });
+    return parseScreenCaption(text);
   }
   async function transcribeAudio(blob, options = {}) {
     const config = options.config ?? loadProviderConfig();
@@ -815,6 +1017,9 @@ ${question}`
       signal
     });
     return extractChatText(json).trim();
+  }
+  async function readScreenCaption2(options) {
+    return readScreenCaption(options);
   }
   function extractChatText(json) {
     const choice = json.choices?.[0];
@@ -1999,6 +2204,207 @@ ${question}`
     }
   }
 
+  // src/ext/offscreen/screen-caption.ts
+  var REQUEST_TIMEOUT_MS = 2e4;
+  var MAX_CONSECUTIVE_FAILURES = 3;
+  var SIGNATURE_COLS = 64;
+  var SIGNATURE_ROWS = 8;
+  var SIGNATURE_WIDTH = 128;
+  var states = /* @__PURE__ */ new Map();
+  function emit(message) {
+    chrome.runtime.sendMessage(message).catch(() => {
+    });
+  }
+  function emitStatus(state, status, error = "") {
+    emit({
+      type: "CAPTURE_SCREEN_STATUS",
+      tabId: state.tabId,
+      generation: state.generation,
+      status,
+      error
+    });
+  }
+  function isScreenCaptionActive(tabId) {
+    return states.has(tabId);
+  }
+  function setScreenCaptionLang(tabId, targetLang) {
+    const state = states.get(tabId);
+    if (state && targetLang) state.targetLang = targetLang;
+  }
+  function startScreenCaption(options) {
+    const session = captureSessions.get(options.tabId);
+    if (!session || session.aborted || !session.videoEl) {
+      return { ok: false, error: "\u8BF7\u5148\u5F00\u59CB\u5F55\u97F3\uFF1A\u753B\u9762\u5B57\u5E55\u9700\u8981\u5F55\u5236\u4E2D\u7684\u89C6\u9891\u753B\u9762" };
+    }
+    if (session.generation !== options.generation) {
+      return { ok: false, error: "\u4F1A\u8BDD\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u5F00\u59CB\u5F55\u97F3" };
+    }
+    stopScreenCaption(options.tabId);
+    const state = {
+      tabId: options.tabId,
+      generation: options.generation,
+      config: options.config,
+      targetLang: options.targetLang,
+      timer: null,
+      inFlight: false,
+      stopped: false,
+      failures: 0,
+      lastSignature: [],
+      lastCaption: null,
+      lastRequestAt: 0,
+      canvas: null
+    };
+    states.set(options.tabId, state);
+    state.timer = setInterval(() => void tick(state), SCREEN_SAMPLE_INTERVAL_MS);
+    emitStatus(state, "active");
+    return { ok: true };
+  }
+  function stopScreenCaption(tabId) {
+    const state = states.get(tabId);
+    if (!state) return;
+    state.stopped = true;
+    if (state.timer) clearInterval(state.timer);
+    state.timer = null;
+    state.canvas = null;
+    states.delete(tabId);
+    emitStatus(state, "stopped");
+  }
+  function stopWithError(state, error) {
+    if (state.stopped) return;
+    state.stopped = true;
+    if (state.timer) clearInterval(state.timer);
+    state.timer = null;
+    states.delete(state.tabId);
+    emitStatus(state, "error", error);
+  }
+  function ensureCanvas(state) {
+    if (!state.canvas) state.canvas = document.createElement("canvas");
+    return state.canvas;
+  }
+  function sampleStrip(state, video) {
+    const rect = computeStripRect(video.videoWidth, video.videoHeight);
+    if (!rect) return null;
+    const gate = ensureCanvas(state);
+    gate.width = SIGNATURE_WIDTH;
+    gate.height = SIGNATURE_ROWS;
+    const gateCtx = gate.getContext("2d", { willReadFrequently: true });
+    if (!gateCtx) return null;
+    gateCtx.drawImage(
+      video,
+      rect.x,
+      rect.y,
+      rect.width,
+      rect.height,
+      0,
+      0,
+      SIGNATURE_WIDTH,
+      SIGNATURE_ROWS
+    );
+    const pixels = gateCtx.getImageData(0, 0, SIGNATURE_WIDTH, SIGNATURE_ROWS).data;
+    const signature = frameSignature(pixels, SIGNATURE_WIDTH, SIGNATURE_ROWS, SIGNATURE_COLS, SIGNATURE_ROWS);
+    const full = document.createElement("canvas");
+    full.width = rect.width;
+    full.height = rect.height;
+    const ctx = full.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(
+      video,
+      rect.x,
+      rect.y,
+      rect.width,
+      rect.height,
+      0,
+      0,
+      rect.width,
+      rect.height
+    );
+    return { dataUrl: full.toDataURL("image/jpeg", 0.72), signature };
+  }
+  async function tick(state) {
+    if (state.stopped || state.inFlight) return;
+    const session = captureSessions.get(state.tabId);
+    if (!session || session.aborted || !session.videoEl) {
+      stopScreenCaption(state.tabId);
+      return;
+    }
+    if (session.generation !== state.generation) {
+      stopScreenCaption(state.tabId);
+      return;
+    }
+    const video = session.videoEl;
+    if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+    const now = Date.now();
+    if (now - state.lastRequestAt < SCREEN_SAMPLE_INTERVAL_MS) return;
+    let sample = null;
+    try {
+      sample = sampleStrip(state, video);
+    } catch {
+      return;
+    }
+    if (!sample) return;
+    if (isSameFrame(state.lastSignature, sample.signature)) return;
+    state.lastSignature = sample.signature;
+    state.lastRequestAt = now;
+    state.inFlight = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const startedAt = Date.now();
+    try {
+      const caption = await readScreenCaption2({
+        imageDataUrl: sample.dataUrl,
+        targetLang: state.targetLang,
+        config: state.config,
+        signal: controller.signal
+      });
+      state.failures = 0;
+      if (!caption.source) {
+        emit({
+          type: "CAPTURE_SCREEN_SUBTITLE",
+          tabId: state.tabId,
+          generation: state.generation,
+          at: startedAt,
+          source: "",
+          target: "",
+          latency: Date.now() - startedAt
+        });
+        return;
+      }
+      if (isDuplicateCaption(state.lastCaption, caption)) {
+        emit({
+          type: "CAPTURE_SCREEN_SUBTITLE",
+          tabId: state.tabId,
+          generation: state.generation,
+          at: startedAt,
+          source: caption.source,
+          target: caption.target,
+          latency: Date.now() - startedAt,
+          duplicate: true
+        });
+        return;
+      }
+      state.lastCaption = caption;
+      emit({
+        type: "CAPTURE_SCREEN_SUBTITLE",
+        tabId: state.tabId,
+        generation: state.generation,
+        at: startedAt,
+        source: caption.source,
+        target: caption.target,
+        latency: Date.now() - startedAt
+      });
+    } catch (err) {
+      if (state.stopped) return;
+      state.lastSignature = [];
+      state.failures += 1;
+      if (state.failures >= MAX_CONSECUTIVE_FAILURES) {
+        stopWithError(state, err?.message || "\u753B\u9762\u5B57\u5E55\u8FDE\u7EED\u5931\u8D25\uFF0C\u5DF2\u505C\u6B62");
+      }
+    } finally {
+      clearTimeout(timeout);
+      state.inFlight = false;
+    }
+  }
+
   // src/ext/offscreen.ts
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (sender.id !== chrome.runtime.id) return false;
@@ -2011,6 +2417,7 @@ ${question}`
       }
       case "STOP_CAPTURE": {
         const tabId = message.tabId;
+        stopScreenCaption(tabId);
         stopTabCapture(tabId, message.generation, message.drain === true).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }));
         return true;
       }
@@ -2033,7 +2440,23 @@ ${question}`
           if (message.sourceLang) session.sourceLang = message.sourceLang;
           if (message.targetLang) session.targetLang = message.targetLang;
         }
+        if (message.targetLang) setScreenCaptionLang(tabId, message.targetLang);
         sendResponse({ ok: true });
+        return false;
+      }
+      case "START_SCREEN_CAPTION": {
+        const { tabId, generation, config, targetLang } = message;
+        const result = startScreenCaption({ tabId, generation, config, targetLang });
+        sendResponse(result);
+        return false;
+      }
+      case "STOP_SCREEN_CAPTION": {
+        stopScreenCaption(message.tabId);
+        sendResponse({ ok: true });
+        return false;
+      }
+      case "GET_SCREEN_CAPTION": {
+        sendResponse({ ok: true, active: isScreenCaptionActive(message.tabId) });
         return false;
       }
       case "CAPTURE_FRAME": {

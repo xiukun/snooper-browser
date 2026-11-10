@@ -1094,6 +1094,21 @@
     }
     .sub-row.history:not(.has-time) .sub-source { grid-column: 1; }
 
+    /* ADR-043: a screen line is read from the picture, so it is marked. */
+    .sub-screen-badge {
+      grid-column: 1;
+      justify-self: start;
+      align-self: start;
+      font-size: 9px; line-height: 1.5;
+      letter-spacing: 0.04em;
+      padding: 0 4px;
+      border-radius: 4px;
+      color: #c3b6ff;
+      background: rgba(124,92,255,0.22);
+      user-select: none;
+    }
+    .sub-row.history:not(.has-time) .sub-screen-badge { grid-column: 1; grid-row: 1; margin-bottom: 1px; }
+
     .sub-row.current {
       font-size: 16px; font-weight: 500; color: rgba(255,255,255,0.97); line-height: 1.5;
       text-shadow: 0 1px 3px rgba(0,0,0,0.85);
@@ -1287,6 +1302,10 @@
         <button id="rtts-screenshot-btn" class="rtts-menu-item" type="button" role="menuitem">
           <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg></span>
           <span class="rtts-menu-text"><b>\u9875\u9762\u622A\u56FE</b><small>\u5F55\u5236\u4E2D\u4E5F\u80FD\u622A\u53D6\u89C6\u9891\u753B\u9762</small></span>
+        </button>
+        <button id="rtts-screen-btn" class="rtts-menu-item" type="button" role="menuitem" aria-pressed="false">
+          <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M6 12h5M13 12h5M8 21h8"/></svg></span>
+          <span class="rtts-menu-text"><b>\u753B\u9762\u5B57\u5E55</b><small>\u8BFB\u53D6\u753B\u9762\u91CC\u7684\u786C\u5B57\u5E55\u5E76\u7FFB\u8BD1</small></span>
         </button>
         <button id="rtts-image-btn" class="rtts-menu-item" type="button" role="menuitem">
           <span class="rtts-menu-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></span>
@@ -2615,7 +2634,7 @@
         if (s !== "running" && s !== "starting") {
           markSubtitleActivity();
         }
-        const rowsSignature = subs.map((sub) => `${sub.id ?? ""}${sub.at ?? ""}${sub.videoTime ?? ""}${sub.target ?? ""}${sub.source ?? ""}`).join("");
+        const rowsSignature = subs.map((sub) => `${sub.id ?? ""}${sub.at ?? ""}${sub.videoTime ?? ""}${sub.target ?? ""}${sub.source ?? ""}${sub.kind ?? ""}`).join("");
         const rowsChanged = rowsSignature !== lastRowsSignature;
         const wasAtBottom = r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 40;
         if (rowsChanged) {
@@ -2650,6 +2669,14 @@
                 }
               });
               row.appendChild(chip);
+            }
+            if (sub.kind === "screen") {
+              row.classList.add("screen");
+              const badge = document.createElement("span");
+              badge.className = "sub-screen-badge";
+              badge.textContent = "\u753B\u9762";
+              badge.title = "\u6765\u81EA\u753B\u9762\u786C\u5B57\u5E55\uFF0C\u4E0D\u662F\u8BED\u97F3\u8BC6\u522B";
+              row.appendChild(badge);
             }
             const trans = document.createElement("div");
             trans.className = "sub-trans";
@@ -3929,6 +3956,58 @@
     return { setOpen };
   }
 
+  // src/ext/content/screen-caption-toggle.ts
+  function bindScreenCaptionToggle(deps) {
+    const label = deps.button.querySelector("b");
+    const hint = deps.button.querySelector("small");
+    let lastStatus = "";
+    function sync() {
+      const session = deps.getSession();
+      const status = session.screenCaption || "off";
+      const active = status === "on";
+      deps.button.classList.toggle("active", active);
+      deps.button.setAttribute("aria-pressed", active ? "true" : "false");
+      if (label) label.textContent = active ? "\u753B\u9762\u5B57\u5E55 \xB7 \u5F00" : "\u753B\u9762\u5B57\u5E55";
+      if (hint) {
+        hint.textContent = status === "error" ? session.screenCaptionError || "\u753B\u9762\u5B57\u5E55\u5DF2\u505C\u6B62" : active ? "\u6B63\u5728\u8BFB\u53D6\u753B\u9762\u91CC\u7684\u786C\u5B57\u5E55" : "\u8BFB\u53D6\u753B\u9762\u91CC\u7684\u786C\u5B57\u5E55\u5E76\u7FFB\u8BD1";
+      }
+      if (status === "error" && lastStatus !== "error") {
+        deps.toast(session.screenCaptionError || "\u753B\u9762\u5B57\u5E55\u5DF2\u505C\u6B62\uFF0C\u8BF7\u91CD\u8BD5", "err");
+      }
+      lastStatus = status;
+    }
+    async function toggle() {
+      const session = deps.getSession();
+      if (session.state !== "running" && session.state !== "starting") {
+        deps.toast("\u8BF7\u5148\u5F00\u59CB\u5F55\u97F3\uFF1A\u753B\u9762\u5B57\u5E55\u9700\u8981\u5F55\u5236\u4E2D\u7684\u89C6\u9891\u753B\u9762", "info");
+        return;
+      }
+      const active = session.screenCaption === "on";
+      deps.button.classList.add("busy");
+      try {
+        const result = active ? await deps.bg("STOP_SCREEN_CAPTION") : await deps.bg("START_SCREEN_CAPTION", { targetLang: session.targetLang });
+        if (result?.session) deps.adoptSession(result.session);
+        if (!result?.ok) {
+          const message = result?.error || "\u753B\u9762\u5B57\u5E55\u5207\u6362\u5931\u8D25";
+          deps.toast(message, "err");
+          if (/API Key|服务商|Base URL|模型/.test(message)) deps.openSettings();
+          return;
+        }
+        deps.toast(
+          active ? "\u753B\u9762\u5B57\u5E55\u5DF2\u5173\u95ED\uFF0C\u6062\u590D\u8BED\u97F3\u5B57\u5E55" : "\u753B\u9762\u5B57\u5E55\u5DF2\u5F00\u542F\uFF1A\u753B\u9762\u6709\u786C\u5B57\u5E55\u65F6\u4F18\u5148\u663E\u793A",
+          active ? "info" : "ok"
+        );
+        sync();
+      } finally {
+        deps.button.classList.remove("busy");
+      }
+    }
+    deps.button.addEventListener("click", () => {
+      void toggle();
+    });
+    return { sync };
+  }
+
   // src/lib/export-assets.ts
   function decodeExportAsset(asset) {
     if (asset.mimeType === "image/svg+xml" && asset.svgText) {
@@ -5115,6 +5194,7 @@ ${context}`;
       summaryBtn,
       imageBtn,
       screenshotBtn,
+      screenBtn,
       notesCount,
       notesBadge,
       notesBtn,
@@ -5278,6 +5358,14 @@ ${context}`;
       closeShotPreview: () => closeShotPreview()
     });
     const openSettings = settingsPanel.openSettings;
+    const screenToggle = bindScreenCaptionToggle({
+      button: screenBtn,
+      getSession: () => session,
+      bg,
+      toast,
+      adoptSession: (next) => adoptBackgroundSession(next),
+      openSettings
+    });
     const subtitleView = createSubtitleView({
       refs: {
         recordBtn,
@@ -5303,7 +5391,11 @@ ${context}`;
       renderNotes: () => renderNotes(),
       openShotPreview: (url, saved, insertable) => openShotPreview(url, saved, insertable)
     });
-    const render = subtitleView.render;
+    const renderBase = subtitleView.render;
+    const render = () => {
+      renderBase();
+      screenToggle.sync();
+    };
     const updateChat = subtitleView.updateChat;
     const renderStreaming = subtitleView.renderStreaming;
     const clearStreaming = subtitleView.clearStreaming;

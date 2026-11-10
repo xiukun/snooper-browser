@@ -462,6 +462,14 @@ ${contextBlock}` : "",
     if (!last) return false;
     return last.source === next.source && last.target === next.target;
   }
+  function buildScreenCaptionPrompt(targetLanguage) {
+    return [
+      "This image is the bottom subtitle strip of a video frame.",
+      `Extract the on-screen text and translate it into ${targetLanguage}.`,
+      'Reply with only a JSON object: {"source":"...","target":"..."}.',
+      "Use empty strings when there is no readable text. No markdown."
+    ].join(" ");
+  }
 
   // src/lib/moss-messages.ts
   function flattenMessages(messages) {

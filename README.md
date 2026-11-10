@@ -162,12 +162,14 @@ The built-in MOSS protocol works with a key from the official platform:
 
 The Manifest V3 extension adds an in-page toolbar and a side panel to Chrome and Edge 116+.
 
+The toolbar reveals itself on pages that host a real video player (hover previews and small embeds do not count) and stays hidden elsewhere; closing it keeps it closed for that page. On any other page, click the extension icon to open it.
+
 ### Install from a release ZIP
 
 1. Download `snooper-browser-v<version>.zip` from a release.
 2. In Chrome or Edge, open the extension management page and enable **Developer mode**.
 3. Use **Load unpacked** only with an extracted development directory. Store submissions use the ZIP directly in the relevant developer dashboard.
-4. Pin snooper-browser, open a normal web page, and click the extension icon.
+4. Pin snooper-browser, open a video page (the toolbar appears once a player is detected), or click the extension icon on any other page.
 5. Open **开始配置** in the side panel or page toolbar and add a provider. No key is included in the extension package.
 
 ### Build and package locally

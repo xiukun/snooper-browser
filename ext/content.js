@@ -2581,7 +2581,9 @@
     let subBoxCompact = false;
     let subIdleTimer = null;
     let lastSubtitleSignal = "";
+    let lastRowsSignature = "";
     let lastChatSignature = null;
+    let streamingScrollRaf = 0;
     let dragState = null;
     let subResizeState = null;
     function render() {
@@ -2613,67 +2615,73 @@
         if (s !== "running" && s !== "starting") {
           markSubtitleActivity();
         }
-        r.subRows.textContent = "";
+        const rowsSignature = subs.map((sub) => `${sub.id ?? ""}${sub.at ?? ""}${sub.videoTime ?? ""}${sub.target ?? ""}${sub.source ?? ""}`).join("");
+        const rowsChanged = rowsSignature !== lastRowsSignature;
         const wasAtBottom = r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 40;
-        subs.forEach((sub) => {
-          const row = document.createElement("div");
-          row.className = "sub-row history";
-          const anchored = typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) && sub.videoTime >= 0;
-          if (anchored) {
-            row.classList.add("has-time");
-            const chip = document.createElement("button");
-            chip.type = "button";
-            chip.className = "sub-time-chip";
-            chip.textContent = formatVideoTime(sub.videoTime);
-            chip.setAttribute("aria-label", `\u8DF3\u8F6C\u5230 ${formatVideoTime(sub.videoTime)}`);
-            chip.title = "\u70B9\u51FB\u8DF3\u8F6C\u5230\u89C6\u9891\u5BF9\u5E94\u4F4D\u7F6E";
-            const activate = () => {
-              const result = seekTo(sub.videoTime);
-              row.classList.remove("seek-ok", "seek-fail");
-              void row.offsetWidth;
-              row.classList.add(result.ok ? "seek-ok" : "seek-fail");
-            };
-            chip.addEventListener("click", (event) => {
-              event.stopPropagation();
-              activate();
-            });
-            chip.addEventListener("keydown", (event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
+        if (rowsChanged) {
+          lastRowsSignature = rowsSignature;
+          r.subRows.textContent = "";
+          subs.forEach((sub) => {
+            const row = document.createElement("div");
+            row.className = "sub-row history";
+            const anchored = typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) && sub.videoTime >= 0;
+            if (anchored) {
+              row.classList.add("has-time");
+              const chip = document.createElement("button");
+              chip.type = "button";
+              chip.className = "sub-time-chip";
+              chip.textContent = formatVideoTime(sub.videoTime);
+              chip.setAttribute("aria-label", `\u8DF3\u8F6C\u5230 ${formatVideoTime(sub.videoTime)}`);
+              chip.title = "\u70B9\u51FB\u8DF3\u8F6C\u5230\u89C6\u9891\u5BF9\u5E94\u4F4D\u7F6E";
+              const activate = () => {
+                const result = seekTo(sub.videoTime);
+                row.classList.remove("seek-ok", "seek-fail");
+                void row.offsetWidth;
+                row.classList.add(result.ok ? "seek-ok" : "seek-fail");
+              };
+              chip.addEventListener("click", (event) => {
+                event.stopPropagation();
                 activate();
-              }
-            });
-            row.appendChild(chip);
-          }
-          const trans = document.createElement("div");
-          trans.className = "sub-trans";
-          trans.textContent = sub.target || "...";
-          row.appendChild(trans);
-          if (sub.source) {
-            const src = document.createElement("div");
-            src.className = "sub-source";
-            src.textContent = sub.source;
-            row.appendChild(src);
-          }
-          if (isFillerOnly(sub.target || sub.source || "")) {
-            row.classList.add("filler");
-          }
-          r.subRows.appendChild(row);
-        });
-        const lastRow = r.subRows.lastElementChild;
-        if (lastRow) lastRow.classList.add("current");
+              });
+              chip.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  activate();
+                }
+              });
+              row.appendChild(chip);
+            }
+            const trans = document.createElement("div");
+            trans.className = "sub-trans";
+            trans.textContent = sub.target || "...";
+            row.appendChild(trans);
+            if (sub.source) {
+              const src = document.createElement("div");
+              src.className = "sub-source";
+              src.textContent = sub.source;
+              row.appendChild(src);
+            }
+            if (isFillerOnly(sub.target || sub.source || "")) {
+              row.classList.add("filler");
+            }
+            r.subRows.appendChild(row);
+          });
+          const lastRow = r.subRows.lastElementChild;
+          if (lastRow) lastRow.classList.add("current");
+        }
         if (streaming) {
           renderStreaming(streaming);
         } else {
           clearStreaming();
         }
-        if (wasAtBottom || subs.length <= 3) {
+        if (rowsChanged && (wasAtBottom || subs.length <= 3)) {
           r.subScroll.scrollTop = r.subScroll.scrollHeight;
         }
       } else {
         r.subPlaceholder.style.display = "";
         r.subPlaceholder.textContent = "\u70B9\u51FB\u300C\u5F55\u97F3\u300D\u5F00\u59CB\u5B9E\u65F6\u8F6C\u5199";
         r.subRows.textContent = "";
+        lastRowsSignature = "";
         clearStreaming();
         r.subListening.classList.add("hidden");
         r.subBox.classList.add("hidden");
@@ -2753,8 +2761,13 @@
         r.streamingSource.style.display = "none";
       }
       r.streamingLabel.textContent = "\u7FFB\u8BD1\u4E2D";
-      if (r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 100) {
-        r.subScroll.scrollTop = r.subScroll.scrollHeight;
+      if (!streamingScrollRaf) {
+        streamingScrollRaf = requestAnimationFrame(() => {
+          streamingScrollRaf = 0;
+          if (r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 120) {
+            r.subScroll.scrollTop = r.subScroll.scrollHeight;
+          }
+        });
       }
     }
     function clearStreaming() {
@@ -2813,6 +2826,7 @@
       r.subBox.style.maxHeight = "none";
     }
     function positionSubBox() {
+      if (r.subBox.classList.contains("hidden")) return;
       if (!subBoxAutoPosition) return;
       const maxWidth = Math.max(220, window.innerWidth - 32);
       const video = document.querySelector("video");
@@ -4846,6 +4860,18 @@ ${context}`;
     { source: "Enjoy the seamless multilingual experience", target: "\u4EAB\u53D7\u65E0\u7F1D\u7684\u591A\u8BED\u8A00\u4F53\u9A8C", delay: 2500 }
   ];
 
+  // src/lib/video-presence.ts
+  var AUTO_SHOW_MIN_WIDTH = 320;
+  var AUTO_SHOW_MIN_HEIGHT = 180;
+  var AUTO_SHOW_MIN_VIEWPORT_RATIO = 0.12;
+  function isPresentableVideo(rect, viewport) {
+    if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height)) return false;
+    if (rect.width < AUTO_SHOW_MIN_WIDTH || rect.height < AUTO_SHOW_MIN_HEIGHT) return false;
+    const viewportArea = viewport.width * viewport.height;
+    if (!Number.isFinite(viewportArea) || viewportArea <= 0) return false;
+    return rect.width * rect.height / viewportArea >= AUTO_SHOW_MIN_VIEWPORT_RATIO;
+  }
+
   // src/ext/content.ts
   (() => {
     if (window.__rttsContentInstalled) return;
@@ -4870,6 +4896,9 @@ ${context}`;
     const UI_HIDDEN_KEY = "snooper.ui-hidden.v1";
     let uiHidden = true;
     let hasBeenShownOnce = false;
+    let autoShowDismissed = false;
+    let lastVideoProbeAt = 0;
+    const AUTO_SHOW_PROBE_GAP_MS = 800;
     function persistUiHidden() {
       try {
         localStorage.setItem(UI_HIDDEN_KEY, uiHidden ? "1" : "0");
@@ -4896,6 +4925,26 @@ ${context}`;
         const more = bar.querySelector("#rtts-more-btn");
         more?.setAttribute("aria-expanded", "false");
       }
+    }
+    function hasPresentableVideo() {
+      try {
+        const candidate = findBestVideoCandidate();
+        if (!candidate) return false;
+        return isPresentableVideo(
+          { width: candidate.rect.w, height: candidate.rect.h },
+          { width: window.innerWidth, height: window.innerHeight }
+        );
+      } catch {
+        return false;
+      }
+    }
+    function maybeAutoShowForVideo() {
+      if (!uiHidden || autoShowDismissed) return;
+      const now = Date.now();
+      if (now - lastVideoProbeAt < AUTO_SHOW_PROBE_GAP_MS) return;
+      lastVideoProbeAt = now;
+      if (!hasPresentableVideo()) return;
+      ensureToolbarVisible();
     }
     let demoInterval = null;
     let demoIndex = 0;
@@ -5391,12 +5440,14 @@ ${context}`;
     });
     hideBtn.addEventListener("click", () => {
       uiHidden = true;
+      autoShowDismissed = true;
       persistUiHidden();
       applyUiHidden();
       toast("\u5DE5\u5177\u5DF2\u5173\u95ED", "ok");
     });
     showBtn.addEventListener("click", () => {
       uiHidden = false;
+      autoShowDismissed = false;
       hasBeenShownOnce = true;
       persistUiHidden();
       applyUiHidden();
@@ -5580,6 +5631,7 @@ ${context}`;
         hasBeenShownOnce = true;
         if (uiHidden) {
           uiHidden = false;
+          autoShowDismissed = false;
           persistUiHidden();
           applyUiHidden();
           render();
@@ -5589,6 +5641,7 @@ ${context}`;
           }
         } else {
           uiHidden = true;
+          autoShowDismissed = true;
           persistUiHidden();
           applyUiHidden();
         }
@@ -5642,6 +5695,12 @@ ${context}`;
       await syncSessionFromBackground();
       render();
       renderNotes();
+      for (const type of ["loadedmetadata", "canplay", "play"]) {
+        document.addEventListener(type, () => {
+          maybeAutoShowForVideo();
+        }, true);
+      }
+      maybeAutoShowForVideo();
     })();
     console.log("[snooper-browser] content script v0.6 loaded");
   })();

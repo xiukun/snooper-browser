@@ -58,7 +58,9 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
   let subBoxCompact = false
   let subIdleTimer: number | null = null
   let lastSubtitleSignal = ''
+  let lastRowsSignature = ''
   let lastChatSignature: string | null = null
+  let streamingScrollRaf = 0
   let dragState: { el: HTMLElement; offsetX: number; offsetY: number } | null = null
   let subResizeState: { pointerId: number; startX: number; startY: number; width: number; height: number } | null = null
 
@@ -122,72 +124,83 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
       }
 
       // Build subtitle rows (show ALL, auto-scroll to bottom)
-      r.subRows.textContent = ''
+      // ADR-041: a full rebuild on every session update was the visible
+      // jitter — a long transcript was recreated just because the audio
+      // silence flag flipped. Rebuild only when the rendered content changed.
+      const rowsSignature = subs
+        .map((sub) => `${sub.id ?? ''}\u0001${sub.at ?? ''}\u0001${sub.videoTime ?? ''}\u0001${sub.target ?? ''}\u0001${sub.source ?? ''}`)
+        .join('\u0002')
+      const rowsChanged = rowsSignature !== lastRowsSignature
       const wasAtBottom = r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 40
 
-      subs.forEach((sub) => {
-        const row = document.createElement('div')
-        row.className = 'sub-row history'
+      if (rowsChanged) {
+        lastRowsSignature = rowsSignature
+        r.subRows.textContent = ''
 
-        const anchored = typeof sub.videoTime === 'number' && Number.isFinite(sub.videoTime) && sub.videoTime >= 0
-        if (anchored) {
-          // ADR-038: the time lives in its own narrow gutter so a dragged-wide
-          // panel cannot split the row into three columns.
-          row.classList.add('has-time')
-          // The chip is the seek affordance (ADR-034); the text stays
-          // selectable, so only the chip handles clicks.
-          const chip = document.createElement('button')
-          chip.type = 'button'
-          chip.className = 'sub-time-chip'
-          chip.textContent = formatVideoTime(sub.videoTime!)
-          chip.setAttribute('aria-label', `跳转到 ${formatVideoTime(sub.videoTime!)}`)
-          chip.title = '点击跳转到视频对应位置'
-          const activate = () => {
-            const result = seekTo(sub.videoTime!)
-            row.classList.remove('seek-ok', 'seek-fail')
-            // Force a reflow so the flash restarts on rapid re-clicks.
-            void row.offsetWidth
-            row.classList.add(result.ok ? 'seek-ok' : 'seek-fail')
-          }
-          chip.addEventListener('click', (event) => {
-            event.stopPropagation()
-            activate()
-          })
-          chip.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault()
-              activate()
+        subs.forEach((sub) => {
+          const row = document.createElement('div')
+          row.className = 'sub-row history'
+
+          const anchored = typeof sub.videoTime === 'number' && Number.isFinite(sub.videoTime) && sub.videoTime >= 0
+          if (anchored) {
+            // ADR-038: the time lives in its own narrow gutter so a dragged-wide
+            // panel cannot split the row into three columns.
+            row.classList.add('has-time')
+            // The chip is the seek affordance (ADR-034); the text stays
+            // selectable, so only the chip handles clicks.
+            const chip = document.createElement('button')
+            chip.type = 'button'
+            chip.className = 'sub-time-chip'
+            chip.textContent = formatVideoTime(sub.videoTime!)
+            chip.setAttribute('aria-label', `跳转到 ${formatVideoTime(sub.videoTime!)}`)
+            chip.title = '点击跳转到视频对应位置'
+            const activate = () => {
+              const result = seekTo(sub.videoTime!)
+              row.classList.remove('seek-ok', 'seek-fail')
+              // Force a reflow so the flash restarts on rapid re-clicks.
+              void row.offsetWidth
+              row.classList.add(result.ok ? 'seek-ok' : 'seek-fail')
             }
-          })
-          row.appendChild(chip)
-        }
+            chip.addEventListener('click', (event) => {
+              event.stopPropagation()
+              activate()
+            })
+            chip.addEventListener('keydown', (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                activate()
+              }
+            })
+            row.appendChild(chip)
+          }
 
-        const trans = document.createElement('div')
-        trans.className = 'sub-trans'
-        trans.textContent = sub.target || '...'
-        row.appendChild(trans)
+          const trans = document.createElement('div')
+          trans.className = 'sub-trans'
+          trans.textContent = sub.target || '...'
+          row.appendChild(trans)
 
-        if (sub.source) {
-          const src = document.createElement('div')
-          src.className = 'sub-source'
-          src.textContent = sub.source
-          row.appendChild(src)
-        }
+          if (sub.source) {
+            const src = document.createElement('div')
+            src.className = 'sub-source'
+            src.textContent = sub.source
+            row.appendChild(src)
+          }
 
-        // ADR-039: filler-only lines remain in the transcript but are dimmed
-        // on the overlay so they do not compete with content.
-        if (isFillerOnly(sub.target || sub.source || '')) {
-          row.classList.add('filler')
-        }
+          // ADR-039: filler-only lines remain in the transcript but are dimmed
+          // on the overlay so they do not compete with content.
+          if (isFillerOnly(sub.target || sub.source || '')) {
+            row.classList.add('filler')
+          }
 
-        r.subRows.appendChild(row)
-      })
+          r.subRows.appendChild(row)
+        })
 
-      // Highlight the latest entry without dropping the layout classes
-      // (ADR-038: the old className overwrite was why the last row's chip
-      // jumped above the text).
-      const lastRow = r.subRows.lastElementChild
-      if (lastRow) lastRow.classList.add('current')
+        // Highlight the latest entry without dropping the layout classes
+        // (ADR-038: the old className overwrite was why the last row's chip
+        // jumped above the text).
+        const lastRow = r.subRows.lastElementChild
+        if (lastRow) lastRow.classList.add('current')
+      }
 
       // Render streaming row (if active)
       if (streaming) {
@@ -196,14 +209,16 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
         clearStreaming()
       }
 
-      // Auto-scroll if user was near bottom
-      if (wasAtBottom || subs.length <= 3) {
+      // Auto-scroll only when the content actually changed; a no-op render
+      // must not move the user's reading position.
+      if (rowsChanged && (wasAtBottom || subs.length <= 3)) {
         r.subScroll.scrollTop = r.subScroll.scrollHeight
       }
     } else {
       r.subPlaceholder.style.display = ''
       r.subPlaceholder.textContent = '点击「录音」开始实时转写'
       r.subRows.textContent = ''
+      lastRowsSignature = ''
       clearStreaming()
       r.subListening.classList.add('hidden')
       r.subBox.classList.add('hidden')
@@ -308,9 +323,16 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
 
     r.streamingLabel.textContent = '翻译中'
 
-    // Auto-scroll to show streaming row
-    if (r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 100) {
-      r.subScroll.scrollTop = r.subScroll.scrollHeight
+    // Auto-scroll to show the streaming row. SSE deltas arrive several times
+    // per second; rAF coalescing keeps the panel from twitching on every
+    // delta (ADR-041).
+    if (!streamingScrollRaf) {
+      streamingScrollRaf = requestAnimationFrame(() => {
+        streamingScrollRaf = 0
+        if (r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 120) {
+          r.subScroll.scrollTop = r.subScroll.scrollHeight
+        }
+      })
     }
   }
 
@@ -376,6 +398,9 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
   }
 
   function positionSubBox() {
+    // ADR-041: writing styles for a hidden overlay was needless style
+    // invalidation on every page scroll and body resize.
+    if (r.subBox.classList.contains('hidden')) return
     if (!subBoxAutoPosition) return
     const maxWidth = Math.max(220, window.innerWidth - 32)
     const video = document.querySelector('video')

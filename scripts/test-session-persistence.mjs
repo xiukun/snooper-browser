@@ -12,9 +12,10 @@ execFileSync('node_modules/.bin/esbuild', [entry, '--bundle', '--format=esm', `-
 const values = {}, snapshot = {}, messages = [], events = {}
 const listen = name => ({ addListener(fn) { events[name] = fn } })
 let rejectLocal = false, stopCount = 0
+let onLocalGet = null, onLocalSet = null
 const area = (store, local = false) => ({
-  async get(keys) { return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).filter(k => k in store).map(k => [k, structuredClone(store[k])])) },
-  async set(items) { if (local && rejectLocal) throw new Error('quota'); Object.assign(store, structuredClone(items)) },
+  async get(keys) { if (local) await onLocalGet?.(keys); return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).filter(k => k in store).map(k => [k, structuredClone(store[k])])) },
+  async set(items) { if (local && rejectLocal) throw new Error('quota'); Object.assign(store, structuredClone(items)); if (local) await onLocalSet?.(items) },
   async remove(keys) { for (const k of Array.isArray(keys) ? keys : [keys]) delete store[k] },
 })
 globalThis.chrome = {
@@ -73,5 +74,34 @@ rejectLocal = false
 await restarted.retrySessionTranscript(closing)
 await restarted.finishSessionTranscript(closing)
 assert.equal((await restarted.readTranscript(closing.transcriptId))[0].id, 'closed-line')
+// P2: hold a queued history read between the first append's index commit
+// and the session's final flush, then deliver another subtitle in that gap.
+const racing = restarted.createSession(3)
+racing.state = 'running'; racing.generation = 3
+await restarted.ensureTranscript(racing)
+const heldRead = Promise.withResolvers(), releaseRead = Promise.withResolvers()
+let historyRead
+onLocalSet = items => {
+  if (!items[mod.TRANSCRIPT_INDEX_KEY]?.some(r => r.id === racing.transcriptId && r.subtitleCount === 1)) return
+  onLocalSet = null
+  onLocalGet = async keys => {
+    if (!(Array.isArray(keys) ? keys : [keys]).includes(mod.TRANSCRIPT_INDEX_KEY)) return
+    onLocalGet = null
+    heldRead.resolve()
+    await releaseRead.promise
+  }
+  historyRead = restarted.listTranscripts()
+}
+const raceLine = id => ({ id, at: 1, endedAt: null, videoTime: null, source: id, target: id, latency: 0 })
+restarted.saveSessionSubtitle(racing, raceLine('race-first'))
+const attempt = restarted.retrySessionTranscript(racing)
+await heldRead.promise
+restarted.saveSessionSubtitle(racing, raceLine('race-during-flush'))
+releaseRead.resolve()
+await historyRead
+await attempt
+assert.equal(racing.pendingTranscriptLines.length, 0, 'final flush must recheck newly arrived session rows before reporting saved')
+assert.equal(racing.saveState.status, 'saved')
+assert.deepEqual((await restarted.readTranscript(racing.transcriptId)).map(l => l.id), ['race-first', 'race-during-flush'])
 rmSync(dir, { recursive: true, force: true })
 console.log('✅ session-persistence: bounded stop, error propagation, restart replay and retry without loss passed')

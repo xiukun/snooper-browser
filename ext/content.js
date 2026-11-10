@@ -5222,6 +5222,7 @@ ${context}`;
         subRows,
         subPlaceholder,
         subStatus,
+        subListening,
         streamingRow,
         streamingText,
         streamingSource,

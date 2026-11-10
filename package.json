@@ -21,6 +21,7 @@
     "test:video-clock": "node scripts/test-video-clock.mjs",
     "test:subtitle-order": "node scripts/test-subtitle-order.mjs",
     "test:video-presence": "node scripts/test-video-presence.mjs",
+    "test:content-refs": "node scripts/test-content-refs.mjs",
     "test:deep-link": "node scripts/test-deep-link.mjs",
     "test:markdown": "node scripts/test-markdown.mjs",
     "test:session-state": "node scripts/test-session-state.mjs",

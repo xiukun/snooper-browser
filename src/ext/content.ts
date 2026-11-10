@@ -359,6 +359,7 @@ import { isPresentableVideo } from '../lib/video-presence'
       subRows,
       subPlaceholder,
       subStatus,
+      subListening,
       streamingRow,
       streamingText,
       streamingSource,

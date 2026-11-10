@@ -6,10 +6,24 @@ var UnsupportedPageError = class extends Error {
     this.name = "UnsupportedPageError";
   }
 };
+var CONTENT_SCRIPT_FILE = "content.js";
+async function injectContentScriptFresh(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    func: () => {
+      delete globalThis.__rttsContentInstalled;
+    }
+  });
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: [CONTENT_SCRIPT_FILE]
+  });
+}
 function isUnsupportedTabUrl(url) {
   return /^(chrome|chrome-extension|edge|about|devtools|view-source|file):/i.test(url || "") || /^https?:\/\/(?:chromewebstore\.google\.com|chrome\.google\.com\/webstore)(?:\/|$)/i.test(url || "");
 }
-async function sendToPageWithInjection(tabId, message, tabUrl, { sendMessage, injectContentScript: injectContentScript2, collectResponse }) {
+async function sendToPageWithInjection(tabId, message, tabUrl, { sendMessage, injectContentScript, collectResponse }) {
   if (isUnsupportedTabUrl(tabUrl)) throw new UnsupportedPageError();
   try {
     const raw = await sendMessage(tabId, message);
@@ -20,7 +34,7 @@ async function sendToPageWithInjection(tabId, message, tabUrl, { sendMessage, in
     };
   } catch (firstError) {
     try {
-      await injectContentScript2(tabId);
+      await injectContentScript(tabId);
       const raw = await sendMessage(tabId, message);
       return {
         ok: true,
@@ -1021,24 +1035,10 @@ function resolveVideoTimeAt2(tabId, at) {
 }
 
 // src/ext/background/lifecycle.ts
-var CONTENT_SCRIPT_FILE = "content.js";
 var FS_BRIDGE_FILE = "fullscreen-bridge.js";
 function closeOffscreenAfterStop(stop) {
   void stop.catch(() => {
   }).then(() => maybeCloseOffscreen());
-}
-async function injectContentScript(tabId) {
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "ISOLATED",
-    func: () => {
-      delete globalThis.__rttsContentInstalled;
-    }
-  });
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: [CONTENT_SCRIPT_FILE]
-  });
 }
 function removeSession(tabId) {
   const s = sessions.get(tabId);
@@ -1102,7 +1102,7 @@ function registerLifecycleListeners() {
     void openToolbarForTab(tab.id, {
       tabUrl: tab.url,
       sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
-      injectContentScript
+      injectContentScript: injectContentScriptFresh
     }).catch((err) => {
       console.warn("[RTTS] toolbar unavailable:", err.message);
     });

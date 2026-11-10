@@ -4901,10 +4901,15 @@ ${context}`;
   (() => {
     const INSTALL_MARKER_KEY = "__rttsContentInstalled";
     if (shouldSkipContentInstall(window[INSTALL_MARKER_KEY])) return;
+    const INSTANCE_KEY = "__rttsContentInstance";
+    const instanceToken = {};
+    window[INSTANCE_KEY] = instanceToken;
+    const isLiveInstance = () => window[INSTANCE_KEY] === instanceToken;
     const HOST_ID = "rtts-extension-host";
-    let host = document.getElementById(HOST_ID);
-    if (host) host.remove();
-    host = document.createElement("div");
+    for (let stale = document.getElementById(HOST_ID); stale; stale = document.getElementById(HOST_ID)) {
+      stale.remove();
+    }
+    const host = document.createElement("div");
     host.id = HOST_ID;
     const shadow = host.attachShadow({ mode: "closed" });
     let session = {
@@ -4924,6 +4929,10 @@ ${context}`;
     let autoShowDismissed = false;
     let lastVideoProbeAt = 0;
     const AUTO_SHOW_PROBE_GAP_MS = 800;
+    let autoShown = false;
+    let autoShowUrl = "";
+    let autoHideTimer = null;
+    const AUTO_HIDE_PROBE_MS = 1500;
     function persistUiHidden() {
       try {
         localStorage.setItem(UI_HIDDEN_KEY, uiHidden ? "1" : "0");
@@ -4932,6 +4941,8 @@ ${context}`;
     }
     function ensureToolbarVisible() {
       hasBeenShownOnce = true;
+      autoShown = false;
+      stopAutoHideWatch();
       if (!uiHidden) return;
       uiHidden = false;
       persistUiHidden();
@@ -4964,12 +4975,40 @@ ${context}`;
       }
     }
     function maybeAutoShowForVideo() {
+      if (!isLiveInstance()) return;
       if (!uiHidden || autoShowDismissed) return;
       const now = Date.now();
       if (now - lastVideoProbeAt < AUTO_SHOW_PROBE_GAP_MS) return;
       lastVideoProbeAt = now;
       if (!hasPresentableVideo()) return;
       ensureToolbarVisible();
+      autoShown = true;
+      autoShowUrl = location.href;
+      startAutoHideWatch();
+    }
+    function startAutoHideWatch() {
+      if (autoHideTimer !== null) return;
+      autoHideTimer = setInterval(() => {
+        if (!isLiveInstance() || uiHidden || !autoShown) {
+          stopAutoHideWatch();
+          return;
+        }
+        if (session.state !== "idle") return;
+        if (location.href === autoShowUrl) return;
+        autoShowUrl = location.href;
+        if (hasPresentableVideo()) return;
+        uiHidden = true;
+        autoShown = false;
+        hasBeenShownOnce = false;
+        persistUiHidden();
+        applyUiHidden();
+        stopAutoHideWatch();
+      }, AUTO_HIDE_PROBE_MS);
+    }
+    function stopAutoHideWatch() {
+      if (autoHideTimer === null) return;
+      clearInterval(autoHideTimer);
+      autoHideTimer = null;
     }
     let demoInterval = null;
     let demoIndex = 0;
@@ -5467,6 +5506,8 @@ ${context}`;
     hideBtn.addEventListener("click", () => {
       uiHidden = true;
       autoShowDismissed = true;
+      autoShown = false;
+      stopAutoHideWatch();
       persistUiHidden();
       applyUiHidden();
       toast("\u5DE5\u5177\u5DF2\u5173\u95ED", "ok");
@@ -5474,12 +5515,15 @@ ${context}`;
     showBtn.addEventListener("click", () => {
       uiHidden = false;
       autoShowDismissed = false;
+      autoShown = false;
+      stopAutoHideWatch();
       hasBeenShownOnce = true;
       persistUiHidden();
       applyUiHidden();
       render();
     });
     window.addEventListener("message", (e) => {
+      if (!isLiveInstance()) return;
       if (!e.data || e.data.type !== "rtts:fullscreen") return;
       if (e.data.action === "enter" && (document.fullscreenElement || document.webkitFullscreenElement)) {
         const el = document.fullscreenElement || document.webkitFullscreenElement;
@@ -5500,6 +5544,7 @@ ${context}`;
       }
     });
     document.addEventListener("fullscreenchange", () => {
+      if (!isLiveInstance()) return;
       if (!document.fullscreenElement) {
         fsWarn.classList.add("hidden");
         setTimeout(positionSubBox, 300);
@@ -5608,6 +5653,7 @@ ${context}`;
       openNotes: () => openDrawer("notes")
     });
     document.addEventListener("keydown", (e) => {
+      if (!isLiveInstance()) return;
       if (e.key !== "Escape") return;
       setMenuOpen(false);
       if (!citePopover.hidden) {
@@ -5647,17 +5693,21 @@ ${context}`;
       focusObsidianKey: () => settingsPanel.focusObsidianKey()
     });
     document.addEventListener("visibilitychange", () => {
+      if (!isLiveInstance()) return;
       if (document.visibilityState === "visible") {
         syncSessionFromBackground().catch(() => {
         });
       }
     });
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (!isLiveInstance()) return;
       if (msg && msg.type === "TOGGLE_TOOLBAR") {
         hasBeenShownOnce = true;
         if (uiHidden) {
           uiHidden = false;
           autoShowDismissed = false;
+          autoShown = false;
+          stopAutoHideWatch();
           persistUiHidden();
           applyUiHidden();
           render();
@@ -5668,6 +5718,8 @@ ${context}`;
         } else {
           uiHidden = true;
           autoShowDismissed = true;
+          autoShown = false;
+          stopAutoHideWatch();
           persistUiHidden();
           applyUiHidden();
         }
@@ -5676,6 +5728,7 @@ ${context}`;
       }
       if (msg && msg.type === "OPEN_PAGE_SETTINGS") {
         openSettings();
+        sendResponse?.({ ok: true });
         return;
       }
       if (msg && msg.type === "SEEK_VIDEO") {
@@ -5699,6 +5752,7 @@ ${context}`;
     window[INSTALL_MARKER_KEY] = createContentInstallMarker();
     try {
       chrome.storage?.onChanged?.addListener((changes, area) => {
+        if (!isLiveInstance()) return;
         if (area !== "local" || !changes?.[NOTES_STORAGE_KEY]) return;
         const next = changes[NOTES_STORAGE_KEY].newValue;
         if (!Array.isArray(next)) return;
@@ -5724,6 +5778,7 @@ ${context}`;
       renderNotes();
       for (const type of ["loadedmetadata", "canplay", "play"]) {
         document.addEventListener(type, () => {
+          if (!isLiveInstance()) return;
           maybeAutoShowForVideo();
         }, true);
       }

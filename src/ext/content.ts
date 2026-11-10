@@ -44,17 +44,28 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
 /* ===== Note + Obsidian persistence: see ./content/notes-store, ./content/obsidian-config ===== */
 
 (() => {
-  // ADR-042: a marker left by a content script whose extension context died
+  // Reload recovery: a marker left by a content script whose extension context died
   // (extension reload/update) must not block this fresh initialization, or
   // the toolbar stays unreachable until the page is refreshed.
   const INSTALL_MARKER_KEY = '__rttsContentInstalled';
   if (shouldSkipContentInstall((window as any)[INSTALL_MARKER_KEY])) return;
 
-  const HOST_ID = 'rtts-extension-host';
-  let host = document.getElementById(HOST_ID);
-  if (host) host.remove();
+  // Re-injection can happen after an extension reload while an older copy is
+  // still in the page. Only the newest copy may act: older copies would
+  // otherwise answer the same message and toggle the toolbar twice.
+  const INSTANCE_KEY = '__rttsContentInstance';
+  const instanceToken = {};
+  (window as any)[INSTANCE_KEY] = instanceToken;
+  const isLiveInstance = () => (window as any)[INSTANCE_KEY] === instanceToken;
 
-  host = document.createElement('div');
+  const HOST_ID = 'rtts-extension-host';
+  // Remove every stale host, not just the first: repeated recoveries used to
+  // leave stacked toolbars that could not be closed.
+  for (let stale = document.getElementById(HOST_ID); stale; stale = document.getElementById(HOST_ID)) {
+    stale.remove();
+  }
+
+  const host = document.createElement('div');
   host.id = HOST_ID;
   const shadow = host.attachShadow({ mode: 'closed' });
 
@@ -85,6 +96,13 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
   let autoShowDismissed = false;
   let lastVideoProbeAt = 0;
   const AUTO_SHOW_PROBE_GAP_MS = 800;
+  /** True while the toolbar is visible only because ADR-041 auto-showed it. */
+  let autoShown = false;
+  /** URL that triggered the current auto-show (SPA navigation detector). */
+  let autoShowUrl = '';
+  /** Watches for the auto-shown toolbar's video disappearing (SPA nav). */
+  let autoHideTimer: ReturnType<typeof setInterval> | null = null;
+  const AUTO_HIDE_PROBE_MS = 1500;
 
   function persistUiHidden() {
     try { localStorage.setItem(UI_HIDDEN_KEY, uiHidden ? '1' : '0'); } catch { /* ignore */ }
@@ -93,6 +111,10 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
   /** Reveal the toolbar and sync every dependent surface (idempotent). */
   function ensureToolbarVisible() {
     hasBeenShownOnce = true;
+    // An explicit reveal (icon click, recording start) owns the toolbar now:
+    // the auto-hide watcher must not take it away.
+    autoShown = false;
+    stopAutoHideWatch();
     if (!uiHidden) return;
     uiHidden = false;
     persistUiHidden();
@@ -138,12 +160,52 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
   }
 
   function maybeAutoShowForVideo(): void {
+    if (!isLiveInstance()) return;
     if (!uiHidden || autoShowDismissed) return;
     const now = Date.now();
     if (now - lastVideoProbeAt < AUTO_SHOW_PROBE_GAP_MS) return;
     lastVideoProbeAt = now;
     if (!hasPresentableVideo()) return;
     ensureToolbarVisible();
+    autoShown = true;
+    autoShowUrl = location.href;
+    startAutoHideWatch();
+  }
+
+  /**
+   * An auto-shown toolbar must leave with its video. Without this, an SPA
+   * navigation (B 站 watch → home) keeps the same document and the toolbar
+   * stayed on a page that no longer has a player. Manual opens never reach
+   * here, so closing by hand is always respected.
+   */
+  function startAutoHideWatch(): void {
+    if (autoHideTimer !== null) return;
+    autoHideTimer = setInterval(() => {
+      if (!isLiveInstance() || uiHidden || !autoShown) {
+        stopAutoHideWatch();
+        return;
+      }
+      // Recording is an explicit reason to stay visible.
+      if (session.state !== 'idle') return;
+      // Only navigation makes an auto-shown toolbar stale. A scroll (player
+      // leaves the viewport, mini-player shrinks) must not hide it.
+      if (location.href === autoShowUrl) return;
+      autoShowUrl = location.href;
+      if (hasPresentableVideo()) return;
+      uiHidden = true;
+      autoShown = false;
+      // No reopen pill on a page that merely stopped having a player.
+      hasBeenShownOnce = false;
+      persistUiHidden();
+      applyUiHidden();
+      stopAutoHideWatch();
+    }, AUTO_HIDE_PROBE_MS);
+  }
+
+  function stopAutoHideWatch(): void {
+    if (autoHideTimer === null) return;
+    clearInterval(autoHideTimer);
+    autoHideTimer = null;
   }
 
   /* ===== Demo loop (data in ./content/demo) ===== */
@@ -628,6 +690,8 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     // ADR-041: it also silences video auto-show for the rest of this page.
     uiHidden = true;
     autoShowDismissed = true;
+    autoShown = false;
+    stopAutoHideWatch();
     persistUiHidden();
     applyUiHidden();
     toast('工具已关闭', 'ok');
@@ -635,6 +699,8 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
   showBtn.addEventListener('click', () => {
     uiHidden = false;
     autoShowDismissed = false;
+    autoShown = false;
+    stopAutoHideWatch();
     hasBeenShownOnce = true;
     persistUiHidden();
     applyUiHidden();
@@ -643,6 +709,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
 
   /* ===== Fullscreen ===== */
   window.addEventListener('message', (e) => {
+    if (!isLiveInstance()) return;
     if (!e.data || e.data.type !== 'rtts:fullscreen') return;
     if (e.data.action === 'enter' && (document.fullscreenElement || (document as any).webkitFullscreenElement)) {
       const el = document.fullscreenElement || (document as any).webkitFullscreenElement;
@@ -664,6 +731,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
   });
 
   document.addEventListener('fullscreenchange', () => {
+    if (!isLiveInstance()) return;
     if (!document.fullscreenElement) {
       fsWarn.classList.add('hidden');
       setTimeout(positionSubBox, 300);
@@ -787,6 +855,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
 
   // Notes pane (lives inside the unified drawer)
   document.addEventListener('keydown', (e) => {
+    if (!isLiveInstance()) return
     if (e.key !== 'Escape') return
     setMenuOpen(false)
     if (!citePopover.hidden) { setCiteOpen(false); return }
@@ -830,6 +899,7 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
 
   /* ===== Multi-tab: re-fetch session on visibility change ===== */
   document.addEventListener('visibilitychange', () => {
+    if (!isLiveInstance()) return;
     if (document.visibilityState === 'visible') {
       syncSessionFromBackground().catch(() => {});
     }
@@ -837,11 +907,14 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
 
   /* ===== Background push ===== */
   chrome.runtime.onMessage.addListener((msg: any, _sender: any, sendResponse: any) => {
+    if (!isLiveInstance()) return;
     if (msg && msg.type === 'TOGGLE_TOOLBAR') {
       hasBeenShownOnce = true;
       if (uiHidden) {
         uiHidden = false;
         autoShowDismissed = false;
+        autoShown = false;
+        stopAutoHideWatch();
         persistUiHidden();
         applyUiHidden();
         render();
@@ -852,6 +925,8 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
       } else {
         uiHidden = true;
         autoShowDismissed = true;
+        autoShown = false;
+        stopAutoHideWatch();
         persistUiHidden();
         applyUiHidden();
       }
@@ -864,6 +939,9 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
 
     if (msg && msg.type === 'OPEN_PAGE_SETTINGS') {
       openSettings();
+      // Acknowledge so the side panel's injection retry does not mistake a
+      // missing response for a missing content script (reload recovery).
+      sendResponse?.({ ok: true });
       return;
     }
 
@@ -895,13 +973,14 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
 
   // Mark the page as served only after the message listener exists: a script
   // that threw during construction stays retryable, and `alive()` lets a
-  // post-reload injection replace an orphaned instance (ADR-042).
+  // post-reload injection replace an orphaned instance (reload recovery).
   (window as any)[INSTALL_MARKER_KEY] = createContentInstallMarker();
 
   // The side panel owns the same notes array. Adopt external edits and
   // deletions so a later in-page note write cannot resurrect deleted notes.
   try {
     (chrome as any).storage?.onChanged?.addListener((changes: any, area: string) => {
+      if (!isLiveInstance()) return;
       if (area !== 'local' || !changes?.[NOTES_STORAGE_KEY]) return;
       const next = changes[NOTES_STORAGE_KEY].newValue;
       if (!Array.isArray(next)) return;
@@ -932,7 +1011,10 @@ import { shouldSkipContentInstall, createContentInstallMarker } from '../lib/con
     // ADR-041: a video page reveals the toolbar without an icon click; pages
     // without a presenter stay clean. Media events cover SPA navigations.
     for (const type of ['loadedmetadata', 'canplay', 'play'] as const) {
-      document.addEventListener(type, () => { maybeAutoShowForVideo(); }, true);
+      document.addEventListener(type, () => {
+        if (!isLiveInstance()) return;
+        maybeAutoShowForVideo();
+      }, true);
     }
     maybeAutoShowForVideo();
   })();

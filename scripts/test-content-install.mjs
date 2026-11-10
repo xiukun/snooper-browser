@@ -1,5 +1,5 @@
 /**
- * Tests for the content-script install marker (ADR-042).
+ * Tests for the content-script install marker (extension-reload recovery).
  *
  * A stale marker (left by a content script whose extension context died after
  * a reload) must allow re-injection; a live marker must still prevent two
@@ -8,7 +8,7 @@
  *   node scripts/test-content-install.mjs
  */
 import { execSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -53,6 +53,14 @@ check('non-function probe', shouldSkipContentInstall({ alive: true }), false)
 // Corrupt/foreign values must never block recovery.
 check('string marker', shouldSkipContentInstall('installed'), false)
 check('number marker', shouldSkipContentInstall(1), false)
+
+// The side panel and the toolbar path must not inject content.js directly:
+// a direct injection keeps the stale marker and re-creates the dead loop.
+const injectorSources = ['src/ext/background/lifecycle.ts', 'src/ext/sidepanel/panel.ts']
+const directInjectors = injectorSources.filter((file) =>
+  /files:\s*\[\s*'content\.js'\s*\]/.test(readFileSync(file, 'utf8')),
+)
+check('no direct content.js injection', directInjectors.join(', '), '')
 
 rmSync(outDir, { recursive: true, force: true })
 

@@ -37,7 +37,8 @@ import { createImageGen } from './content/image-gen'
 import { collectRefs } from './content/refs'
 import { DEMO_SUBTITLES } from './content/demo'
 import type { SessionState } from './content/types'
-import { createScreenshotCapturer } from './screenshot'
+import { createScreenshotCapturer, findBestVideoCandidate } from './screenshot'
+import { isPresentableVideo } from '../lib/video-presence'
 
 /* ===== Note + Obsidian persistence: see ./content/notes-store, ./content/obsidian-config ===== */
 
@@ -68,11 +69,18 @@ import { createScreenshotCapturer } from './screenshot'
 
   /* ===== Toolbar visibility (persisted) ===== */
   const UI_HIDDEN_KEY = 'snooper.ui-hidden.v1';
-  // Toolbar starts hidden on every page load. Users click the Chrome
-  // extension icon to toggle it. The show-pill (reopen affordance) appears
-  // only after the toolbar has been opened once and then closed.
+  // Toolbar starts hidden on every page load. It reveals itself once a real
+  // player is detected (ADR-041: hover previews and tiny embeds do not
+  // count), and users can always toggle it from the extension icon. The
+  // show-pill (reopen affordance) appears only after the toolbar has been
+  // opened once and then closed.
   let uiHidden = true;
   let hasBeenShownOnce = false;
+  // Closing the toolbar is an explicit "not on this page": auto-show must not
+  // resurrect it until the user opens it again from the icon.
+  let autoShowDismissed = false;
+  let lastVideoProbeAt = 0;
+  const AUTO_SHOW_PROBE_GAP_MS = 800;
 
   function persistUiHidden() {
     try { localStorage.setItem(UI_HIDDEN_KEY, uiHidden ? '1' : '0'); } catch { /* ignore */ }
@@ -104,6 +112,34 @@ import { createScreenshotCapturer } from './screenshot'
       const more = bar.querySelector('#rtts-more-btn');
       more?.setAttribute('aria-expanded', 'false');
     }
+  }
+
+  /* ===== Video-gated auto-show (ADR-041) ===== */
+  // The toolbar belongs on pages that actually host a player. `loadedmetadata`
+  // and `play` fire for SPA navigations (B 站 home → video) without observing
+  // the whole DOM; the probe is throttled because pages like YouTube fire
+  // `play` for every inline preview.
+  function hasPresentableVideo(): boolean {
+    try {
+      const candidate = findBestVideoCandidate();
+      if (!candidate) return false;
+      return isPresentableVideo(
+        { width: candidate.rect.w, height: candidate.rect.h },
+        { width: window.innerWidth, height: window.innerHeight },
+      );
+    } catch {
+      // Hostile pages can make layout queries throw; absence is not an error.
+      return false;
+    }
+  }
+
+  function maybeAutoShowForVideo(): void {
+    if (!uiHidden || autoShowDismissed) return;
+    const now = Date.now();
+    if (now - lastVideoProbeAt < AUTO_SHOW_PROBE_GAP_MS) return;
+    lastVideoProbeAt = now;
+    if (!hasPresentableVideo()) return;
+    ensureToolbarVisible();
   }
 
   /* ===== Demo loop (data in ./content/demo) ===== */
@@ -584,13 +620,16 @@ import { createScreenshotCapturer } from './screenshot'
   hideBtn.addEventListener('click', () => {
     // Closing is explicit and persists across subtitle updates/reloads: the
     // render loop must not resurrect the bar or the subtitle overlay.
+    // ADR-041: it also silences video auto-show for the rest of this page.
     uiHidden = true;
+    autoShowDismissed = true;
     persistUiHidden();
     applyUiHidden();
     toast('工具已关闭', 'ok');
   });
   showBtn.addEventListener('click', () => {
     uiHidden = false;
+    autoShowDismissed = false;
     hasBeenShownOnce = true;
     persistUiHidden();
     applyUiHidden();
@@ -797,6 +836,7 @@ import { createScreenshotCapturer } from './screenshot'
       hasBeenShownOnce = true;
       if (uiHidden) {
         uiHidden = false;
+        autoShowDismissed = false;
         persistUiHidden();
         applyUiHidden();
         render();
@@ -806,6 +846,7 @@ import { createScreenshotCapturer } from './screenshot'
         }
       } else {
         uiHidden = true;
+        autoShowDismissed = true;
         persistUiHidden();
         applyUiHidden();
       }
@@ -878,6 +919,12 @@ import { createScreenshotCapturer } from './screenshot'
     await syncSessionFromBackground();
     render();
     renderNotes();
+    // ADR-041: a video page reveals the toolbar without an icon click; pages
+    // without a presenter stay clean. Media events cover SPA navigations.
+    for (const type of ['loadedmetadata', 'canplay', 'play'] as const) {
+      document.addEventListener(type, () => { maybeAutoShowForVideo(); }, true);
+    }
+    maybeAutoShowForVideo();
   })();
 
   console.log('[snooper-browser] content script v0.6 loaded');

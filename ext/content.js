@@ -5069,6 +5069,7 @@ ${context}`;
       subRows,
       subPlaceholder,
       subStatus,
+      subListening,
       copyBtn,
       exportTxtBtn,
       exportMdBtn,

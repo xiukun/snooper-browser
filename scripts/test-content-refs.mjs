@@ -22,10 +22,10 @@ function read(relative) {
   return readFileSync(join(root, relative), 'utf8')
 }
 
-/** Keys declared by `export interface SubtitleViewRefs { ... }`. */
-function declaredRefs(source) {
-  const match = source.match(/interface\s+SubtitleViewRefs\s*\{([\s\S]*?)\n\}/)
-  if (!match) throw new Error('SubtitleViewRefs interface not found')
+/** Keys declared by an interface in a source file. */
+function declaredRefs(source, name) {
+  const match = source.match(new RegExp(`interface\\s+${name}\\s*\\{([\\s\\S]*?)\\n\\}`))
+  if (!match) throw new Error(`${name} interface not found`)
   return Object.keys(
     Object.fromEntries(
       [...match[1].matchAll(/^\s*([A-Za-z_$][\w$]*)\s*:/gm)].map((m) => [m[1], true]),
@@ -50,14 +50,32 @@ function wiredRefs(source) {
   )
 }
 
+/** Keys destructured from collectRefs(). */
+function destructuredRefs(source) {
+  const start = source.indexOf('} = collectRefs(shadow);')
+  if (start < 0) throw new Error('collectRefs destructuring not found')
+  const open = source.lastIndexOf('const {', start)
+  if (open < 0) throw new Error('collectRefs destructuring start not found')
+  const body = source.slice(open + 'const {'.length, start)
+  return Object.keys(
+    Object.fromEntries(
+      [...body.matchAll(/([A-Za-z_$][\w$]*)\s*,?/g)].map((m) => [m[1], true]),
+    ),
+  )
+}
+
 const viewSource = read('src/ext/content/subtitle-view.ts')
+const refsSource = read('src/ext/content/refs.ts')
 const contentSource = read('src/ext/content.ts')
 
-const declared = declaredRefs(viewSource)
+const declared = declaredRefs(viewSource, 'SubtitleViewRefs')
+const allRefs = declaredRefs(refsSource, 'ContentRefs')
 const wired = new Set(wiredRefs(contentSource))
+const destructured = new Set(destructuredRefs(contentSource))
 
-const missing = declared.filter((key) => !wired.has(key))
+const missing = declared.filter((key) => !wired.has(key) || !destructured.has(key))
 const extra = [...wired].filter((key) => !declared.includes(key))
+const notDestructured = allRefs.filter((key) => !destructured.has(key))
 
 let failed = 0
 if (missing.length > 0) {
@@ -70,9 +88,16 @@ if (extra.length > 0) {
   console.error(`✗ refs passed but not declared: ${extra.join(', ')}`)
   failed++
 }
+if (notDestructured.length > 0) {
+  // A ref that exists in ContentRefs and in the view but is never destructured
+  // from collectRefs() is a bare identifier: the bundle throws
+  // "subListening is not defined" and the whole content script dies.
+  console.error(`✗ refs declared but not destructured: ${notDestructured.join(', ')}`)
+  failed++
+}
 
 if (failed > 0) {
-  console.error(`\ncontent refs: ${missing.length + extra.length} problem(s)`)
+  console.error(`\ncontent refs: ${missing.length + extra.length + notDestructured.length} problem(s)`)
   process.exit(1)
 }
-console.log(`content refs: ${declared.length} declared, all wired`)
+console.log(`content refs: ${declared.length} subtitle refs wired, ${allRefs.length} refs destructured`)

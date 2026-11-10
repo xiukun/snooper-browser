@@ -4887,8 +4887,10 @@ ${context}`;
   function createContentInstallMarker() {
     return {
       alive: () => {
+        const runtime = globalThis.chrome?.runtime;
+        if (!runtime || typeof runtime.getManifest !== "function") return false;
         try {
-          chrome.runtime.getManifest();
+          runtime.getManifest();
           return true;
         } catch {
           return false;

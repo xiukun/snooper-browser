@@ -3,7 +3,7 @@
  * Uses esbuild via npx for fast, type-stripping compilation.
  */
 import { execSync } from 'node:child_process';
-import { cpSync, mkdirSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const entries = [
   // Background service worker – must be ESM (manifest "type": "module")
@@ -17,6 +17,18 @@ const entries = [
   // Side panel – loaded as regular script via index.html
   { in: 'src/ext/sidepanel/panel.ts', out: 'ext/sidepanel/panel.js', format: 'iife' },
 ];
+
+// Single version source: package.json. The manifest is tracked so the store
+// and the release workflow can read it without running this script, so the
+// build keeps it in lockstep instead of letting the two drift.
+const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+const manifestPath = 'ext/manifest.json';
+const manifestRaw = readFileSync(manifestPath, 'utf8');
+const manifestSynced = manifestRaw.replace(/(\"version\"\s*:\s*\")[^\"]*(\")/, `$1${version}$2`);
+if (manifestSynced !== manifestRaw) {
+  writeFileSync(manifestPath, manifestSynced);
+  console.log(`  ✅ manifest version → ${version}`);
+}
 
 console.log('🔨 Building extension...');
 

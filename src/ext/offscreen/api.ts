@@ -5,32 +5,23 @@
  * never sees API keys. All requests go straight to the configured provider.
  */
 
-import type { AppConfig, CapabilityKey } from '../../lib/providers'
-import { LANGUAGES } from '../../lib/models'
-import { buildTranscriptionFormData } from '../../lib/transcription-request'
+import type {
+  AppConfig,
+  CapabilityKey,
+  CapabilityRoute,
+  ProviderProfile,
+} from '../../lib/providers'
+import { resolveRoute } from '../../lib/providers'
+import { transcribeAudio as transcribeSegment } from '../../lib/moss'
+import { buildTranslationPrompt, cleanTranslation } from '../../lib/translation-prompt'
 import { streamSSE } from './audio'
-
-// Build LANG_NAMES from shared LANGUAGES (single source of truth)
-const LANG_NAMES: Record<string, string> = {}
-for (const lang of LANGUAGES) {
-  LANG_NAMES[lang.code] = lang.label
-}
 
 export function validateRoute(
   config: AppConfig,
   capability: CapabilityKey,
-): { provider: any; route: any } {
-  if (!config || !config.routes || !config.providers) {
-    throw new Error('配置缺失')
-  }
-  const route = config.routes[capability]
-  if (!route) throw new Error(`能力 "${capability}" 未配置路由`)
-  const provider = config.providers.find((p) => p.id === route.providerId)
-  if (!provider) throw new Error(`服务商 "${route.providerId}" 未找到`)
-  if (!provider.baseUrl) throw new Error(`服务商 "${provider.name}" 缺少 Base URL`)
-  if (!provider.apiKey) throw new Error(`服务商 "${provider.name}" 缺少 API Key`)
-  if (!route.model) throw new Error(`能力 "${capability}" 未选择模型`)
-  return { provider, route }
+): { provider: ProviderProfile; route: CapabilityRoute } {
+  const resolved = resolveRoute(config, capability)
+  return { provider: resolved.provider, route: config.routes[capability] }
 }
 
 async function apiFetch(url: string, options: RequestInit): Promise<any> {
@@ -70,35 +61,12 @@ export async function transcribeAudio(
   config: AppConfig,
   sourceLang: string,
 ): Promise<string> {
-  const { provider, route } = validateRoute(config, 'audio')
-  const form = buildTranscriptionFormData({
-    model: route.model,
-    file: wavBlob,
+  return transcribeSegment(wavBlob, {
+    config,
     sourceLang,
+    fileName: 'segment.wav',
+    timeoutMs: ASR_TIMEOUT_MS,
   })
-
-  const baseUrl = provider.baseUrl.replace(/\/+$/, '')
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), ASR_TIMEOUT_MS)
-  try {
-    const json = await apiFetch(`${baseUrl}/audio/transcriptions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${provider.apiKey}`,
-      },
-      body: form,
-      signal: controller.signal,
-    })
-
-    return (json.text || '').trim()
-  } catch (err: any) {
-    if (controller.signal.aborted) {
-      throw new Error('转写服务 15 秒未响应，已放弃该段')
-    }
-    throw err
-  } finally {
-    clearTimeout(timer)
-  }
 }
 
 /* ===== Translation ===== */
@@ -109,33 +77,6 @@ export interface TranslateOptions {
   config: AppConfig
   context?: string
   onDelta?: (delta: string) => void
-}
-
-function buildTranslatePrompt(options: TranslateOptions, text: string): string {
-  const source = LANG_NAMES[options.source || 'auto'] || '自动检测'
-  const target = LANG_NAMES[options.target || 'zh'] || '简体中文'
-  const contextBlock = options.context
-    ? `【上下文（最近的字幕）】\n${options.context}\n\n`
-    : ''
-
-  return [
-    `你是一名专业的同声传译员。源语言：${source}；目标语言：${target}。`,
-    '输入来自语音识别，可能有错字、漏字或断句错误。只翻译你看到的内容：不得补全、不得扩写、不得根据上下文编造未说出的信息。',
-    '碎片或语气词就译成碎片或语气词，不要改写成完整句子。',
-    '人名、地名、专有名词只使用上下文中出现过的写法；没有把握时音译，不得虚构。',
-    '只输出译文本身，不要解释、不要加引号、不要重复原文、不要输出标签或注释。',
-    '保持口语化、简洁、适合作为实时字幕显示。',
-    contextBlock ? `注意保持与上下文的连贯性，专有名词前后一致。\n${contextBlock}` : '',
-    '',
-    text,
-  ].filter(Boolean).join('\n')
-}
-
-function cleanTranslation(value: string): string {
-  return value
-    .trim()
-    .replace(/^["“「『]([\s\S]*)["”」』]$/, '$1')
-    .trim()
 }
 
 /**
@@ -159,7 +100,12 @@ export async function translateTextStream(
 
   const { onDelta } = options
   const { provider, route } = validateRoute(options.config, 'llm')
-  const promptText = buildTranslatePrompt(options, text)
+  const promptText = buildTranslationPrompt({
+    text,
+    source: options.source,
+    target: options.target,
+    context: options.context,
+  })
   const baseUrl = provider.baseUrl.replace(/\/+$/, '')
   const probeKey = `${baseUrl}::${route.model}`
   let fullTranslation = ''
@@ -254,7 +200,12 @@ async function translateTextSync(text: string, options: TranslateOptions): Promi
           content: [
             {
               type: 'text',
-              text: buildTranslatePrompt(options, text),
+              text: buildTranslationPrompt({
+                text,
+                source: options.source,
+                target: options.target,
+                context: options.context,
+              }),
             },
           ],
         },

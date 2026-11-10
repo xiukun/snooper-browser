@@ -6,6 +6,8 @@ import {
   loadProviderConfig,
   resolveRoute,
 } from './providers'
+import { buildTranscriptionFormData } from './transcription-request'
+import { buildTranslationPrompt, cleanTranslation } from './translation-prompt'
 import { sleep } from './utils'
 
 const STREAM_CAPABILITY_KEY = 'snooper.moss.stream-capability.v1'
@@ -308,33 +310,18 @@ export async function analyzeImages(options: AnalyzeImageOptions): Promise<strin
   })
 }
 
-const LANGUAGE_NAMES: Record<string, string> = {
-  auto: '自动检测',
-  zh: '简体中文',
-  en: '英语',
-  ja: '日语',
-  ko: '韩语',
-  fr: '法语',
-  de: '德语',
-  es: '西班牙语',
-  ru: '俄语',
-  ar: '阿拉伯语',
-  pt: '葡萄牙语',
-}
-
 export async function translateText(
   text: string,
   options: {
     source?: string
     target?: string
+    context?: string
     config?: AppConfig
     signal?: AbortSignal
     model?: string
   } = {},
 ): Promise<string> {
   const config = options.config ?? loadProviderConfig()
-  const target = LANGUAGE_NAMES[options.target ?? 'zh'] ?? '简体中文'
-  const source = LANGUAGE_NAMES[options.source ?? 'auto'] ?? '自动检测'
 
   const output = await completeChat({
     config,
@@ -349,46 +336,75 @@ export async function translateText(
         content: [
           {
             type: 'text',
-            text: [
-              `你是一名专业的同声传译员。源语言：${source}；目标语言：${target}。`,
-              '将下面的内容翻译为目标语言。只输出译文本身，不要解释、不要加引号、不要重复原文。',
-              '保持口语化、简洁、适合作为实时字幕显示。',
-              '',
+            text: buildTranslationPrompt({
               text,
-            ].join('\n'),
+              source: options.source,
+              target: options.target,
+              context: options.context,
+            }),
           },
         ],
       },
     ],
   })
 
-  return output
-    .trim()
-    .replace(/^["“「『]([\s\S]*)["”」』]$/, '$1')
-    .trim()
+  return cleanTranslation(output)
 }
 
 export async function transcribeAudio(
   blob: Blob,
-  options: { config?: AppConfig; signal?: AbortSignal; model?: string } = {},
+  options: {
+    config?: AppConfig
+    signal?: AbortSignal
+    model?: string
+    sourceLang?: string
+    fileName?: string
+    /** Abort the request when the provider stops responding. */
+    timeoutMs?: number
+  } = {},
 ): Promise<string> {
   const config = options.config ?? loadProviderConfig()
   const route = resolveRoute(config, 'audio', options.model)
-  const form = new FormData()
-  form.append('model', route.model)
-  form.append('file', blob, 'segment.webm')
-  form.append('response_format', 'json')
-
-  const res = await fetch(endpoint(route.baseUrl, '/audio/transcriptions'), {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${route.apiKey}` },
-    body: form,
-    signal: options.signal,
+  const form = buildTranscriptionFormData({
+    model: route.model,
+    file: blob,
+    sourceLang: options.sourceLang ?? 'auto',
+    fileName: options.fileName ?? 'segment.webm',
   })
 
-  if (!res.ok) throw await readError(res)
-  const payload = (await res.json()) as { text?: string }
-  return (payload.text ?? '').trim()
+  let controller: AbortController | null = null
+  let timedOut = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  if (options.timeoutMs) {
+    controller = new AbortController()
+    timer = setTimeout(() => {
+      timedOut = true
+      controller?.abort()
+    }, options.timeoutMs)
+    options.signal?.addEventListener('abort', () => controller?.abort(), { once: true })
+  }
+
+  try {
+    const res = await fetch(endpoint(route.baseUrl, '/audio/transcriptions'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${route.apiKey}` },
+      body: form,
+      signal: controller?.signal ?? options.signal,
+    })
+
+    if (!res.ok) throw await readError(res)
+    const payload = (await res.json()) as { text?: string }
+    return (payload.text ?? '').trim()
+  } catch (error) {
+    if (timedOut && options.timeoutMs) {
+      throw new MossError(
+        `转写服务 ${Math.round(options.timeoutMs / 1000)} 秒未响应，已放弃该段`,
+      )
+    }
+    throw error
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 /** Pull the model list for one provider profile (`GET /models`). */

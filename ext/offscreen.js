@@ -1,5 +1,112 @@
 (() => {
   // src/lib/models.ts
+  var MODEL_CATALOG = [
+    {
+      id: "moss-vl-1.0",
+      label: "MOSS VL 1.0",
+      kind: "chat",
+      blurb: "\u901A\u7528\u591A\u6A21\u6001\u7406\u89E3\uFF0C\u6587\u672C\u5BF9\u8BDD / \u7FFB\u8BD1 / OCR \u5168\u80FD",
+      badge: "\u63A8\u8350"
+    },
+    {
+      id: "moss-vl-realtime-1.0",
+      label: "MOSS VL Realtime",
+      kind: "vision",
+      blurb: "\u4F4E\u5EF6\u8FDF\u89C6\u9891\u5E27\u6D41\u5F0F\u7406\u89E3\uFF08WebSocket\uFF09"
+    },
+    {
+      id: "moss-transcribe-1.0",
+      label: "MOSS Transcribe",
+      kind: "audio",
+      blurb: "\u8BED\u97F3\u8F6C\u5199\uFF0C\u5B9E\u65F6\u5B57\u5E55\u7BA1\u7EBF\u6838\u5FC3"
+    },
+    {
+      id: "moss-transcribe-diarize-pro",
+      label: "Transcribe Diarize Pro",
+      kind: "audio",
+      blurb: "\u5E26\u8BF4\u8BDD\u4EBA\u5206\u79BB\u7684\u9AD8\u7CBE\u5EA6\u8F6C\u5199"
+    },
+    {
+      id: "moss-transcribe-diarize-flash-2026-09-02",
+      label: "Transcribe Diarize Flash",
+      kind: "audio",
+      blurb: "\u4F4E\u5EF6\u8FDF\u8BF4\u8BDD\u4EBA\u5206\u79BB\u8F6C\u5199"
+    },
+    {
+      id: "moss-tts-1.5-flash",
+      label: "MOSS TTS Flash",
+      kind: "speech",
+      blurb: "\u4F4E\u5EF6\u8FDF\u8BED\u97F3\u5408\u6210"
+    },
+    {
+      id: "moss-tts-1.0-pro",
+      label: "MOSS TTS Pro",
+      kind: "speech",
+      blurb: "\u9AD8\u81EA\u7136\u5EA6\u8BED\u97F3\u5408\u6210"
+    },
+    {
+      id: "moss-ttsd-1.0",
+      label: "MOSS TTSD",
+      kind: "speech",
+      blurb: "\u5BF9\u8BDD\u5F0F\u8BED\u97F3\u5408\u6210"
+    },
+    {
+      id: "moss-speech",
+      label: "MOSS Speech",
+      kind: "speech",
+      blurb: "\u8BED\u97F3\u7406\u89E3\u4E0E\u589E\u5F3A"
+    },
+    {
+      id: "moss-image-prompt-enhancer-1.0",
+      label: "Image Prompt Enhancer",
+      kind: "image",
+      blurb: "\u56FE\u50CF\u751F\u6210\u63D0\u793A\u8BCD\u589E\u5F3A"
+    },
+    {
+      id: "moss-image-sft-1.0",
+      label: "MOSS-Image SFT",
+      kind: "image",
+      blurb: "\u5B98\u65B9\u6587\u751F\u56FE\uFF0C\u4E2D\u82F1\u6587\u6587\u5B57\u6E32\u67D3/\u5E03\u5C40\u63A7\u5236\uFF0C\u9650\u65F6\u514D\u8D39",
+      badge: "\u514D\u8D39 \xB7 \u63A8\u8350"
+    },
+    {
+      id: "moss-image-base-1.0",
+      label: "MOSS-Image Base",
+      kind: "image",
+      blurb: "\u57FA\u7840\u6587\u751F\u56FE\u6A21\u578B\uFF0C\u9002\u5408\u98CE\u683C\u5316\u4E0E\u5FAE\u8C03\uFF0C\u9650\u65F6\u514D\u8D39",
+      badge: "\u514D\u8D39"
+    },
+    {
+      id: "moss-image-sft-1.0-2026-10-09",
+      label: "MOSS-Image SFT (\u5FEB\u7167)",
+      kind: "image",
+      blurb: "\u9501\u5B9A\u7248\u672C\u7684 SFT \u5FEB\u7167\uFF0C\u4FDD\u8BC1\u7ED3\u679C\u53EF\u590D\u73B0"
+    },
+    {
+      id: "moss-image-base-1.0-2026-10-09",
+      label: "MOSS-Image Base (\u5FEB\u7167)",
+      kind: "image",
+      blurb: "\u9501\u5B9A\u7248\u672C\u7684 Base \u5FEB\u7167\uFF0C\u4FDD\u8BC1\u7ED3\u679C\u53EF\u590D\u73B0"
+    },
+    {
+      id: "black-forest-labs/FLUX.1-schnell",
+      label: "FLUX.1-schnell",
+      kind: "image",
+      blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u6700\u5FEB\u5F00\u6E90\u751F\u56FE\uFF0C1-4\u6B65\u63A8\u7406\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
+    },
+    {
+      id: "stabilityai/stable-diffusion-3.5-medium",
+      label: "SD 3.5 Medium",
+      kind: "image",
+      blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u8D28\u91CF\u4E0E\u901F\u5EA6\u5747\u8861\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
+    },
+    {
+      id: "stabilityai/stable-diffusion-xl-base-1.0",
+      label: "SDXL 1.0",
+      kind: "image",
+      blurb: "\u7B2C\u4E09\u65B9\u4E2D\u8F6C\u6A21\u578B\uFF1A\u9AD8\u5206\u8FA8\u7387\u751F\u6210\uFF08\u975E MOSS \u5B98\u65B9\uFF09"
+    }
+  ];
   var SOURCE_LANGUAGES = [
     { code: "auto", label: "\u81EA\u52A8\u68C0\u6D4B", short: "AUTO" },
     { code: "zh", label: "\u7B80\u4F53\u4E2D\u6587", short: "ZH" },
@@ -21,15 +128,311 @@
     (target) => !SOURCE_LANGUAGES.some((source) => source.code === target.code)
   )];
 
+  // src/lib/utils.ts
+  function uid(prefix = "id") {
+    return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
+  }
+
+  // src/lib/brand.ts
+  var STORAGE_KEYS = {
+    activeView: "snooper.active-view.v1",
+    providerConfig: "snooper.provider-config.v1",
+    providerConfigSession: "snooper.provider-config.session.v1"
+  };
+
+  // src/lib/providers.ts
+  var import_meta = {};
+  var MODEL_SUGGESTIONS = {
+    llm: MODEL_CATALOG.filter((model) => model.kind === "chat" || model.kind === "vision").map(
+      (model) => model.id
+    ),
+    audio: MODEL_CATALOG.filter((model) => model.kind === "audio").map((model) => model.id),
+    video: ["moss-vl-realtime-1.0", "moss-vl-1.0"],
+    image: [
+      "moss-image-sft-1.0",
+      "moss-image-base-1.0",
+      "moss-image-sft-1.0-2026-10-09",
+      "moss-image-base-1.0-2026-10-09",
+      "black-forest-labs/FLUX.1-schnell",
+      "stabilityai/stable-diffusion-3.5-medium",
+      "stabilityai/stable-diffusion-xl-base-1.0"
+    ]
+  };
+  var CONFIG_KEY = STORAGE_KEYS.providerConfig;
+  var SESSION_CONFIG_KEY = STORAGE_KEYS.providerConfigSession;
+  var LEGACY_CONFIG_KEYS = ["snooper.moss.config.v1", "rtts.moss.config.v1"];
+  function parseStoredConfig(raw) {
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      const providers = Array.isArray(parsed.providers) && parsed.providers.length ? parsed.providers.map(normalizeProvider) : DEFAULT_CONFIG.providers.map(normalizeProvider);
+      return {
+        providers,
+        routes: {
+          llm: { ...DEFAULT_CONFIG.routes.llm, ...parsed.routes?.llm },
+          audio: { ...DEFAULT_CONFIG.routes.audio, ...parsed.routes?.audio },
+          video: { ...DEFAULT_CONFIG.routes.video, ...parsed.routes?.video },
+          image: { ...DEFAULT_CONFIG.routes.image, ...parsed.routes?.image }
+        }
+      };
+    } catch {
+      return null;
+    }
+  }
+  var env = import_meta.env;
+  var envKey = (env.VITE_MOSS_API_KEY ?? "").trim();
+  var envBaseUrl = (env.VITE_MOSS_BASE_URL ?? "https://api.mosi.cn/v1").trim();
+  function createProvider(partial = {}) {
+    return {
+      id: uid("provider"),
+      name: "\u65B0\u670D\u52A1\u5546",
+      baseUrl: "https://api.mosi.cn/v1",
+      apiKey: "",
+      protocol: "openai",
+      note: "",
+      models: [],
+      lastSyncedAt: null,
+      status: "unknown",
+      lastError: "",
+      ...partial
+    };
+  }
+  var DEFAULT_CONFIG = {
+    providers: [
+      {
+        id: "moss-official",
+        name: "MOSS \u5B98\u65B9",
+        baseUrl: envBaseUrl,
+        apiKey: envKey,
+        protocol: "moss",
+        note: "\u514D\u8D39\u591A\u6A21\u6001\u6A21\u578B\u77E9\u9635 \xB7 \u5B98\u65B9\u7F51\u5173",
+        models: [],
+        lastSyncedAt: null,
+        status: "unknown",
+        lastError: ""
+      }
+    ],
+    routes: {
+      llm: { providerId: "moss-official", model: "moss-vl-1.0" },
+      audio: { providerId: "moss-official", model: "moss-transcribe-1.0" },
+      video: { providerId: "moss-official", model: "moss-vl-realtime-1.0" },
+      image: { providerId: "moss-official", model: "moss-image-sft-1.0" }
+    }
+  };
+  function normalizeProvider(raw) {
+    return {
+      ...createProvider(),
+      ...raw,
+      models: Array.isArray(raw.models) ? raw.models.filter((model) => typeof model === "string") : [],
+      lastSyncedAt: typeof raw.lastSyncedAt === "number" ? raw.lastSyncedAt : null,
+      status: raw.status === "ok" || raw.status === "error" ? raw.status : "unknown",
+      lastError: typeof raw.lastError === "string" ? raw.lastError : ""
+    };
+  }
+  function fromLegacy(legacy) {
+    const provider = normalizeProvider({
+      id: "moss-official",
+      name: "MOSS \u5B98\u65B9",
+      baseUrl: legacy.baseUrl?.trim() || envBaseUrl,
+      apiKey: legacy.apiKey?.trim() || envKey,
+      protocol: "moss",
+      note: "\u4ECE\u65E7\u7248\u5355\u7F51\u5173\u914D\u7F6E\u8FC1\u79FB",
+      status: "unknown"
+    });
+    return {
+      providers: [provider],
+      routes: {
+        llm: { providerId: provider.id, model: legacy.chatModel || legacy.visionModel || "moss-vl-1.0" },
+        audio: { providerId: provider.id, model: legacy.transcribeModel || "moss-transcribe-1.0" },
+        video: { providerId: provider.id, model: legacy.realtimeModel || "moss-vl-realtime-1.0" },
+        image: { providerId: provider.id, model: "moss-image-sft-1.0" }
+      }
+    };
+  }
+  function loadProviderConfig() {
+    try {
+      const sessionRaw = sessionStorage.getItem(SESSION_CONFIG_KEY);
+      const session = parseStoredConfig(sessionRaw);
+      if (session) return session;
+      const raw = localStorage.getItem(CONFIG_KEY);
+      if (raw) {
+        const parsed = parseStoredConfig(raw);
+        if (parsed) {
+          try {
+            sessionStorage.setItem(SESSION_CONFIG_KEY, JSON.stringify(parsed));
+          } catch {
+          }
+          return parsed;
+        }
+      }
+      for (const key of LEGACY_CONFIG_KEYS) {
+        const legacyRaw = localStorage.getItem(key);
+        if (legacyRaw) return fromLegacy(JSON.parse(legacyRaw));
+      }
+    } catch {
+    }
+    return {
+      providers: DEFAULT_CONFIG.providers.map(normalizeProvider),
+      routes: {
+        llm: { ...DEFAULT_CONFIG.routes.llm },
+        audio: { ...DEFAULT_CONFIG.routes.audio },
+        video: { ...DEFAULT_CONFIG.routes.video },
+        image: { ...DEFAULT_CONFIG.routes.image }
+      }
+    };
+  }
+  function getProvider(config, providerId) {
+    return config.providers.find((provider) => provider.id === providerId);
+  }
+  function resolveRoute(config, capability, modelOverride) {
+    const route = config.routes[capability] ?? DEFAULT_CONFIG.routes[capability];
+    const provider = getProvider(config, route.providerId);
+    if (!provider) {
+      if (config.providers.length === 0) {
+        throw new Error("\u5C1A\u672A\u914D\u7F6E\u4EFB\u4F55\u670D\u52A1\u5546\uFF0C\u8BF7\u5148\u5728\u300C\u80FD\u529B\u8BBE\u7F6E\u300D\u4E2D\u6DFB\u52A0\u3002");
+      }
+      throw new Error(`\u80FD\u529B\u300C${capability}\u300D\u7ED1\u5B9A\u7684\u670D\u52A1\u5546\u4E0D\u5B58\u5728\u6216\u5DF2\u88AB\u5220\u9664\uFF0C\u8BF7\u5728\u300C\u80FD\u529B\u8BBE\u7F6E\u300D\u4E2D\u91CD\u65B0\u9009\u62E9\u3002`);
+    }
+    const baseUrl = provider.baseUrl.trim();
+    const apiKey = provider.apiKey.trim();
+    if (!baseUrl) throw new Error(`\u670D\u52A1\u5546\u300C${provider.name}\u300D\u7F3A\u5C11 Base URL\u3002`);
+    if (!apiKey) throw new Error(`\u670D\u52A1\u5546\u300C${provider.name}\u300D\u7F3A\u5C11 API Key\u3002`);
+    const model = (modelOverride || route.model || "").trim();
+    if (!model) throw new Error(`\u80FD\u529B\u300C${capability}\u300D\u5C1A\u672A\u9009\u62E9\u6A21\u578B\u3002`);
+    return {
+      provider,
+      providerId: provider.id,
+      baseUrl,
+      apiKey,
+      model,
+      protocol: provider.protocol
+    };
+  }
+
   // src/lib/transcription-request.ts
   function buildTranscriptionFormData(input) {
     const form = new FormData();
     form.append("model", input.model);
-    form.append("file", input.file, "segment.wav");
+    form.append("file", input.file, input.fileName ?? "segment.wav");
     form.append("response_format", "json");
     form.append("temperature", "0");
     if (input.sourceLang !== "auto") form.append("language", input.sourceLang);
     return form;
+  }
+
+  // src/lib/translation-prompt.ts
+  var LANGUAGE_NAMES = {
+    auto: "\u81EA\u52A8\u68C0\u6D4B",
+    zh: "\u7B80\u4F53\u4E2D\u6587",
+    en: "\u82F1\u8BED",
+    ja: "\u65E5\u8BED",
+    ko: "\u97E9\u8BED",
+    fr: "\u6CD5\u8BED",
+    de: "\u5FB7\u8BED",
+    es: "\u897F\u73ED\u7259\u8BED",
+    ru: "\u4FC4\u8BED",
+    ar: "\u963F\u62C9\u4F2F\u8BED",
+    pt: "\u8461\u8404\u7259\u8BED"
+  };
+  function translationLanguageName(code, fallback) {
+    if (!code) return fallback;
+    return LANGUAGE_NAMES[code] ?? fallback;
+  }
+  function buildTranslationPrompt(input) {
+    const source = translationLanguageName(input.source, "\u81EA\u52A8\u68C0\u6D4B");
+    const target = translationLanguageName(input.target, "\u7B80\u4F53\u4E2D\u6587");
+    const contextBlock = input.context ? `\u3010\u4E0A\u4E0B\u6587\uFF08\u6700\u8FD1\u7684\u5B57\u5E55\uFF09\u3011
+${input.context}
+` : "";
+    return [
+      `\u4F60\u662F\u4E00\u540D\u4E13\u4E1A\u7684\u540C\u58F0\u4F20\u8BD1\u5458\u3002\u6E90\u8BED\u8A00\uFF1A${source}\uFF1B\u76EE\u6807\u8BED\u8A00\uFF1A${target}\u3002`,
+      "\u8F93\u5165\u6765\u81EA\u8BED\u97F3\u8BC6\u522B\uFF0C\u53EF\u80FD\u6709\u9519\u5B57\u3001\u6F0F\u5B57\u6216\u65AD\u53E5\u9519\u8BEF\u3002\u53EA\u7FFB\u8BD1\u4F60\u770B\u5230\u7684\u5185\u5BB9\uFF1A\u4E0D\u5F97\u8865\u5168\u3001\u4E0D\u5F97\u6269\u5199\u3001\u4E0D\u5F97\u6839\u636E\u4E0A\u4E0B\u6587\u7F16\u9020\u672A\u8BF4\u51FA\u7684\u4FE1\u606F\u3002",
+      "\u788E\u7247\u6216\u8BED\u6C14\u8BCD\u5C31\u8BD1\u6210\u788E\u7247\u6216\u8BED\u6C14\u8BCD\uFF0C\u4E0D\u8981\u6539\u5199\u6210\u5B8C\u6574\u53E5\u5B50\u3002",
+      "\u4EBA\u540D\u3001\u5730\u540D\u3001\u4E13\u6709\u540D\u8BCD\u53EA\u4F7F\u7528\u4E0A\u4E0B\u6587\u4E2D\u51FA\u73B0\u8FC7\u7684\u5199\u6CD5\uFF1B\u6CA1\u6709\u628A\u63E1\u65F6\u97F3\u8BD1\uFF0C\u4E0D\u5F97\u865A\u6784\u3002",
+      "\u53EA\u8F93\u51FA\u8BD1\u6587\u672C\u8EAB\uFF0C\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981\u52A0\u5F15\u53F7\u3001\u4E0D\u8981\u91CD\u590D\u539F\u6587\u3001\u4E0D\u8981\u8F93\u51FA\u6807\u7B7E\u6216\u6CE8\u91CA\u3002",
+      "\u4FDD\u6301\u53E3\u8BED\u5316\u3001\u7B80\u6D01\u3001\u9002\u5408\u4F5C\u4E3A\u5B9E\u65F6\u5B57\u5E55\u663E\u793A\u3002",
+      contextBlock ? `\u6CE8\u610F\u4FDD\u6301\u4E0E\u4E0A\u4E0B\u6587\u7684\u8FDE\u8D2F\u6027\uFF0C\u4E13\u6709\u540D\u8BCD\u524D\u540E\u4E00\u81F4\u3002
+${contextBlock}` : "",
+      "",
+      input.text
+    ].filter(Boolean).join("\n");
+  }
+  function cleanTranslation(value) {
+    return value.trim().replace(/^["“「『]([\s\S]*)["”」』]$/, "$1").trim();
+  }
+
+  // src/lib/moss.ts
+  var MossError = class extends Error {
+    status;
+    code;
+    constructor(message, status = 0, code) {
+      super(message);
+      this.name = "MossError";
+      this.status = status;
+      this.code = code;
+    }
+  };
+  function endpoint(baseUrl, path) {
+    return `${baseUrl.replace(/\/+$/, "")}${path}`;
+  }
+  async function readError(res) {
+    let message = `\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${res.status}\uFF09`;
+    let code;
+    try {
+      const text = await res.text();
+      if (text) {
+        try {
+          const json = JSON.parse(text);
+          message = json.error?.message ?? json.message ?? text.slice(0, 240);
+          code = json.error?.code;
+        } catch {
+          message = text.slice(0, 240);
+        }
+      }
+    } catch {
+    }
+    return new MossError(message, res.status, code);
+  }
+  async function transcribeAudio(blob, options = {}) {
+    const config = options.config ?? loadProviderConfig();
+    const route = resolveRoute(config, "audio", options.model);
+    const form = buildTranscriptionFormData({
+      model: route.model,
+      file: blob,
+      sourceLang: options.sourceLang ?? "auto",
+      fileName: options.fileName ?? "segment.webm"
+    });
+    let controller = null;
+    let timedOut = false;
+    let timer;
+    if (options.timeoutMs) {
+      controller = new AbortController();
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller?.abort();
+      }, options.timeoutMs);
+      options.signal?.addEventListener("abort", () => controller?.abort(), { once: true });
+    }
+    try {
+      const res = await fetch(endpoint(route.baseUrl, "/audio/transcriptions"), {
+        method: "POST",
+        headers: { Authorization: `Bearer ${route.apiKey}` },
+        body: form,
+        signal: controller?.signal ?? options.signal
+      });
+      if (!res.ok) throw await readError(res);
+      const payload = await res.json();
+      return (payload.text ?? "").trim();
+    } catch (error) {
+      if (timedOut && options.timeoutMs) {
+        throw new MossError(
+          `\u8F6C\u5199\u670D\u52A1 ${Math.round(options.timeoutMs / 1e3)} \u79D2\u672A\u54CD\u5E94\uFF0C\u5DF2\u653E\u5F03\u8BE5\u6BB5`
+        );
+      }
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   // src/ext/offscreen/audio.ts
@@ -226,22 +629,9 @@
   }
 
   // src/ext/offscreen/api.ts
-  var LANG_NAMES = {};
-  for (const lang of LANGUAGES) {
-    LANG_NAMES[lang.code] = lang.label;
-  }
   function validateRoute(config, capability) {
-    if (!config || !config.routes || !config.providers) {
-      throw new Error("\u914D\u7F6E\u7F3A\u5931");
-    }
-    const route = config.routes[capability];
-    if (!route) throw new Error(`\u80FD\u529B "${capability}" \u672A\u914D\u7F6E\u8DEF\u7531`);
-    const provider = config.providers.find((p) => p.id === route.providerId);
-    if (!provider) throw new Error(`\u670D\u52A1\u5546 "${route.providerId}" \u672A\u627E\u5230`);
-    if (!provider.baseUrl) throw new Error(`\u670D\u52A1\u5546 "${provider.name}" \u7F3A\u5C11 Base URL`);
-    if (!provider.apiKey) throw new Error(`\u670D\u52A1\u5546 "${provider.name}" \u7F3A\u5C11 API Key`);
-    if (!route.model) throw new Error(`\u80FD\u529B "${capability}" \u672A\u9009\u62E9\u6A21\u578B`);
-    return { provider, route };
+    const resolved = resolveRoute(config, capability);
+    return { provider: resolved.provider, route: config.routes[capability] };
   }
   async function apiFetch(url, options) {
     const res = await fetch(url, options);
@@ -264,64 +654,25 @@
     return res.json();
   }
   var ASR_TIMEOUT_MS = 15e3;
-  async function transcribeAudio(wavBlob, config, sourceLang) {
-    const { provider, route } = validateRoute(config, "audio");
-    const form = buildTranscriptionFormData({
-      model: route.model,
-      file: wavBlob,
-      sourceLang
+  async function transcribeAudio2(wavBlob, config, sourceLang) {
+    return transcribeAudio(wavBlob, {
+      config,
+      sourceLang,
+      fileName: "segment.wav",
+      timeoutMs: ASR_TIMEOUT_MS
     });
-    const baseUrl = provider.baseUrl.replace(/\/+$/, "");
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ASR_TIMEOUT_MS);
-    try {
-      const json = await apiFetch(`${baseUrl}/audio/transcriptions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${provider.apiKey}`
-        },
-        body: form,
-        signal: controller.signal
-      });
-      return (json.text || "").trim();
-    } catch (err) {
-      if (controller.signal.aborted) {
-        throw new Error("\u8F6C\u5199\u670D\u52A1 15 \u79D2\u672A\u54CD\u5E94\uFF0C\u5DF2\u653E\u5F03\u8BE5\u6BB5");
-      }
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  function buildTranslatePrompt(options, text) {
-    const source = LANG_NAMES[options.source || "auto"] || "\u81EA\u52A8\u68C0\u6D4B";
-    const target = LANG_NAMES[options.target || "zh"] || "\u7B80\u4F53\u4E2D\u6587";
-    const contextBlock = options.context ? `\u3010\u4E0A\u4E0B\u6587\uFF08\u6700\u8FD1\u7684\u5B57\u5E55\uFF09\u3011
-${options.context}
-
-` : "";
-    return [
-      `\u4F60\u662F\u4E00\u540D\u4E13\u4E1A\u7684\u540C\u58F0\u4F20\u8BD1\u5458\u3002\u6E90\u8BED\u8A00\uFF1A${source}\uFF1B\u76EE\u6807\u8BED\u8A00\uFF1A${target}\u3002`,
-      "\u8F93\u5165\u6765\u81EA\u8BED\u97F3\u8BC6\u522B\uFF0C\u53EF\u80FD\u6709\u9519\u5B57\u3001\u6F0F\u5B57\u6216\u65AD\u53E5\u9519\u8BEF\u3002\u53EA\u7FFB\u8BD1\u4F60\u770B\u5230\u7684\u5185\u5BB9\uFF1A\u4E0D\u5F97\u8865\u5168\u3001\u4E0D\u5F97\u6269\u5199\u3001\u4E0D\u5F97\u6839\u636E\u4E0A\u4E0B\u6587\u7F16\u9020\u672A\u8BF4\u51FA\u7684\u4FE1\u606F\u3002",
-      "\u788E\u7247\u6216\u8BED\u6C14\u8BCD\u5C31\u8BD1\u6210\u788E\u7247\u6216\u8BED\u6C14\u8BCD\uFF0C\u4E0D\u8981\u6539\u5199\u6210\u5B8C\u6574\u53E5\u5B50\u3002",
-      "\u4EBA\u540D\u3001\u5730\u540D\u3001\u4E13\u6709\u540D\u8BCD\u53EA\u4F7F\u7528\u4E0A\u4E0B\u6587\u4E2D\u51FA\u73B0\u8FC7\u7684\u5199\u6CD5\uFF1B\u6CA1\u6709\u628A\u63E1\u65F6\u97F3\u8BD1\uFF0C\u4E0D\u5F97\u865A\u6784\u3002",
-      "\u53EA\u8F93\u51FA\u8BD1\u6587\u672C\u8EAB\uFF0C\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981\u52A0\u5F15\u53F7\u3001\u4E0D\u8981\u91CD\u590D\u539F\u6587\u3001\u4E0D\u8981\u8F93\u51FA\u6807\u7B7E\u6216\u6CE8\u91CA\u3002",
-      "\u4FDD\u6301\u53E3\u8BED\u5316\u3001\u7B80\u6D01\u3001\u9002\u5408\u4F5C\u4E3A\u5B9E\u65F6\u5B57\u5E55\u663E\u793A\u3002",
-      contextBlock ? `\u6CE8\u610F\u4FDD\u6301\u4E0E\u4E0A\u4E0B\u6587\u7684\u8FDE\u8D2F\u6027\uFF0C\u4E13\u6709\u540D\u8BCD\u524D\u540E\u4E00\u81F4\u3002
-${contextBlock}` : "",
-      "",
-      text
-    ].filter(Boolean).join("\n");
-  }
-  function cleanTranslation(value) {
-    return value.trim().replace(/^["“「『]([\s\S]*)["”」』]$/, "$1").trim();
   }
   var streamCapabilityCache = /* @__PURE__ */ new Map();
   async function translateTextStream(text, options) {
     if (!text) return "";
     const { onDelta } = options;
     const { provider, route } = validateRoute(options.config, "llm");
-    const promptText = buildTranslatePrompt(options, text);
+    const promptText = buildTranslationPrompt({
+      text,
+      source: options.source,
+      target: options.target,
+      context: options.context
+    });
     const baseUrl = provider.baseUrl.replace(/\/+$/, "");
     const probeKey = `${baseUrl}::${route.model}`;
     let fullTranslation = "";
@@ -406,7 +757,12 @@ ${contextBlock}` : "",
             content: [
               {
                 type: "text",
-                text: buildTranslatePrompt(options, text)
+                text: buildTranslationPrompt({
+                  text,
+                  source: options.source,
+                  target: options.target,
+                  context: options.context
+                })
               }
             ]
           }
@@ -1387,7 +1743,7 @@ ${question}`
     try {
       const wavBlob = createWavBlob(pcmData, TARGET_SAMPLE_RATE);
       const t0 = performance.now();
-      const transcription = await transcribeAudio(wavBlob, session.config, session.sourceLang);
+      const transcription = await transcribeAudio2(wavBlob, session.config, session.sourceLang);
       if (session.aborted) return;
       if (!transcription) return;
       const asrMs = Math.round(performance.now() - t0);

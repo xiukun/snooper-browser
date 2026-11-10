@@ -1,7 +1,7 @@
 {
   "name": "snooper-browser",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.8.1",
   "type": "module",
   "description": "Open-source multimodal workspace for real-time translation, conversations and visual understanding.",
   "license": "Apache-2.0",

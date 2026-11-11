@@ -6,7 +6,7 @@ import { legacySourceRef } from '../../lib/video-key'
 import { withLibraryOperation } from './library-queue'
 import { notesUnderLibraryLock } from './notes-store'
 import { deleteTranscripts, getTranscriptRecord, listTranscripts, readTranscriptPage, type TranscriptLine, type TranscriptRecord } from './transcript-store'
-import { sessions, allSourceSessions } from './session-store'
+import { sessions, allSourceSessions, detachDeletedTranscript, persistSessionsStrict, pushSession, type DeletedTranscriptBinding, type SessionState } from './session-store'
 import { openSource, type OpenSourceResult } from './source-opening'
 
 export const FAVORITES_KEY = 'snooper.library.favorites.v1'
@@ -20,7 +20,7 @@ interface Preview {
   signature: string
   expiresAt: number
 }
-interface DeleteOperation extends DeleteResult { targets: DeleteTarget[]; createdAt: number }
+interface DeleteOperation extends DeleteResult { targets: DeleteTarget[]; createdAt: number; transcriptBindings?: DeletedTranscriptBinding[] }
 export class LibraryError extends Error {
   constructor(public code: string, message: string) { super(message) }
 }
@@ -148,6 +148,27 @@ async function saveOperation(operation: DeleteOperation): Promise<void> {
   const all=await operations()
   await chrome.storage.local.set({[DELETIONS_KEY]:[...all.filter(o=>o.operationId!==operation.operationId),operation]})
 }
+async function reconcileDeletedOwners(operation: DeleteOperation, owners: SessionState[]): Promise<void> {
+  let changed = false
+  for (const binding of operation.transcriptBindings || []) {
+    // Authorization alone is insufficient: a failed body delete must retain
+    // its projection. The journal survives body/snapshot/worker boundaries.
+    if (!operation.targets.some(target => target.kind === 'transcript' && target.recordId === binding.recordId)) continue
+    const candidates = owners.filter(owner => allSourceSessions(owner).some(epoch => epoch.transcriptId === binding.recordId))
+    if (!candidates.length) continue
+    if (await getTranscriptRecord(binding.recordId)) continue
+    for (const owner of candidates) {
+      if (detachDeletedTranscript(owner, binding)) { changed = true; pushSession(owner.tabId) }
+    }
+  }
+  if (changed) await persistSessionsStrict()
+}
+/** Recovery calls this after installing the snapshot, before ownership checks. */
+export function reconcileDeletedTranscriptOwners(owner: SessionState): Promise<void> {
+  return withLibraryOperation(async () => {
+    for (const operation of await operations()) await reconcileDeletedOwners(operation, [owner])
+  })
+}
 async function execute(operation: DeleteOperation): Promise<DeleteResult> {
   for(const target of [...operation.pending.map(p=>p.target)]) {
     try {
@@ -160,6 +181,7 @@ async function execute(operation: DeleteOperation): Promise<DeleteResult> {
       // the body again and cannot turn a dangling favorite into available text.
       const favorites=await favoritesUnderLibraryLock()
       await chrome.storage.local.set({[FAVORITES_KEY]:favorites.filter(f=>!affected(f.ref,target))})
+      if (target.kind === 'transcript') await reconcileDeletedOwners(operation, [...sessions.values()])
       operation.pending=operation.pending.filter(p=>JSON.stringify(p.target)!==JSON.stringify(target))
       operation.completed.push(target)
     } catch(error) {
@@ -185,6 +207,12 @@ export function confirmDelete(token: string): Promise<DeleteResult> {
     if(!saved || saved.expiresAt<Date.now()) throw new LibraryError('CONFIRMATION_STALE','删除确认已过期，请重新确认')
     if((await preview(saved.selection)).signature!==saved.signature) throw new LibraryError('CONFIRMATION_STALE','资料或收藏已变化，请重新确认删除范围')
     const operation: DeleteOperation={operationId:token,targets:saved.targets,createdAt:Date.now(),completed:[],pending:saved.targets.map(target=>({target,error:''})),skipped:saved.skipped}
+    operation.transcriptBindings = []
+    for (const target of operation.targets) {
+      if (target.kind !== 'transcript') continue
+      const record = await getTranscriptRecord(target.recordId)
+      if (record?.sourceEpoch && record.sourceRef) operation.transcriptBindings.push({ recordId: record.id, tabId: record.tabId, sourceEpoch: record.sourceEpoch, sourceKey: record.sourceRef.key })
+    }
     // Write authorization BEFORE any body changes. Recovery never re-expands IDs.
     await saveOperation(operation)
     await chrome.storage.session.remove(PREVIEW_PREFIX+token)

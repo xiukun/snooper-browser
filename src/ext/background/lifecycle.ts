@@ -5,9 +5,8 @@
  * (ADR-031) before dropping the in-memory session. Finalization is
  * idempotent, so navigation racing a tab close is harmless.
  *
- * Explicit stop also waits (bounded) for the segment already in ASR so the
- * last line of a session is not dropped. That drain is only available on the
- * explicit STOP path, because a destroyed document cannot wait for itself.
+ * Explicit/bounded STOP and tab close share the in-flight tail/finalization
+ * attempt, so teardown cannot race ahead of an already acknowledged stop.
  */
 
 import { injectContentScriptFresh, openToolbarForTab } from '../action-flow'
@@ -21,6 +20,7 @@ import {
   pushSession,
   reconcileSessionState,
   sessions,
+  stopSessionCapture,
 } from './session-store'
 import { resetVideoClock } from './video-clock'
 
@@ -39,14 +39,13 @@ function removeSession(tabId: number): void {
   const s = sessions.get(tabId)
   resetVideoClock(tabId)
   if (s) {
-    const stop = sendToOffscreen({ type: 'STOP_CAPTURE', tabId, generation: s.generation }).catch(() => {})
+    const stop = stopSessionCapture(s)
+    const endingGeneration = s.generation
     // Each subtitle is already on disk; finalization closes the record and
     // keeps the prefix readable. Recovery repeats this if the worker dies.
     closeOffscreenAfterStop(stop)
-    s.state = 'idle'
-    s.configSnapshot = null
-    s.streamId = ''
-    void finishSessionTranscript(s).then(() => {
+    void stop.then(() => {
+      if (sessions.get(tabId) !== s || s.generation !== endingGeneration) return
       sessions.delete(tabId)
       persistSessions()
     }).catch(() => { /* Retain failed drafts for sidepanel retry/export. */ })

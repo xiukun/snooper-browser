@@ -66,6 +66,7 @@ jobs:
           npm run test:ext-globals
           npm run test:notes-store
           npm run test:session-persistence
+          npm run test:course-lifecycle
           npm run test:transcript-export
           npm run test:source-identity
           npm run test:source-transition

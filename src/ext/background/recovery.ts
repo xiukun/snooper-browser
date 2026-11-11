@@ -1,4 +1,4 @@
-import { recoverLibraryDeletions } from './library-store'
+import { recoverLibraryDeletions, reconcileDeletedTranscriptOwners } from './library-store'
 import { drainSource, failSourceBinding } from './source-sessions'
 import { getTranscriptRecord } from './transcript-store'
 import { allSourceSessions, validateSessionTranscriptOwnership } from './session-store'
@@ -63,6 +63,9 @@ export async function recoverSessions(): Promise<void> {
       return allSourceSessions(s).flatMap(epoch => epoch.pendingTranscriptLines?.length && epoch.transcriptId ? [epoch.transcriptId] : [])
     })).catch(error => { recoveryError = error; return new Map<number, string>() })
 
+    // Any strict deletion reconciliation snapshot must include every owner,
+    // including tabs not yet visited by the validation loop below.
+    for (const [tab, stored] of Object.entries(recovered)) sessions.set(Number(tab), stored as SessionState)
     for (const [tabIdStr, stored] of Object.entries(recovered)) {
       const tabId = Number(tabIdStr)
       const s = stored as SessionState
@@ -93,6 +96,7 @@ export async function recoverSessions(): Promise<void> {
       s.pendingTranscriptLines ||= []
       s.saveState ||= { status: 'saved' }
       sessions.set(tabId, s)
+      await reconcileDeletedTranscriptOwners(s).catch(error => markTranscriptSaveError(s, error))
       if (recoveryError) markTranscriptSaveError(s, recoveryError)
       else if (allSourceSessions(s).some(epoch => epoch.pendingTranscriptLines?.length)) markTranscriptSaveError(s, '上次保存中断')
       // The tab-level map is only a legacy fallback. Scoped owners retain and

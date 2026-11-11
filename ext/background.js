@@ -873,7 +873,8 @@ function persistSessionsStrict() {
       transcriptId: s.transcriptId ?? null,
       audioSilent: false,
       saveState: s.saveState,
-      pendingTranscriptLines: s.pendingTranscriptLines
+      pendingTranscriptLines: s.pendingTranscriptLines,
+      transcriptFinalizationPending: s.transcriptFinalizationPending
     };
   }
   const encoded = JSON.stringify(obj);
@@ -884,6 +885,8 @@ function persistSessionsStrict() {
 }
 var MAX_UNSAVED_SESSION_LINES = 180;
 var saveAttempts = /* @__PURE__ */ new WeakMap();
+var finishAttempts = /* @__PURE__ */ new WeakMap();
+var captureStops = /* @__PURE__ */ new Map();
 function markTranscriptSaveError(s, error) {
   s.saveState = { status: "error", message: `\u6709\u5185\u5BB9\u672A\u4FDD\u5B58\uFF1A${error instanceof Error ? error.message : String(error)}\u3002\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA\uFF0C\u52FF\u5173\u95ED\u9875\u9762` };
   pushSession(s.tabId);
@@ -891,6 +894,71 @@ function markTranscriptSaveError(s, error) {
 }
 function allSourceSessions(s) {
   return [...s.retiringSources || [], s];
+}
+function detachDeletedTranscript(s, binding) {
+  let changed = false;
+  for (const owner of allSourceSessions(s)) {
+    if (owner.transcriptId !== binding.recordId || owner.tabId !== binding.tabId || owner.sourceEpoch !== binding.sourceEpoch || owner.sourceRef?.key !== binding.sourceKey) continue;
+    if (owner.pendingTranscriptLines?.length || owner.saveState?.status !== "saved" || saveAttempts.has(owner) || finishAttempts.has(owner)) continue;
+    const ended = owner.state === "idle" || owner.state === "error";
+    if (owner === s ? !ended : !ended && !owner.sourceDrained) continue;
+    owner.transcriptId = null;
+    owner.sourceEpoch = void 0;
+    owner.sourceRef = void 0;
+    owner.sourceIdentity = void 0;
+    owner.subtitles = [];
+    owner.streamingSubtitle = null;
+    owner.transcriptFinalizationPending = false;
+    changed = true;
+  }
+  return changed;
+}
+function pendingSessionStop(tabId) {
+  return captureStops.get(tabId)?.promise;
+}
+function stopSessionCapture(s) {
+  const existing = captureStops.get(s.tabId);
+  if (existing?.owner === s && existing.generation === s.generation) return existing.promise;
+  const stoppedGeneration = s.stoppedGeneration ?? s.generation;
+  s.state = "stopping";
+  s.stoppedGeneration = stoppedGeneration;
+  s.generation = nextGeneration();
+  const generation = s.generation;
+  const ownsStop = () => sessions.get(s.tabId) === s && s.generation === generation;
+  s.transcriptFinalizationPending = true;
+  pushSession(s.tabId);
+  const run = (async () => {
+    try {
+      const reply = await sendToOffscreen({ type: "STOP_CAPTURE", tabId: s.tabId, generation: stoppedGeneration, drain: true });
+      if (!ownsStop()) return;
+      if (!reply?.ok) throw new Error(reply?.error || "\u505C\u6B62\u91C7\u96C6\u672A\u786E\u8BA4\uFF0C\u8BF7\u91CD\u8BD5");
+      s.state = "idle";
+      s.stoppedGeneration = void 0;
+      s.streamId = "";
+      s.configSnapshot = null;
+      s.streamingSubtitle = null;
+      s.audioSilent = false;
+      await finishSavedTranscript(s);
+    } catch (error) {
+      if (!ownsStop()) return;
+      if (s.state === "stopping") s.state = "error";
+      markTranscriptSaveError(s, error);
+      throw error;
+    } finally {
+      if (ownsStop()) {
+        pushSession(s.tabId);
+        persistSessions();
+        if (s.state === "idle") maybeCloseOffscreen();
+      }
+    }
+  })();
+  const attempt = { owner: s, generation, promise: run };
+  captureStops.set(s.tabId, attempt);
+  void run.finally(() => {
+    if (captureStops.get(s.tabId) === attempt) captureStops.delete(s.tabId);
+  }).catch(() => {
+  });
+  return run;
 }
 async function validateSessionTranscriptOwnership(s) {
   if (!s.sourceEpoch || !s.transcriptId) return;
@@ -907,6 +975,13 @@ async function validateSessionTranscriptOwnership(s) {
   }
 }
 async function retrySessionTranscript(s) {
+  const stopping = captureStops.get(s.tabId);
+  if (stopping?.owner === s && stopping.generation === s.generation) return stopping.promise;
+  if (s.transcriptFinalizationPending) {
+    if (s.state === "error" && s.stoppedGeneration !== void 0) await stopSessionCapture(s);
+    else await finishSessionTranscript(s);
+    return;
+  }
   for (const epoch of s.retiringSources || []) {
     await retryOneTranscript(epoch);
     if (epoch.sourceDrained) await finalizeSessionTranscript(epoch).catch((error) => {
@@ -921,6 +996,7 @@ function retryOneTranscript(s) {
   if (existing) return existing;
   const run = (async () => {
     s.pendingTranscriptLines ||= [];
+    if (!s.transcriptId && !s.pendingTranscriptLines.length && !s.subtitles.length) return;
     await validateSessionTranscriptOwnership(s);
     const id = await ensureTranscript(s);
     do {
@@ -950,35 +1026,58 @@ function saveSessionSubtitle(s, entry) {
   if (s.saveState?.status !== "error") s.saveState = { status: "pending" };
   const owner = sessions.get(s.tabId) || s;
   if (allSourceSessions(owner).reduce((sum, epoch) => sum + epoch.pendingTranscriptLines.length, 0) >= MAX_UNSAVED_SESSION_LINES && (owner.state === "running" || owner.state === "starting")) {
-    owner.state = "stopping";
-    owner.stoppedGeneration = owner.generation;
     markTranscriptSaveError(owner, "\u672A\u4FDD\u5B58\u7F13\u5B58\u5DF2\u6EE1\uFF0C\u5DF2\u505C\u6B62\u65B0\u91C7\u96C6");
-    void sendToOffscreen({ type: "STOP_CAPTURE", tabId: s.tabId, generation: s.generation, drain: true }).catch((error) => markTranscriptSaveError(s, error)).finally(() => {
-      owner.state = "idle";
-      owner.stoppedGeneration = void 0;
-      pushSession(s.tabId);
-      maybeCloseOffscreen();
+    void stopSessionCapture(owner).catch(() => {
     });
   }
   void retryOneTranscript(s).catch(() => {
   });
 }
-async function finishSessionTranscript(s) {
-  try {
-    for (const epoch of s.retiringSources || []) {
-      if (s.state === "idle" || s.state === "error" || epoch.sourceDrained) {
-        epoch.sourceDrained = true;
-        await finishSessionTranscript(epoch);
+function finishSessionTranscript(s) {
+  const stopping = captureStops.get(s.tabId);
+  if (stopping?.owner === s && stopping.generation === s.generation) return stopping.promise.then(() => !!s.transcriptId);
+  return finishSavedTranscript(s);
+}
+function finishSavedTranscript(s) {
+  const existing = finishAttempts.get(s);
+  if (existing) return existing;
+  const generation = s.generation;
+  const transcriptId = s.transcriptId;
+  const unchanged = () => s.generation === generation && (!transcriptId || s.transcriptId === transcriptId);
+  const run = (async () => {
+    try {
+      for (const epoch of s.retiringSources || []) {
+        if (s.state === "idle" || s.state === "error" || epoch.sourceDrained) {
+          epoch.sourceDrained = true;
+          await finishSessionTranscript(epoch);
+          if (!unchanged()) return false;
+        }
       }
+      if (saveAttempts.has(s) || s.pendingTranscriptLines?.length) await retryOneTranscript(s);
+      if (!unchanged()) return false;
+      await validateSessionTranscriptOwnership(s);
+      if (!unchanged()) return false;
+      const finalizing = { ...s };
+      const finalizingId = s.transcriptId;
+      const kept = await finalizeSessionTranscript(finalizing);
+      if (s.generation !== generation || s.transcriptId !== finalizingId) return false;
+      s.transcriptId = finalizing.transcriptId;
+      s.saveState = { status: "saved" };
+      s.transcriptFinalizationPending = false;
+      return kept;
+    } catch (error) {
+      if (!unchanged()) return false;
+      s.transcriptFinalizationPending = true;
+      markTranscriptSaveError(s, error);
+      throw error;
     }
-    if (s.pendingTranscriptLines?.length) await retrySessionTranscript(s);
-    const kept = await finalizeSessionTranscript(s);
-    s.saveState = { status: "saved" };
-    return kept;
-  } catch (error) {
-    markTranscriptSaveError(s, error);
-    throw error;
-  }
+  })();
+  finishAttempts.set(s, run);
+  void run.finally(() => {
+    if (finishAttempts.get(s) === run) finishAttempts.delete(s);
+  }).catch(() => {
+  });
+  return run;
 }
 
 // src/lib/video-clock.ts
@@ -1099,13 +1198,11 @@ function removeSession(tabId) {
   const s = sessions.get(tabId);
   resetVideoClock(tabId);
   if (s) {
-    const stop = sendToOffscreen({ type: "STOP_CAPTURE", tabId, generation: s.generation }).catch(() => {
-    });
+    const stop = stopSessionCapture(s);
+    const endingGeneration = s.generation;
     closeOffscreenAfterStop(stop);
-    s.state = "idle";
-    s.configSnapshot = null;
-    s.streamId = "";
-    void finishSessionTranscript(s).then(() => {
+    void stop.then(() => {
+      if (sessions.get(tabId) !== s || s.generation !== endingGeneration) return;
       sessions.delete(tabId);
       persistSessions();
     }).catch(() => {
@@ -1490,6 +1587,27 @@ async function saveOperation(operation) {
   const all = await operations();
   await chrome.storage.local.set({ [DELETIONS_KEY]: [...all.filter((o) => o.operationId !== operation.operationId), operation] });
 }
+async function reconcileDeletedOwners(operation, owners) {
+  let changed = false;
+  for (const binding of operation.transcriptBindings || []) {
+    if (!operation.targets.some((target) => target.kind === "transcript" && target.recordId === binding.recordId)) continue;
+    const candidates = owners.filter((owner) => allSourceSessions(owner).some((epoch) => epoch.transcriptId === binding.recordId));
+    if (!candidates.length) continue;
+    if (await getTranscriptRecord(binding.recordId)) continue;
+    for (const owner of candidates) {
+      if (detachDeletedTranscript(owner, binding)) {
+        changed = true;
+        pushSession(owner.tabId);
+      }
+    }
+  }
+  if (changed) await persistSessionsStrict();
+}
+function reconcileDeletedTranscriptOwners(owner) {
+  return withLibraryOperation(async () => {
+    for (const operation of await operations()) await reconcileDeletedOwners(operation, [owner]);
+  });
+}
 async function execute(operation) {
   for (const target of [...operation.pending.map((p) => p.target)]) {
     try {
@@ -1500,6 +1618,7 @@ async function execute(operation) {
       } else await notesUnderLibraryLock.deleteSelection(target.noteId, target.entryIds, target.wholeDocument);
       const favorites = await favoritesUnderLibraryLock();
       await chrome.storage.local.set({ [FAVORITES_KEY]: favorites.filter((f) => !affected(f.ref, target)) });
+      if (target.kind === "transcript") await reconcileDeletedOwners(operation, [...sessions.values()]);
       operation.pending = operation.pending.filter((p) => JSON.stringify(p.target) !== JSON.stringify(target));
       operation.completed.push(target);
     } catch (error) {
@@ -1525,6 +1644,12 @@ function confirmDelete(token) {
     if (!saved || saved.expiresAt < Date.now()) throw new LibraryError("CONFIRMATION_STALE", "\u5220\u9664\u786E\u8BA4\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u786E\u8BA4");
     if ((await preview(saved.selection)).signature !== saved.signature) throw new LibraryError("CONFIRMATION_STALE", "\u8D44\u6599\u6216\u6536\u85CF\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u786E\u8BA4\u5220\u9664\u8303\u56F4");
     const operation = { operationId: token, targets: saved.targets, createdAt: Date.now(), completed: [], pending: saved.targets.map((target) => ({ target, error: "" })), skipped: saved.skipped };
+    operation.transcriptBindings = [];
+    for (const target of operation.targets) {
+      if (target.kind !== "transcript") continue;
+      const record = await getTranscriptRecord(target.recordId);
+      if (record?.sourceEpoch && record.sourceRef) operation.transcriptBindings.push({ recordId: record.id, tabId: record.tabId, sourceEpoch: record.sourceEpoch, sourceKey: record.sourceRef.key });
+    }
     await saveOperation(operation);
     await chrome.storage.session.remove(PREVIEW_PREFIX + token);
     return execute(operation);
@@ -1743,6 +1868,7 @@ async function recoverSessions() {
       recoveryError = error;
       return /* @__PURE__ */ new Map();
     });
+    for (const [tab, stored] of Object.entries(recovered)) sessions.set(Number(tab), stored);
     for (const [tabIdStr, stored] of Object.entries(recovered)) {
       const tabId = Number(tabIdStr);
       const s = stored;
@@ -1767,6 +1893,7 @@ async function recoverSessions() {
       s.pendingTranscriptLines ||= [];
       s.saveState ||= { status: "saved" };
       sessions.set(tabId, s);
+      await reconcileDeletedTranscriptOwners(s).catch((error) => markTranscriptSaveError(s, error));
       if (recoveryError) markTranscriptSaveError(s, recoveryError);
       else if (allSourceSessions(s).some((epoch) => epoch.pendingTranscriptLines?.length)) markTranscriptSaveError(s, "\u4E0A\u6B21\u4FDD\u5B58\u4E2D\u65AD");
       for (const owner of allSourceSessions(s)) {
@@ -3556,7 +3683,7 @@ var sessionHandlers = {
     if (previous?.version === startVersion) {
       attempt = previous;
     } else {
-      const pendingStop = stopAttempts.get(tabId);
+      const pendingStop = pendingSessionStop(tabId) || stopAttempts.get(tabId);
       const afterPrevious = previous ? previous.promise.catch(() => void 0) : Promise.resolve();
       const afterStop = pendingStop ? pendingStop.catch(() => void 0) : Promise.resolve();
       const run = Promise.all([afterPrevious, afterStop]).then(() => runStart(message, tabId, startVersion));
@@ -3588,7 +3715,7 @@ var sessionHandlers = {
       stop2.then(() => sendResponse({ ok: true }), () => sendResponse({ ok: true }));
       return true;
     }
-    if (s.state === "idle" && s.generation !== 0) {
+    if (s.state === "idle" && s.generation !== 0 && !s.transcriptFinalizationPending && !pendingSessionStop(tabId)) {
       const stop2 = stopOrphanCapture(tabId).then(() => void 0).catch(() => void 0);
       stopAttempts.set(tabId, stop2);
       stop2.finally(() => {
@@ -3598,40 +3725,16 @@ var sessionHandlers = {
       stop2.then(() => sendResponse({ ok: true }), () => sendResponse({ ok: true }));
       return true;
     }
-    s.state = "stopping";
-    pushSession(tabId);
-    const stoppedGeneration = s.generation;
-    s.stoppedGeneration = stoppedGeneration;
-    s.generation = nextGeneration();
-    const stop = sendToOffscreen({
-      type: "STOP_CAPTURE",
-      tabId,
-      generation: stoppedGeneration,
-      // Bounded drain: let the in-flight segment finish so the last subtitle
-      // of the session reaches the transcript before it is finalized.
-      drain: true
-    }).catch(() => {
-    }).finally(async () => {
-      s.state = "idle";
-      s.stoppedGeneration = void 0;
-      s.streamId = "";
-      s.configSnapshot = null;
-      s.streamingSubtitle = null;
-      s.audioSilent = false;
-      try {
-        await finishSessionTranscript(s);
-      } catch (err) {
-        console.warn("[RTTS] transcript finalize failed:", err);
-      }
-      pushSession(tabId);
-      maybeCloseOffscreen();
-      sendResponse({ ok: true, session: safeSession(s) });
-    });
+    const stop = stopSessionCapture(s);
     stopAttempts.set(tabId, stop);
     stop.finally(() => {
       if (stopAttempts.get(tabId) === stop) stopAttempts.delete(tabId);
     }).catch(() => {
     });
+    stop.then(
+      () => sendResponse({ ok: true, session: safeSession(sessions.get(tabId) || s) }),
+      () => sendResponse({ ok: true, session: safeSession(sessions.get(tabId) || s) })
+    );
     return true;
   },
   ASK: (message, { tabId, sendResponse }) => {

@@ -33,6 +33,7 @@
     "test:ext-globals": "node scripts/check-ext-no-vite-globals.mjs",
     "test:notes-store": "node scripts/test-notes-store.mjs",
     "test:session-persistence": "node scripts/test-session-persistence.mjs",
+    "test:course-lifecycle": "node scripts/test-course-lifecycle.mjs",
     "test:transcript-export": "node scripts/test-transcript-export.mjs",
     "test:source-identity": "node scripts/test-source-identity.mjs",
     "test:source-transition": "node scripts/test-source-transition.mjs",

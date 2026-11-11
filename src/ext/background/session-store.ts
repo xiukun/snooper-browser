@@ -84,6 +84,8 @@ export interface SessionState {
   screenCaptionError: string
   saveState: SaveState
   pendingTranscriptLines: SubtitleEntry[]
+  /** Capture ended, but its durable record still needs a successful finalization. */
+  transcriptFinalizationPending?: boolean
 }
 
 export interface SafeSession {
@@ -285,6 +287,7 @@ export function persistSessionsStrict(): Promise<void> {
       audioSilent: false,
       saveState: s.saveState,
       pendingTranscriptLines: s.pendingTranscriptLines,
+      transcriptFinalizationPending: s.transcriptFinalizationPending,
     }
   }
   const encoded = JSON.stringify(obj)
@@ -296,12 +299,88 @@ export function persistSessionsStrict(): Promise<void> {
 /** Capture stops with room for the offscreen pipeline's bounded tail. */
 export const MAX_UNSAVED_SESSION_LINES = 180
 const saveAttempts = new WeakMap<SessionState, Promise<void>>()
+const finishAttempts = new WeakMap<SessionState, Promise<boolean>>()
+const captureStops = new Map<number, { owner: SessionState; generation: number; promise: Promise<void> }>()
 export function markTranscriptSaveError(s: SessionState, error: unknown): void {
   s.saveState = { status: 'error', message: `有内容未保存：${error instanceof Error ? error.message : String(error)}。请重试或导出，勿关闭页面` }
   pushSession(s.tabId)
   persistSessions()
 }
 export function allSourceSessions(s: SessionState): SessionState[] { return [...(s.retiringSources || []), s] }
+
+/** Persisted with delete authorization, before the source body is removed. */
+export interface DeletedTranscriptBinding {
+  recordId: string
+  tabId: number
+  sourceEpoch: string
+  sourceKey: string
+}
+
+export function detachDeletedTranscript(s: SessionState, binding: DeletedTranscriptBinding): boolean {
+  let changed = false
+  for (const owner of allSourceSessions(s)) {
+    if (owner.transcriptId !== binding.recordId || owner.tabId !== binding.tabId || owner.sourceEpoch !== binding.sourceEpoch || owner.sourceRef?.key !== binding.sourceKey) continue
+    if (owner.pendingTranscriptLines?.length || owner.saveState?.status !== 'saved' || saveAttempts.has(owner) || finishAttempts.has(owner)) continue
+    const ended = owner.state === 'idle' || owner.state === 'error'
+    if (owner === s ? !ended : !ended && !owner.sourceDrained) continue
+    owner.transcriptId = null
+    owner.sourceEpoch = undefined
+    owner.sourceRef = undefined
+    owner.sourceIdentity = undefined
+    owner.subtitles = []
+    owner.streamingSubtitle = null
+    owner.transcriptFinalizationPending = false
+    changed = true
+  }
+  return changed
+}
+
+export function pendingSessionStop(tabId: number): Promise<void> | undefined {
+  return captureStops.get(tabId)?.promise
+}
+
+/** Explicit and bounded STOP share tail drain, ownership fencing and finalization. */
+export function stopSessionCapture(s: SessionState): Promise<void> {
+  const existing = captureStops.get(s.tabId)
+  if (existing?.owner === s && existing.generation === s.generation) return existing.promise
+  const stoppedGeneration = s.stoppedGeneration ?? s.generation
+  s.state = 'stopping'
+  s.stoppedGeneration = stoppedGeneration
+  s.generation = nextGeneration()
+  const generation = s.generation
+  const ownsStop = (): boolean => sessions.get(s.tabId) === s && s.generation === generation
+  s.transcriptFinalizationPending = true
+  pushSession(s.tabId)
+  const run = (async () => {
+    try {
+      const reply = await sendToOffscreen({ type: 'STOP_CAPTURE', tabId: s.tabId, generation: stoppedGeneration, drain: true })
+      if (!ownsStop()) return
+      if (!reply?.ok) throw new Error(reply?.error || '停止采集未确认，请重试')
+      s.state = 'idle'
+      s.stoppedGeneration = undefined
+      s.streamId = ''
+      s.configSnapshot = null
+      s.streamingSubtitle = null
+      s.audioSilent = false
+      await finishSavedTranscript(s)
+    } catch (error) {
+      if (!ownsStop()) return
+      if (s.state === 'stopping') s.state = 'error'
+      markTranscriptSaveError(s, error)
+      throw error
+    } finally {
+      if (ownsStop()) {
+        pushSession(s.tabId)
+        persistSessions()
+        if (s.state === 'idle') maybeCloseOffscreen()
+      }
+    }
+  })()
+  const attempt = { owner: s, generation, promise: run }
+  captureStops.set(s.tabId, attempt)
+  void run.finally(() => { if (captureStops.get(s.tabId) === attempt) captureStops.delete(s.tabId) }).catch(() => {})
+  return run
+}
 
 /** A stopped generation changes, but its immutable epoch still owns exactly one record. */
 export async function validateSessionTranscriptOwnership(s: SessionState): Promise<void> {
@@ -321,6 +400,13 @@ export async function validateSessionTranscriptOwnership(s: SessionState): Promi
 }
 
 export async function retrySessionTranscript(s: SessionState): Promise<void> {
+  const stopping = captureStops.get(s.tabId)
+  if (stopping?.owner === s && stopping.generation === s.generation) return stopping.promise
+  if (s.transcriptFinalizationPending) {
+    if (s.state === 'error' && s.stoppedGeneration !== undefined) await stopSessionCapture(s)
+    else await finishSessionTranscript(s)
+    return
+  }
   for (const epoch of s.retiringSources || []) {
     await retryOneTranscript(epoch)
     if (epoch.sourceDrained) await finalizeSessionTranscript(epoch).catch(error => { markTranscriptSaveError(epoch, error); throw error })
@@ -333,6 +419,7 @@ function retryOneTranscript(s: SessionState): Promise<void> {
   if (existing) return existing
   const run = (async () => {
     s.pendingTranscriptLines ||= []
+    if (!s.transcriptId && !s.pendingTranscriptLines.length && !s.subtitles.length) return
     await validateSessionTranscriptOwnership(s)
     const id = await ensureTranscript(s)
     do {
@@ -360,29 +447,56 @@ export function saveSessionSubtitle(s: SessionState, entry: SubtitleEntry): void
   // already-produced tail. Never evict the oldest failed line.
   const owner = sessions.get(s.tabId) || s
   if (allSourceSessions(owner).reduce((sum, epoch) => sum + epoch.pendingTranscriptLines.length, 0) >= MAX_UNSAVED_SESSION_LINES && (owner.state === 'running' || owner.state === 'starting')) {
-    owner.state = 'stopping'
-    owner.stoppedGeneration = owner.generation
     markTranscriptSaveError(owner, '未保存缓存已满，已停止新采集')
-    void sendToOffscreen({ type: 'STOP_CAPTURE', tabId: s.tabId, generation: s.generation, drain: true })
-      .catch(error => markTranscriptSaveError(s, error))
-      .finally(() => { owner.state = 'idle'; owner.stoppedGeneration = undefined; pushSession(s.tabId); maybeCloseOffscreen() })
+    void stopSessionCapture(owner).catch(() => {})
   }
   void retryOneTranscript(s).catch(() => {})
 }
-export async function finishSessionTranscript(s: SessionState): Promise<boolean> {
-  try {
-    for (const epoch of s.retiringSources || []) {
-      if (s.state === 'idle' || s.state === 'error' || epoch.sourceDrained) {
-        epoch.sourceDrained = true
-        await finishSessionTranscript(epoch)
+export function finishSessionTranscript(s: SessionState): Promise<boolean> {
+  const stopping = captureStops.get(s.tabId)
+  if (stopping?.owner === s && stopping.generation === s.generation) return stopping.promise.then(() => !!s.transcriptId)
+  return finishSavedTranscript(s)
+}
+
+function finishSavedTranscript(s: SessionState): Promise<boolean> {
+  const existing = finishAttempts.get(s)
+  if (existing) return existing
+  const generation = s.generation
+  const transcriptId = s.transcriptId
+  const unchanged = (): boolean => s.generation === generation && (!transcriptId || s.transcriptId === transcriptId)
+  const run = (async () => {
+    try {
+      for (const epoch of s.retiringSources || []) {
+        if (s.state === 'idle' || s.state === 'error' || epoch.sourceDrained) {
+          epoch.sourceDrained = true
+          await finishSessionTranscript(epoch)
+          if (!unchanged()) return false
+        }
       }
+      // Await even an empty queue: its last flush may still be in flight. Use
+      // the primitive save attempt here, never the public retry/STOP barrier.
+      if (saveAttempts.has(s) || s.pendingTranscriptLines?.length) await retryOneTranscript(s)
+      if (!unchanged()) return false
+      await validateSessionTranscriptOwnership(s)
+      if (!unchanged()) return false
+      // The storage helper can await record creation/finalization. Give it a
+      // stable owner so an obsolete continuation cannot rebind a newer one.
+      const finalizing = { ...s }
+      const finalizingId = s.transcriptId
+      const kept = await finalizeSessionTranscript(finalizing)
+      if (s.generation !== generation || s.transcriptId !== finalizingId) return false
+      s.transcriptId = finalizing.transcriptId
+      s.saveState = { status: 'saved' }
+      s.transcriptFinalizationPending = false
+      return kept
+    } catch (error) {
+      if (!unchanged()) return false
+      s.transcriptFinalizationPending = true
+      markTranscriptSaveError(s, error)
+      throw error
     }
-    if (s.pendingTranscriptLines?.length) await retrySessionTranscript(s)
-    const kept = await finalizeSessionTranscript(s)
-    s.saveState = { status: 'saved' }
-    return kept
-  } catch (error) {
-    markTranscriptSaveError(s, error)
-    throw error
-  }
+  })()
+  finishAttempts.set(s, run)
+  void run.finally(() => { if (finishAttempts.get(s) === run) finishAttempts.delete(s) }).catch(() => {})
+  return run
 }

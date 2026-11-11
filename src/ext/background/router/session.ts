@@ -40,12 +40,13 @@ import {
   finishSessionTranscript,
   markTranscriptSaveError,
   retrySessionTranscript,
-  maybeCloseOffscreen,
   nextGeneration,
   pushSession,
   reconcileSessionState,
   safeSession,
   sessions,
+  pendingSessionStop,
+  stopSessionCapture,
 } from '../session-store'
 import { resetVideoClock } from '../video-clock'
 import type { MessageHandlerMap } from './types'
@@ -387,7 +388,7 @@ export const sessionHandlers: MessageHandlerMap = {
     if (previous?.version === startVersion) {
       attempt = previous
     } else {
-      const pendingStop = stopAttempts.get(tabId)
+      const pendingStop = pendingSessionStop(tabId) || stopAttempts.get(tabId)
       const afterPrevious = previous ? previous.promise.catch(() => undefined) : Promise.resolve()
       const afterStop = pendingStop ? pendingStop.catch(() => undefined) : Promise.resolve()
       const run = Promise.all([afterPrevious, afterStop])
@@ -427,7 +428,7 @@ export const sessionHandlers: MessageHandlerMap = {
     }
     // Deliberately idempotent. A stop request must always clear the capture;
     // refusing it with "not transcribing" is how an orphan stream survived.
-    if (s.state === 'idle' && s.generation !== 0) {
+    if (s.state === 'idle' && s.generation !== 0 && !s.transcriptFinalizationPending && !pendingSessionStop(tabId)) {
       const stop = stopOrphanCapture(tabId).then(() => undefined).catch(() => undefined)
       stopAttempts.set(tabId, stop)
       stop.finally(() => {
@@ -437,49 +438,15 @@ export const sessionHandlers: MessageHandlerMap = {
       return true
     }
 
-    s.state = 'stopping'
-    pushSession(tabId)
-
-    // Invalidate in-flight ASR/translation results immediately. Late
-    // responses from the stopped segment carry the old generation and are
-    // dropped, so nothing new appears after the user hits stop — except the
-    // final line of a rename that was already segmenting, which the router
-    // still accepts for `stoppedGeneration` while `stopping`.
-    const stoppedGeneration = s.generation
-    s.stoppedGeneration = stoppedGeneration
-    s.generation = nextGeneration()
-
-    const stop = sendToOffscreen({
-      type: 'STOP_CAPTURE',
-      tabId,
-      generation: stoppedGeneration,
-      // Bounded drain: let the in-flight segment finish so the last subtitle
-      // of the session reaches the transcript before it is finalized.
-      drain: true,
-    }).catch(() => {
-      // Offscreen may already be closed
-    }).finally(async () => {
-      s.state = 'idle'
-      s.stoppedGeneration = undefined
-      s.streamId = ''
-      s.configSnapshot = null
-      s.streamingSubtitle = null
-      s.audioSilent = false
-      // Flush the final chunk and close the record. Keeping transcriptId
-      // lets copy/export read the full session after stop (ADR-031).
-      try {
-        await finishSessionTranscript(s)
-      } catch (err) {
-        console.warn('[RTTS] transcript finalize failed:', err)
-      }
-      pushSession(tabId)
-      maybeCloseOffscreen()
-      sendResponse({ ok: true, session: safeSession(s) })
-    })
+    const stop = stopSessionCapture(s)
     stopAttempts.set(tabId, stop)
     stop.finally(() => {
       if (stopAttempts.get(tabId) === stop) stopAttempts.delete(tabId)
     }).catch(() => {})
+    stop.then(
+      () => sendResponse({ ok: true, session: safeSession(sessions.get(tabId) || s) }),
+      () => sendResponse({ ok: true, session: safeSession(sessions.get(tabId) || s) }),
+    )
     // Keep the response open until the offscreen teardown finishes. This
     // prevents an immediate GET_SESSION from observing the old live capture
     // and putting the toolbar back into the running state after STOP.

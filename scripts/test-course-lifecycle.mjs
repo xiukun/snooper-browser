@@ -11,7 +11,7 @@ let instance = 0
 const fresh = () => import(`${pathToFileURL(out)}?instance=${++instance}`)
 function environment(seed = {}) {
   const local = structuredClone(seed.local || {}), snapshot = structuredClone(seed.snapshot || {}), sent = [], events = {}
-  const controls = { beforeLocalSet: null, beforeSessionSet: null, beforeRemove: null, stop: null }
+  const controls = { beforeLocalSet: null, beforeSessionSet: null, beforeRemove: null, stop: null, liveCapture: null }
   const area = (values, session = false) => ({
     async get(keys) {
       return Object.fromEntries((keys === null ? Object.keys(values) : Array.isArray(keys) ? keys : [keys]).filter(k => k in values).map(k => [k, structuredClone(values[k])]))
@@ -33,7 +33,7 @@ function environment(seed = {}) {
     tabs: { async sendMessage() {} },
     runtime: { onMessage: { addListener(fn) { events.message = fn } }, getURL: p => `chrome-extension://test/${p}`, async getContexts() { return [] }, async sendMessage(message) {
       sent.push(structuredClone(message))
-      if (message.type === 'GET_CAPTURE_SESSIONS') return { ok: true, sessions: {}, sources: {} }
+      if (message.type === 'GET_CAPTURE_SESSIONS') return controls.liveCapture || { ok: true, sessions: {}, sources: {} }
       if (message.type === 'STOP_CAPTURE') return controls.stop ? controls.stop(message) : { ok: true }
       return { ok: true }
     } },
@@ -307,8 +307,92 @@ async function unacknowledgedStop() {
   await mod.persistSessionsStrict()
   console.log('course-lifecycle F2: unacknowledged STOP remains visible and retries actual capture teardown passed')
 }
+function survivingCapture(owner, generation) {
+  return { ok: true, sessions: { [owner.tabId]: generation }, sources: {
+    [owner.tabId]: { sourceEpoch: owner.sourceEpoch, bindings: {
+      [owner.sourceEpoch]: { sourceRef: owner.sourceRef, pending: 0 },
+    } },
+  } }
+}
+async function liveStopRetry(restart = false, missingLiveRead = false) {
+  let env = environment(), mod = await fresh(), owner = await bound(mod)
+  const id = owner.transcriptId, epoch = owner.sourceEpoch, generation = owner.generation
+  owner.subtitles.push(line(owner, 'before-live-stop'))
+  mod.saveSessionSubtitle(owner, owner.subtitles[0]); await mod.retrySessionTranscript(owner)
+  env.controls.liveCapture = survivingCapture(owner, generation)
+  if (restart) {
+    const held = Promise.withResolvers(), release = Promise.withResolvers()
+    env.controls.stop = async () => { held.resolve(); await release.promise; return { ok: false, error: 'capture still active' } }
+    const stopped = mod.stopSessionCapture(owner).catch(error => error)
+    await held.promise; await mod.persistSessionsStrict()
+    const crashed = { local: structuredClone(env.local), snapshot: structuredClone(env.snapshot) }
+    release.resolve(); await stopped; await mod.persistSessionsStrict()
+    const live = survivingCapture(owner, generation)
+    env = environment(crashed); env.controls.liveCapture = missingLiveRead ? null : live
+    mod = await fresh(); await mod.recoverSessions(); owner = mod.sessions.get(41)
+    assert.equal((await mod.getTranscriptRecord(id)).status, 'recording', 'pending teardown must survive an unavailable live capture read')
+    env.controls.liveCapture = live
+  } else {
+    env.controls.stop = async () => ({ ok: false, error: 'capture still active' })
+    await assert.rejects(mod.stopSessionCapture(owner), /capture still active/)
+  }
+  env.controls.stop = async () => ({ ok: false, error: 'capture still active' })
+  // The real GET_SESSION dependency is allowed to restore presentation state.
+  await mod.reconcileSessionState(41)
+  assert.equal(owner.state, 'running'); assert.equal(owner.generation, generation)
+  assert.equal(owner.transcriptFinalizationPending, true)
+  assert.equal((await mod.getTranscriptRecord(id)).status, 'recording')
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(mod.retrySessionTranscript(owner), /capture still active/, 'N1: retry must retry unacknowledged teardown after live reconciliation')
+    assert.equal((await mod.getTranscriptRecord(id)).status, 'recording', 'a surviving capture must never be finalized')
+    assert.equal(owner.saveState.status, 'error')
+    assert.equal(owner.transcriptId, id); assert.equal(owner.sourceEpoch, epoch)
+    await mod.reconcileSessionState(41)
+  }
+  await assert.rejects(mod.finishSessionTranscript(owner), /capture still active/, 'public finalization must also wait for teardown proof')
+  assert.equal((await mod.getTranscriptRecord(id)).status, 'recording')
+  const beforeAck = env.sent.filter(m => m.type === 'STOP_CAPTURE').length
+  env.controls.stop = async () => { env.controls.liveCapture = { ok: true, sessions: {}, sources: {} }; return { ok: true } }
+  await mod.retrySessionTranscript(owner)
+  assert.equal(env.sent.filter(m => m.type === 'STOP_CAPTURE').length, beforeAck + 1)
+  assert.equal(env.sent.filter(m => m.type === 'STOP_CAPTURE').every(m => m.generation === generation), true)
+  assert.equal(owner.state, 'idle'); assert.equal(owner.saveState.status, 'saved')
+  assert.equal(owner.transcriptId, id); assert.equal(owner.sourceEpoch, epoch)
+  assert.equal(owner.transcriptFinalizationPending, false)
+  assert.equal((await mod.getTranscriptRecord(id)).status, 'completed')
+  assert.deepEqual((await mod.readTranscript(id)).map(row => row.id), ['before-live-stop'])
+  await mod.persistSessionsStrict()
+  console.log(`course-lifecycle N1: ${restart ? 'interrupted STOP/fresh worker/' + (missingLiveRead ? 'missing live read' : 'live capture') : 'negative STOP/live GET_SESSION reconciliation'}/repeated NACK/eventual ACK passed`)
+}
+async function storageFinalizeRestart() {
+  let env = environment(), mod = await fresh(), owner = await bound(mod)
+  const id = owner.transcriptId, epoch = owner.sourceEpoch
+  owner.subtitles.push(line(owner, 'storage-only'))
+  mod.saveSessionSubtitle(owner, owner.subtitles[0]); await mod.retrySessionTranscript(owner)
+  const failFinalization = async items => {
+    if (items[mod.TRANSCRIPT_INDEX_KEY]?.some(r => r.id === id && r.status === 'completed')) throw new Error('finalization-only quota')
+  }
+  env.controls.beforeLocalSet = failFinalization
+  await assert.rejects(mod.stopSessionCapture(owner), /finalization-only quota/)
+  assert.equal(owner.pendingCaptureStopGeneration, undefined, 'acknowledged STOP must leave only storage work pending')
+  await mod.persistSessionsStrict()
+  env = environment({ local: env.local, snapshot: env.snapshot }); env.controls.beforeLocalSet = failFinalization
+  mod = await fresh(); await mod.recoverSessions(); owner = mod.sessions.get(41)
+  assert.equal(owner.pendingCaptureStopGeneration, undefined)
+  assert.equal(owner.transcriptFinalizationPending, true)
+  env.controls.beforeLocalSet = null
+  await mod.retrySessionTranscript(owner)
+  assert.equal(env.sent.filter(m => m.type === 'STOP_CAPTURE' || m.type === 'START_CAPTURE').length, 0)
+  assert.equal(owner.transcriptId, id); assert.equal(owner.sourceEpoch, epoch)
+  assert.equal(owner.saveState.status, 'saved')
+  assert.equal((await mod.getTranscriptRecord(id)).status, 'completed')
+  await mod.persistSessionsStrict()
+  console.log('course-lifecycle N1: confirmed STOP/storage-only fault/fresh worker/retry without capture changes passed')
+}
 try {
   await build({ stdin: { resolveDir: process.cwd(), contents: ['session-store', 'transcript-store', 'source-sessions', 'recovery', 'library-store', 'router/session', 'router/offscreen-events'].map(p => `export * from '${resolve(`src/ext/background/${p}.ts`)}';`).join('\n') }, bundle: true, format: 'esm', outfile: out, logLevel: 'silent', define: { 'import.meta.env': '{}' } })
+  if (!process.argv[2] || process.argv[2] === 'n1-live') await liveStopRetry()
+  if (!process.argv[2] || process.argv[2] === 'n1-restart') { await liveStopRetry(true); await liveStopRetry(true, true); await storageFinalizeRestart() }
   if (!process.argv[2] || process.argv[2] === 'deletion') { await deletion(); await deletionRetryAndCrash(); await deletionScope() }
   if (!process.argv[2] || process.argv[2] === 'stop') {
     await automaticStop(); await automaticStop(true); await oldEpochTail(); await oldEpochTail(true)

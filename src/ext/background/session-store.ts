@@ -84,8 +84,10 @@ export interface SessionState {
   screenCaptionError: string
   saveState: SaveState
   pendingTranscriptLines: SubtitleEntry[]
-  /** Capture ended, but its durable record still needs a successful finalization. */
+  /** Completion requested, but its durable record still needs finalization. */
   transcriptFinalizationPending?: boolean
+  /** Durable teardown intent; only STOP acknowledgement clears this generation. */
+  pendingCaptureStopGeneration?: number
 }
 
 export interface SafeSession {
@@ -169,6 +171,10 @@ export async function reconcileSessionState(tabId: number): Promise<SessionState
   await recoveryReady
   const session = getOrCreateSession(tabId)
   const liveGeneration = await getLiveCaptureGeneration(tabId)
+  if (session.transcriptFinalizationPending && session.pendingCaptureStopGeneration === undefined && typeof liveGeneration === 'number') {
+    session.pendingCaptureStopGeneration = liveGeneration
+    persistSessionsThrottled()
+  }
   const reconciled = reconcileSessionWithCapture(session, liveGeneration as number | undefined)
   if (reconciled !== session) {
     Object.assign(session, reconciled)
@@ -288,6 +294,7 @@ export function persistSessionsStrict(): Promise<void> {
       saveState: s.saveState,
       pendingTranscriptLines: s.pendingTranscriptLines,
       transcriptFinalizationPending: s.transcriptFinalizationPending,
+      pendingCaptureStopGeneration: s.pendingCaptureStopGeneration,
     }
   }
   const encoded = JSON.stringify(obj)
@@ -320,7 +327,7 @@ export function detachDeletedTranscript(s: SessionState, binding: DeletedTranscr
   let changed = false
   for (const owner of allSourceSessions(s)) {
     if (owner.transcriptId !== binding.recordId || owner.tabId !== binding.tabId || owner.sourceEpoch !== binding.sourceEpoch || owner.sourceRef?.key !== binding.sourceKey) continue
-    if (owner.pendingTranscriptLines?.length || owner.saveState?.status !== 'saved' || saveAttempts.has(owner) || finishAttempts.has(owner)) continue
+    if (owner.pendingCaptureStopGeneration !== undefined || owner.pendingTranscriptLines?.length || owner.saveState?.status !== 'saved' || saveAttempts.has(owner) || finishAttempts.has(owner)) continue
     const ended = owner.state === 'idle' || owner.state === 'error'
     if (owner === s ? !ended : !ended && !owner.sourceDrained) continue
     owner.transcriptId = null
@@ -343,7 +350,8 @@ export function pendingSessionStop(tabId: number): Promise<void> | undefined {
 export function stopSessionCapture(s: SessionState): Promise<void> {
   const existing = captureStops.get(s.tabId)
   if (existing?.owner === s && existing.generation === s.generation) return existing.promise
-  const stoppedGeneration = s.stoppedGeneration ?? s.generation
+  const stoppedGeneration = s.pendingCaptureStopGeneration ?? s.stoppedGeneration ?? s.generation
+  s.pendingCaptureStopGeneration = stoppedGeneration
   s.state = 'stopping'
   s.stoppedGeneration = stoppedGeneration
   s.generation = nextGeneration()
@@ -356,6 +364,9 @@ export function stopSessionCapture(s: SessionState): Promise<void> {
       const reply = await sendToOffscreen({ type: 'STOP_CAPTURE', tabId: s.tabId, generation: stoppedGeneration, drain: true })
       if (!ownsStop()) return
       if (!reply?.ok) throw new Error(reply?.error || '停止采集未确认，请重试')
+      for (const owner of allSourceSessions(s)) {
+        if (owner.pendingCaptureStopGeneration === stoppedGeneration) owner.pendingCaptureStopGeneration = undefined
+      }
       s.state = 'idle'
       s.stoppedGeneration = undefined
       s.streamId = ''
@@ -402,9 +413,9 @@ export async function validateSessionTranscriptOwnership(s: SessionState): Promi
 export async function retrySessionTranscript(s: SessionState): Promise<void> {
   const stopping = captureStops.get(s.tabId)
   if (stopping?.owner === s && stopping.generation === s.generation) return stopping.promise
+  if (s.pendingCaptureStopGeneration !== undefined) return stopSessionCapture(s)
   if (s.transcriptFinalizationPending) {
-    if (s.state === 'error' && s.stoppedGeneration !== undefined) await stopSessionCapture(s)
-    else await finishSessionTranscript(s)
+    await finishSessionTranscript(s)
     return
   }
   for (const epoch of s.retiringSources || []) {
@@ -431,7 +442,7 @@ function retryOneTranscript(s: SessionState): Promise<void> {
       // A row arriving during the awaited flush joins this same save attempt.
       // Drain it before publishing saved; no subsequent event is required.
     } while (s.pendingTranscriptLines.length)
-    s.saveState = { status: 'saved' }
+    if (s.pendingCaptureStopGeneration === undefined) s.saveState = { status: 'saved' }
     pushSession(s.tabId)
     persistSessions()
   })().catch(error => { markTranscriptSaveError(s, error); throw error })
@@ -455,6 +466,7 @@ export function saveSessionSubtitle(s: SessionState, entry: SubtitleEntry): void
 export function finishSessionTranscript(s: SessionState): Promise<boolean> {
   const stopping = captureStops.get(s.tabId)
   if (stopping?.owner === s && stopping.generation === s.generation) return stopping.promise.then(() => !!s.transcriptId)
+  if (s.pendingCaptureStopGeneration !== undefined) return stopSessionCapture(s).then(() => !!s.transcriptId)
   return finishSavedTranscript(s)
 }
 

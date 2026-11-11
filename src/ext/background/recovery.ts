@@ -53,14 +53,17 @@ export async function recoverSessions(): Promise<void> {
     const recoveryGenerations = { ...liveGenerations }
     for (const [tab, stored] of Object.entries(recovered)) {
       const s = stored as SessionState
+      // Older snapshots used stoppedGeneration for this intent. Keep it
+      // independently of the presentation state restored from live capture.
+      if (s.transcriptFinalizationPending) s.pendingCaptureStopGeneration ??= s.stoppedGeneration
       // Failed rows in the recovery snapshot must be replayed BEFORE closing
       // their recording; otherwise retry would look like a late append.
-      if (allSourceSessions(s).some(epoch => epoch.pendingTranscriptLines?.length)) recoveryGenerations[tab] = s.stoppedGeneration ?? s.generation
+      if (s.pendingCaptureStopGeneration !== undefined || allSourceSessions(s).some(epoch => epoch.pendingTranscriptLines?.length)) recoveryGenerations[tab] = s.pendingCaptureStopGeneration ?? s.stoppedGeneration ?? s.generation
     }
     let recoveryError: unknown
     const liveTranscripts = await recoverTranscripts(recoveryGenerations, Object.values(recovered).flatMap(stored => {
       const s = stored as SessionState
-      return allSourceSessions(s).flatMap(epoch => epoch.pendingTranscriptLines?.length && epoch.transcriptId ? [epoch.transcriptId] : [])
+      return allSourceSessions(s).flatMap(epoch => (s.pendingCaptureStopGeneration !== undefined || epoch.pendingTranscriptLines?.length) && epoch.transcriptId ? [epoch.transcriptId] : [])
     })).catch(error => { recoveryError = error; return new Map<number, string>() })
 
     // Any strict deletion reconciliation snapshot must include every owner,
@@ -73,6 +76,7 @@ export async function recoverSessions(): Promise<void> {
       const liveTranscriptId = liveTranscripts.get(tabId) || null
 
       if (typeof liveGeneration === 'number') {
+        if (s.transcriptFinalizationPending) s.pendingCaptureStopGeneration ??= liveGeneration
         // Capture survived: keep the session running so STOP still reaches it
         // and the content script shows the correct recording state.
         s.state = 'running'
@@ -98,6 +102,7 @@ export async function recoverSessions(): Promise<void> {
       sessions.set(tabId, s)
       await reconcileDeletedTranscriptOwners(s).catch(error => markTranscriptSaveError(s, error))
       if (recoveryError) markTranscriptSaveError(s, recoveryError)
+      else if (s.pendingCaptureStopGeneration !== undefined) markTranscriptSaveError(s, '上次停止采集未确认')
       else if (allSourceSessions(s).some(epoch => epoch.pendingTranscriptLines?.length)) markTranscriptSaveError(s, '上次保存中断')
       // The tab-level map is only a legacy fallback. Scoped owners retain and
       // validate their own IDs, including stopped captures with several queues.
@@ -115,7 +120,7 @@ export async function recoverSessions(): Promise<void> {
         }
         if (!provenance?.bindings?.[s.sourceEpoch]) valid = false
         if (!valid) await failSourceBinding(s)
-        else {
+        else if (s.pendingCaptureStopGeneration === undefined) {
           for (const epoch of s.retiringSources || []) {
             if (epoch.sourceEpoch && provenance?.bindings?.[epoch.sourceEpoch]?.pending === 0) await drainSource(s, epoch.sourceEpoch).catch(error => markTranscriptSaveError(epoch, error))
           }

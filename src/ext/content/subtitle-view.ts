@@ -1,4 +1,4 @@
-import { createFavoriteButton, favoriteState, subtitleFavoriteRef } from './favorite-control'
+import { createFavoriteButton, disposeFavoriteControls, favoriteState, subtitleFavoriteRef } from './favorite-control'
 import type { SaveState, SourceRef } from '../../lib/knowledge-types'
 /**
  * Subtitle overlay: history rows, streaming row, auto-idle collapse, sizing,
@@ -144,6 +144,7 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
 
       if (rowsChanged) {
         lastRowsSignature = rowsSignature
+        disposeFavoriteControls(r.subRows)
         r.subRows.textContent = ''
 
         subs.forEach((sub) => {
@@ -240,6 +241,7 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
     } else {
       r.subPlaceholder.style.display = ''
       r.subPlaceholder.textContent = '点击「录音」开始实时转写'
+      disposeFavoriteControls(r.subRows)
       r.subRows.textContent = ''
       lastRowsSignature = ''
       clearStreaming()

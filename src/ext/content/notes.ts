@@ -1,4 +1,4 @@
-import { createFavoriteButton, favoriteState } from './favorite-control'
+import { createFavoriteButton, disposeFavoriteControls, favoriteState } from './favorite-control'
 /**
  * Notes: active-note lifecycle, persistence, and the drawer list.
  *
@@ -127,6 +127,7 @@ export function createNotes(deps: NotesDeps) {
     r.badge.textContent = count > 99 ? '99+' : String(count)
     r.badge.hidden = count === 0
 
+    disposeFavoriteControls(r.list)
     r.list.textContent = ''
     if (hasRetainedLegacyNotes()) {
       const legacyWarning = document.createElement('p')

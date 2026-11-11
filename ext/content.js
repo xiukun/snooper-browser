@@ -1710,10 +1710,10 @@
       try {
         const result = await request2("LIBRARY_FAVORITE", { ref, favorite: !refs.has(key) });
         requireSuccess(result);
-        serial++;
         const favorite = result.favorite === true;
         if (favorite) refs.add(key);
         else refs.delete(key);
+        await refresh();
         return favorite;
       } finally {
         busy.delete(key);
@@ -1743,6 +1743,12 @@
   function subtitleFavoriteRef(session, line) {
     return !session.isDemoMode && session.saveState?.status === "saved" && session.transcriptId && line.id ? { kind: "transcript", recordId: session.transcriptId, lineId: line.id } : null;
   }
+  var favoriteDisposers = /* @__PURE__ */ new WeakMap();
+  function disposeFavoriteControls(container) {
+    favoriteDisposers.get(container)?.();
+    favoriteDisposers.delete(container);
+    for (const child of Array.from(container.children)) disposeFavoriteControls(child);
+  }
   function createFavoriteButton(ref, notify, state = favoriteState()) {
     const button = document.createElement("button");
     button.type = "button";
@@ -1755,16 +1761,7 @@
       button.title = !ref ? "\u6B63\u6587\u6210\u529F\u4FDD\u5B58\u540E\u624D\u80FD\u6536\u85CF" : state.status === "error" ? state.error : "\u6536\u85CF\u6B64\u6761\u539F\u6587\u4E0E\u8BD1\u6587";
     };
     update();
-    let unsubscribe = () => {
-    };
-    unsubscribe = state.subscribe(() => {
-      if (!button.isConnected) {
-        unsubscribe();
-        return;
-      }
-      ;
-      update();
-    });
+    favoriteDisposers.set(button, state.subscribe(update));
     button.addEventListener("click", async (event) => {
       event.stopPropagation();
       if (!ref) return;
@@ -2674,6 +2671,7 @@
         const wasAtBottom = r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 40;
         if (rowsChanged) {
           lastRowsSignature = rowsSignature;
+          disposeFavoriteControls(r.subRows);
           r.subRows.textContent = "";
           subs.forEach((sub) => {
             const row = document.createElement("div");
@@ -2750,6 +2748,7 @@
       } else {
         r.subPlaceholder.style.display = "";
         r.subPlaceholder.textContent = "\u70B9\u51FB\u300C\u5F55\u97F3\u300D\u5F00\u59CB\u5B9E\u65F6\u8F6C\u5199";
+        disposeFavoriteControls(r.subRows);
         r.subRows.textContent = "";
         lastRowsSignature = "";
         clearStreaming();
@@ -3657,6 +3656,7 @@
       r.button.setAttribute("data-tip", `\u7B14\u8BB0${count ? `\uFF08${count}\uFF09` : ""}`);
       r.badge.textContent = count > 99 ? "99+" : String(count);
       r.badge.hidden = count === 0;
+      disposeFavoriteControls(r.list);
       r.list.textContent = "";
       if (hasRetainedLegacyNotes()) {
         const legacyWarning = document.createElement("p");

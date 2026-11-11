@@ -45,10 +45,10 @@
       try {
         const result = await request2("LIBRARY_FAVORITE", { ref, favorite: !refs.has(key) });
         requireSuccess(result);
-        serial++;
         const favorite = result.favorite === true;
         if (favorite) refs.add(key);
         else refs.delete(key);
+        await refresh();
         return favorite;
       } finally {
         busy.delete(key);
@@ -75,6 +75,12 @@
     }
     return shared;
   }
+  var favoriteDisposers = /* @__PURE__ */ new WeakMap();
+  function disposeFavoriteControls(container) {
+    favoriteDisposers.get(container)?.();
+    favoriteDisposers.delete(container);
+    for (const child of Array.from(container.children)) disposeFavoriteControls(child);
+  }
   function createFavoriteButton(ref, notify, state = favoriteState()) {
     const button2 = document.createElement("button");
     button2.type = "button";
@@ -87,16 +93,7 @@
       button2.title = !ref ? "\u6B63\u6587\u6210\u529F\u4FDD\u5B58\u540E\u624D\u80FD\u6536\u85CF" : state.status === "error" ? state.error : "\u6536\u85CF\u6B64\u6761\u539F\u6587\u4E0E\u8BD1\u6587";
     };
     update();
-    let unsubscribe = () => {
-    };
-    unsubscribe = state.subscribe(() => {
-      if (!button2.isConnected) {
-        unsubscribe();
-        return;
-      }
-      ;
-      update();
-    });
+    favoriteDisposers.set(button2, state.subscribe(update));
     button2.addEventListener("click", async (event) => {
       event.stopPropagation();
       if (!ref) return;
@@ -270,25 +267,34 @@
     if (options.neighbors !== false) {
       const contextArea = element("div", "library-context");
       contextArea.hidden = true;
+      let contextLoaded = false;
       const context = button("\u67E5\u770B\u4E0A\u4E0B\u6587", "context", async () => {
-        if (!contextArea.hidden) {
+        if (!contextArea.hidden && contextLoaded) {
+          disposeFavoriteControls(contextArea);
+          contextArea.textContent = "";
           contextArea.hidden = true;
+          contextLoaded = false;
           context.textContent = "\u67E5\u770B\u4E0A\u4E0B\u6587";
           return;
         }
+        disposeFavoriteControls(contextArea);
         context.disabled = true;
         contextArea.hidden = false;
         contextArea.textContent = "\u6B63\u5728\u8BFB\u53D6\u4E0A\u4E0B\u6587\u2026";
         try {
           const response = await libraryRequest("LIBRARY_CONTEXT", { ref: entry.ref });
+          if (!contextArea.isConnected) return;
           requireSuccess(response);
           contextArea.textContent = "";
           contextArea.append(element("p", "section-desc", "\u524D\u540E\u76F8\u90BB\u6587\u5B57\u4EC5\u7528\u4E8E\u7406\u89E3\u4E0A\u4E0B\u6587\uFF0C\u6536\u85CF\u6309\u94AE\u5206\u522B\u5BF9\u5E94\u5404\u81EA\u6761\u76EE\u3002"));
           for (const neighbor of response.before) contextArea.append(renderEntry(neighbor, notify, { context: true, neighbors: false }));
           contextArea.append(renderEntry(response.entry, notify, { neighbors: false }));
           for (const neighbor of response.after) contextArea.append(renderEntry(neighbor, notify, { context: true, neighbors: false }));
+          contextLoaded = true;
           context.textContent = "\u6536\u8D77\u4E0A\u4E0B\u6587";
         } catch (error) {
+          if (!contextArea.isConnected) return;
+          contextLoaded = false;
           contextArea.textContent = `\u4E0A\u4E0B\u6587\u8BFB\u53D6\u5931\u8D25\uFF1A${String(error)}`;
           context.textContent = "\u91CD\u8BD5\u4E0A\u4E0B\u6587";
         } finally {
@@ -318,6 +324,7 @@
     }
     function update(state, added, reset) {
       if (reset) {
+        disposeFavoriteControls(container);
         groups.clear();
         container.textContent = "";
       }
@@ -381,8 +388,10 @@
         failed: `\u8BF7\u6C42\u5931\u8D25\uFF0C\u68C0\u7D22\u672A\u5B8C\u6210\uFF1A${state.error}\u3002\u8BF7\u91CD\u8BD5\u6216\u91CD\u65B0\u641C\u7D22\u3002`,
         cancelled: `\u5DF2\u505C\u6B62\u641C\u7D22 \xB7 \u5F53\u524D ${count} \u6761\u7ED3\u679C\u672A\u8986\u76D6\u5168\u90E8\u8D44\u6599\u3002`
       }[state.status];
+      if (state.changed && ["idle", "complete", "empty", "no-match"].includes(state.status)) status.textContent = `\u8D44\u6599\u5DF2\u53D8\u5316\uFF0C\u5F53\u524D\u663E\u793A\u4E0A\u6B21\u641C\u7D22\u7ED3\u679C\uFF08${count} \u6761\uFF09\u3002\u8BF7\u5237\u65B0\u7ED3\u679C\u3002`;
+      root.dataset.stale = String(state.changed);
       root.dataset.status = state.status;
-      warning.textContent = [state.changed ? "\u641C\u7D22\u671F\u95F4\u5185\u5BB9\u6216\u6536\u85CF\u5DF2\u53D8\u5316\u3002\u5F53\u524D\u7ED3\u679C\u6765\u81EA\u641C\u7D22\u5F00\u59CB\u65F6\u7684\u8D44\u6599\uFF0C\u8BF7\u5237\u65B0\u7ED3\u679C\u3002" : "", ...state.errors.map((e) => `\u8BFB\u53D6\u5931\u8D25\uFF1A${e.message}`)].filter(Boolean).join("\n");
+      warning.textContent = [state.changed ? "\u5DF2\u4FDD\u5B58\u7684\u5185\u5BB9\u6216\u6536\u85CF\u5DF2\u53D8\u5316\u3002\u5F53\u524D\u7ED3\u679C\u6765\u81EA\u641C\u7D22\u5F00\u59CB\u65F6\u7684\u8D44\u6599\uFF0C\u8BF7\u5237\u65B0\u7ED3\u679C\u3002" : "", ...state.errors.map((e) => `\u8BFB\u53D6\u5931\u8D25\uFF1A${e.message}`)].filter(Boolean).join("\n");
       retry.hidden = !["partial", "failed"].includes(state.status);
       restart.hidden = !state.changed && !["partial", "failed", "cancelled", "complete", "no-match"].includes(state.status);
       cancel.hidden = state.status !== "searching";
@@ -390,9 +399,11 @@
     }
     const controller = createLibrarySearch({ changed });
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === "local" && changes["snooper.library.favorites.v1"] && controller.state.query) {
+      const libraryKeys = ["snooper.library.favorites.v1", "snooper.library.deletions.v1", "snooper.notes.v1", "snooper.notes.migration.v1", "snooper.extension.transcripts.v1", "snooper.extension.transcript-deletions.v1", "snooper.extension.history.v1"];
+      if (area === "local" && Object.keys(changes).some((key) => libraryKeys.includes(key) || key.startsWith("snooper.extension.transcript.v1."))) {
         controller.state.changed = true;
         changed(controller.state, [], false);
+        if (changes["snooper.library.deletions.v1"] || changes["snooper.extension.transcript-deletions.v1"]) void refreshUsage();
       }
     });
     const input = () => controller.input(query.value, filter.checked);
@@ -453,7 +464,7 @@
     return { activate() {
       void refreshUsage();
       void results.refreshFavorites();
-      if (controller.state.status === "idle" && !controller.state.scopes.length) void controller.start(query.value, filter.checked);
+      if (["idle", "complete", "empty", "no-match"].includes(controller.state.status)) void controller.start(query.value, filter.checked);
     }, controller };
   }
 
@@ -1093,6 +1104,7 @@ ${line.target}`).join("\n\n");
       } finally {
         renderLegacyWarning();
       }
+      disposeFavoriteControls(notesList);
       notesList.textContent = "";
       if (notes.length === 0) {
         const empty = document.createElement("p");
@@ -1402,6 +1414,8 @@ ${line.target}`).join("\n\n");
           detail.textContent = `\u8BFB\u53D6\u5931\u8D25\uFF1A${String(error)}\u3002\u6536\u8D77\u540E\u91CD\u65B0\u5C55\u5F00\u53EF\u91CD\u8BD5\u3002`;
           return;
         }
+        if (!detail.isConnected) return;
+        disposeFavoriteControls(detail);
         detail.textContent = "";
         detail.append(list, more);
         loaded = true;
@@ -1430,6 +1444,7 @@ ${line.target}`).join("\n\n");
       const items = res.history;
       historyEmpty.textContent = "\u8FD8\u6CA1\u6709\u5386\u53F2\u8BB0\u5F55";
       historyCount.textContent = String(items.length);
+      disposeFavoriteControls(historyList);
       historyList.textContent = "";
       if (items.length === 0) {
         historyList.style.display = "none";
@@ -1728,7 +1743,10 @@ ${subtitle.target || ""}`).join("\n\n");
     library.activate();
     void loadAndRenderNotes();
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") void loadAndRenderNotes();
+      if (document.visibilityState === "visible") {
+        void loadAndRenderNotes();
+        if (document.getElementById("panel-search")?.classList.contains("active")) library.activate();
+      }
     });
   })();
 })();

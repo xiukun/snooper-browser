@@ -75,6 +75,7 @@ jobs:
           npm run test:library-search
           npm run test:library-router
           npm run test:library-ui
+          npm run test:library-ui-lifecycle
           node scripts/test-agent.mjs
           node scripts/test-languages.mjs
           node scripts/test-transcription-request.mjs

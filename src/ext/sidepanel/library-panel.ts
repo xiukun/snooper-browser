@@ -34,8 +34,10 @@ export function mountLibraryPanel(showTab: (tab: string) => void) {
       failed: `请求失败，检索未完成：${state.error}。请重试或重新搜索。`,
       cancelled: `已停止搜索 · 当前 ${count} 条结果未覆盖全部资料。`,
     })[state.status]
+    if (state.changed && ['idle', 'complete', 'empty', 'no-match'].includes(state.status)) status.textContent = `资料已变化，当前显示上次搜索结果（${count} 条）。请刷新结果。`
+    root.dataset.stale = String(state.changed)
     root.dataset.status = state.status
-    warning.textContent = [state.changed ? '搜索期间内容或收藏已变化。当前结果来自搜索开始时的资料，请刷新结果。' : '', ...state.errors.map(e => `读取失败：${e.message}`)].filter(Boolean).join('\n')
+    warning.textContent = [state.changed ? '已保存的内容或收藏已变化。当前结果来自搜索开始时的资料，请刷新结果。' : '', ...state.errors.map(e => `读取失败：${e.message}`)].filter(Boolean).join('\n')
     retry.hidden = !['partial', 'failed'].includes(state.status)
     restart.hidden = !state.changed && !['partial', 'failed', 'cancelled', 'complete', 'no-match'].includes(state.status)
     cancel.hidden = state.status !== 'searching'
@@ -43,9 +45,11 @@ export function mountLibraryPanel(showTab: (tab: string) => void) {
   }
   const controller = createLibrarySearch({ changed })
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes['snooper.library.favorites.v1'] && controller.state.query) {
+    const libraryKeys = ['snooper.library.favorites.v1', 'snooper.library.deletions.v1', 'snooper.notes.v1', 'snooper.notes.migration.v1', 'snooper.extension.transcripts.v1', 'snooper.extension.transcript-deletions.v1', 'snooper.extension.history.v1']
+    if (area === 'local' && Object.keys(changes).some(key => libraryKeys.includes(key) || key.startsWith('snooper.extension.transcript.v1.'))) {
       controller.state.changed = true
       changed(controller.state, [], false)
+      if (changes['snooper.library.deletions.v1'] || changes['snooper.extension.transcript-deletions.v1']) void refreshUsage()
     }
   })
   const input = (): void => controller.input(query.value, filter.checked)
@@ -87,5 +91,5 @@ export function mountLibraryPanel(showTab: (tab: string) => void) {
       }
     } catch (error) { if (sequence === usageSequence) usage.textContent = `存储状态读取失败：${String(error)}。请点击刷新状态重试。` }
   }
-  return { activate(): void { void refreshUsage(); void results.refreshFavorites(); if (controller.state.status === 'idle' && !controller.state.scopes.length) void controller.start(query.value, filter.checked) }, controller }
+  return { activate(): void { void refreshUsage(); void results.refreshFavorites(); if (['idle', 'complete', 'empty', 'no-match'].includes(controller.state.status)) void controller.start(query.value, filter.checked) }, controller }
 }

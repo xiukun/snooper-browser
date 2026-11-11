@@ -1,7 +1,7 @@
 import type { EntryRef, HighlightRange, LibraryEntry, LibraryHit, SourceRef } from '../../lib/knowledge-types'
 import { refKey } from '../../lib/knowledge-search'
 import { formatVideoTime } from '../../lib/video-clock'
-import { createFavoriteButton, favoriteState, libraryRequest, requireSuccess } from '../content/favorite-control'
+import { createFavoriteButton, disposeFavoriteControls, favoriteState, libraryRequest, requireSuccess } from '../content/favorite-control'
 import type { QueryState } from './library'
 
 export function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
@@ -51,18 +51,25 @@ export function renderEntry(entry: LibraryEntry, notify: (message: string) => vo
   actions.append(source)
   if (options.neighbors !== false) {
     const contextArea = element('div', 'library-context'); contextArea.hidden = true
+    let contextLoaded = false
     const context = button('查看上下文', 'context', async () => {
-      if (!contextArea.hidden) { contextArea.hidden = true; context.textContent = '查看上下文'; return }
+      if (!contextArea.hidden && contextLoaded) {
+        disposeFavoriteControls(contextArea); contextArea.textContent = ''; contextArea.hidden = true
+        contextLoaded = false; context.textContent = '查看上下文'; return
+      }
+      disposeFavoriteControls(contextArea)
       context.disabled = true; contextArea.hidden = false; contextArea.textContent = '正在读取上下文…'
       try {
-        const response = await libraryRequest('LIBRARY_CONTEXT', { ref: entry.ref }); requireSuccess(response)
+        const response = await libraryRequest('LIBRARY_CONTEXT', { ref: entry.ref })
+        if (!contextArea.isConnected) return
+        requireSuccess(response)
         contextArea.textContent = ''
         contextArea.append(element('p', 'section-desc', '前后相邻文字仅用于理解上下文，收藏按钮分别对应各自条目。'))
         for (const neighbor of response.before as LibraryEntry[]) contextArea.append(renderEntry(neighbor, notify, { context: true, neighbors: false }))
         contextArea.append(renderEntry(response.entry as LibraryEntry, notify, { neighbors: false }))
         for (const neighbor of response.after as LibraryEntry[]) contextArea.append(renderEntry(neighbor, notify, { context: true, neighbors: false }))
-        context.textContent = '收起上下文'
-      } catch (error) { contextArea.textContent = `上下文读取失败：${String(error)}`; context.textContent = '重试上下文' }
+        contextLoaded = true; context.textContent = '收起上下文'
+      } catch (error) { if (!contextArea.isConnected) return; contextLoaded = false; contextArea.textContent = `上下文读取失败：${String(error)}`; context.textContent = '重试上下文' }
       finally { context.disabled = false }
     })
     actions.append(context); row.append(actions, contextArea)
@@ -88,7 +95,7 @@ export function createResultRenderer(container: HTMLElement, notify: (message: s
     group.more.textContent = group.limit === 3 ? `展开全部（${group.hits.length} 条）` : `显示更多（剩余 ${group.hits.length - group.shown} 条）`
   }
   function update(state: QueryState, added: LibraryHit[], reset: boolean): void {
-    if (reset) { groups.clear(); container.textContent = '' }
+    if (reset) { disposeFavoriteControls(container); groups.clear(); container.textContent = '' }
     const touched = new Set<GroupView>()
     for (const hit of added) {
       const key = groupKey(hit)

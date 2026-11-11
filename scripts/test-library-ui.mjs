@@ -22,8 +22,8 @@ try {
  assert.deepEqual([...race.state.hits.keys()],[JSON.stringify(['transcript','r','new'])]);assert.ok(calls.some(c=>c.type==='LIBRARY_CANCEL_SEARCH'&&c.cursor==='stale'))
  let timers=[]; const debounced=ui.createLibrarySearch({request,changed:()=>{},schedule:(fn,ms)=>{timers.push({fn,ms});return timers.length},unschedule:()=>{}})
  debounced.input('first',false);debounced.input('last',true);assert.equal(debounced.state.hits.size,0);assert.equal(debounced.state.query,'last');assert.equal(timers.at(-1).ms,180);responses=[page()];await timers.at(-1).fn();assert.equal(debounced.state.query,'last');assert.equal(debounced.state.favoritesOnly,true)
- let writes=0, fail=true; const f=favorites.createFavoriteState(async(type,fields)=>{
- if(type==='LIBRARY_FAVORITES')return {ok:true,refs:[hit('a').ref]};writes++;if(fail)return {ok:false,error:'disk'};return {ok:true,ref:fields.ref,favorite:fields.favorite}
+ let writes=0, fail=true, storedRefs=[hit('a').ref]; const f=favorites.createFavoriteState(async(type,fields)=>{
+ if(type==='LIBRARY_FAVORITES')return {ok:true,refs:storedRefs};writes++;if(fail)return {ok:false,error:'disk'};storedRefs=fields.favorite?[fields.ref]:[];return {ok:true,ref:fields.ref,favorite:fields.favorite}
  })
  await f.refresh();assert.equal(f.status,'ready');assert.equal(f.has(hit('a').ref),true)
  await assert.rejects(f.toggle(hit('a').ref),/disk/);assert.equal(f.has(hit('a').ref),true)
@@ -48,7 +48,8 @@ try {
  await dom.action(first,'context').click();assert.ok(first.textContent.includes('上下文'));assert.equal(dom.all(first,n=>n.tagName==='ARTICLE').length,3)
  assert.equal(render.groupKey({...hit('a'),sourceRef:{...hit('a').sourceRef,confidence:'legacy'}}),'record:r')
  assert.equal(await render.openEntrySource(hit('a').ref),'未保存可靠播放位置，已打开来源页面')
- const state=favorites.createFavoriteState(async(type,fields)=>type==='LIBRARY_FAVORITES'?{ok:true,refs:[]}:{ok:true,favorite:fields.favorite})
+ let savedFavorite=false
+ const state=favorites.createFavoriteState(async(type,fields)=>{if(type==='LIBRARY_FAVORITES')return {ok:true,refs:savedFavorite?[hit('a').ref]:[]};savedFavorite=fields.favorite;return {ok:true,favorite:savedFavorite}})
  await state.refresh();const star=favorites.createFavoriteButton(hit('a').ref,()=>{},state);document.body.append(star)
  await star.click();assert.equal(star.getAttribute('aria-pressed'),'true');await star.click();assert.equal(star.getAttribute('aria-pressed'),'false')
  const unavailable=favorites.createFavoriteButton(null,()=>{},state);assert.equal(unavailable.disabled,true)

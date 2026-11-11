@@ -1,6 +1,6 @@
 import { mountLibraryPanel } from './library-panel'
 import { renderEntry } from './library-render'
-import { favoriteState } from '../content/favorite-control'
+import { disposeFavoriteControls, favoriteState } from '../content/favorite-control'
 import { legacySourceRef } from '../../lib/video-key'
 import { confirmLibraryDelete } from '../content/library-client'
 import type { SourceRef } from '../../lib/knowledge-types'
@@ -282,6 +282,7 @@ import { videoDeepLink } from '../../lib/deep-link'
     catch (error) { showNotice(`笔记读取失败，请点刷新重试：${String(error)}`); return }
     finally { renderLegacyWarning() }
 
+    disposeFavoriteControls(notesList)
     notesList.textContent = ''
     if (notes.length === 0) {
       const empty = document.createElement('p')
@@ -612,6 +613,8 @@ import { videoDeepLink } from '../../lib/deep-link'
       detail.textContent = '正在读取…'
       try { rows = await fetchHistoryTranscript(item.id) }
       catch (error) { detail.textContent = `读取失败：${String(error)}。收起后重新展开可重试。`; return }
+      if (!detail.isConnected) return
+      disposeFavoriteControls(detail)
       detail.textContent = ''
       detail.append(list, more)
       loaded = true
@@ -632,6 +635,7 @@ import { videoDeepLink } from '../../lib/deep-link'
     const items: HistoryEntry[] = res.history
     historyEmpty.textContent = '还没有历史记录'
     historyCount.textContent = String(items.length)
+    disposeFavoriteControls(historyList)
     historyList.textContent = ''
 
     if (items.length === 0) {
@@ -948,6 +952,9 @@ import { videoDeepLink } from '../../lib/deep-link'
 
   // Keep the note counter fresh when the panel is reopened.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') void loadAndRenderNotes()
+    if (document.visibilityState === 'visible') {
+      void loadAndRenderNotes()
+      if (document.getElementById('panel-search')?.classList.contains('active')) library.activate()
+    }
   })
 })()

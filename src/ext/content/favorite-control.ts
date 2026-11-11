@@ -42,10 +42,11 @@ export function createFavoriteState(request: LibraryRequest = libraryRequest) {
     try {
       const result = await request('LIBRARY_FAVORITE', { ref, favorite: !refs.has(key) })
       requireSuccess(result)
-      // In-flight list reads must not overwrite an acknowledged mutation.
-      serial++
+      // Supersede older snapshots, then read the full acknowledged set. A
+      // concurrent surface may have changed other refs while this write waited.
       const favorite = result.favorite === true
       if (favorite) refs.add(key); else refs.delete(key)
+      await refresh()
       return favorite
     } finally { busy.delete(key); emit() }
   }
@@ -69,6 +70,14 @@ export function subtitleFavoriteRef(session: { transcriptId?: string | null; sav
     ? { kind: 'transcript', recordId: session.transcriptId, lineId: line.id } : null
 }
 
+const favoriteDisposers = new WeakMap<Element, () => void>()
+/** Release subscriptions before a view removes or replaces its rendered subtree. */
+export function disposeFavoriteControls(container: Element): void {
+  favoriteDisposers.get(container)?.()
+  favoriteDisposers.delete(container)
+  for (const child of Array.from(container.children)) disposeFavoriteControls(child)
+}
+
 export function createFavoriteButton(ref: EntryRef | null, notify: (message: string) => void, state = favoriteState()): HTMLButtonElement {
   const button = document.createElement('button')
   button.type = 'button'
@@ -81,8 +90,7 @@ export function createFavoriteButton(ref: EntryRef | null, notify: (message: str
     button.title = !ref ? '正文成功保存后才能收藏' : state.status === 'error' ? state.error : '收藏此条原文与译文'
   }
   update()
-  let unsubscribe: () => void = () => {}
-  unsubscribe = state.subscribe(() => { if (!button.isConnected) { unsubscribe(); return }; update() })
+  favoriteDisposers.set(button, state.subscribe(update))
   button.addEventListener('click', async event => {
     event.stopPropagation()
     if (!ref) return

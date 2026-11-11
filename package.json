@@ -41,7 +41,8 @@
     "test:library-store": "node scripts/test-library-store.mjs",
     "test:library-search": "node scripts/test-library-search.mjs",
     "test:library-router": "node scripts/test-library-router.mjs",
-    "test:library-ui": "node scripts/test-library-ui.mjs"
+    "test:library-ui": "node scripts/test-library-ui.mjs",
+    "test:library-ui-lifecycle": "node scripts/test-library-ui-lifecycle.mjs"
   },
   "dependencies": {
     "docx": "^9.15.2"

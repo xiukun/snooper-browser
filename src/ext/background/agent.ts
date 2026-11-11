@@ -312,19 +312,7 @@ export async function resolveCurrentSession(
     return active
   }
 
-  if (!active && !preferNew) {
-    // Adopt the most recent v1 session once, so a conversation started before
-    // this upgrade is not stranded. Older legacy sessions stay archived.
-    const legacy = store.sessions
-      .filter((s) => !s.videoKey && s.turns.length > 0)
-      .sort((a, b) => b.updatedAt - a.updatedAt)[0]
-    if (legacy) {
-      legacy.videoKey = videoKey
-      syncVideoMeta(legacy, video)
-      store.activeByVideo[videoKey] = legacy.id
-      return legacy
-    }
-  }
+  // An unscoped/mixed legacy conversation remains readable, never rebound.
 
   const created = newSession(video)
   store.sessions.unshift(created)
@@ -574,7 +562,7 @@ export async function recordExchange(store: AgentStore, session: AgentSession, u
 /** List sessions newest-first; optionally scoped to one video. */
 export function listSessions(store: AgentStore, videoKey?: string): SessionSummary[] {
   return [...store.sessions]
-    .filter((session) => !videoKey || session.videoKey === videoKey)
+    .filter((session) => !videoKey || session.videoKey === videoKey || !session.videoKey || (/^bilibili:/.test(videoKey) && session.videoKey === videoKey.replace(/:p\d+$/, '')))
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map(({ id, title, videoKey: key, videoTitle, turns, createdAt, updatedAt }) => ({
       id,
@@ -594,7 +582,7 @@ export function listSessions(store: AgentStore, videoKey?: string): SessionSumma
 export function switchSession(store: AgentStore, id: string, videoKey?: string): AgentSession | null {
   const target = store.sessions.find((s) => s.id === id)
   if (!target) return null
-  if (videoKey && target.videoKey && target.videoKey !== videoKey) return null
+  if (videoKey && target.videoKey && target.videoKey !== videoKey && target.videoKey !== videoKey.replace(/:p\d+$/, '')) return null
   store.activeByVideo[target.videoKey || 'page:unknown'] = id
   return target
 }

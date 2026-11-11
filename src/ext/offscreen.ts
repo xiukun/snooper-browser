@@ -20,6 +20,8 @@
 import { askQuestion } from './offscreen/api'
 import {
   captureSessions,
+  setCaptureSource,
+  prepareCaptureSource,
   captureVideoFrame,
   checkSegment,
   startTabCapture,
@@ -38,8 +40,8 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
 
   switch (message.type) {
     case 'START_CAPTURE': {
-      const { tabId, streamId, sourceLang, targetLang, config, generation } = message
-      startTabCapture({ tabId, streamId, sourceLang, targetLang, config, generation })
+      const { tabId, streamId, sourceLang, targetLang, config, generation, sourceEpoch, sourceRef } = message
+      startTabCapture({ tabId, streamId, sourceLang, targetLang, config, generation, sourceEpoch, sourceRef })
         .then((result) => sendResponse(result))
         .catch((err) => sendResponse({ ok: false, error: err.message }))
       return true
@@ -54,6 +56,16 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
       return true
     }
 
+    case 'PREPARE_CAPTURE_SOURCE': {
+      sendResponse(prepareCaptureSource(message.tabId, message.generation, message.sourceEpoch))
+      return false
+    }
+
+    case 'SET_CAPTURE_SOURCE': {
+      sendResponse(setCaptureSource(message.tabId, message.generation, message.previousSourceEpoch, message.sourceEpoch, message.sourceRef))
+      return false
+    }
+
     case 'GET_CAPTURE_SESSIONS': {
       const sessions: Record<string, number> = {}
       for (const [tabId, session] of captureSessions) {
@@ -63,6 +75,7 @@ chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: a
         ok: true,
         tabIds: Array.from(captureSessions.keys()),
         sessions,
+        sources: Object.fromEntries([...captureSessions].map(([tabId, s]) => [String(tabId), { sourceEpoch: s.sourceEpoch, bindings: s.sourceBindings }])),
       })
       return false
     }

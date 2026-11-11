@@ -1,3 +1,4 @@
+import { legacySourceRef } from '../../lib/video-key'
 /**
  * Full-session transcript store (ADR-031).
  *
@@ -10,6 +11,7 @@
  * module is the single source of truth for history, copy, and export.
  */
 
+import type { SourceRef } from '../../lib/knowledge-types'
 import { sortByStart } from '../../lib/subtitle-order'
 
 export const TRANSCRIPT_INDEX_KEY = 'snooper.extension.transcripts.v1'
@@ -18,13 +20,15 @@ export const LEGACY_HISTORY_KEY = 'snooper.extension.history.v1'
 
 /** Rows per storage chunk. Also the maximum size of a single chunk write. */
 export const TRANSCRIPT_CHUNK_SIZE = 200
-/** Completed transcripts kept in history. Recording transcripts are never evicted. */
-export const MAX_COMPLETED_TRANSCRIPTS = 100
+/** Failed writes stay in memory until retried; capture stops before this limit. */
+export const MAX_PENDING_TRANSCRIPT_LINES = 200
 
 export type TranscriptStatus = 'recording' | 'completed'
 
 export interface TranscriptLine {
   id?: string
+  kind?: 'screen'
+  sourceRef?: SourceRef
   at: number
   endedAt: number | null
   /** Video-timeline position (seconds) for `at` (ADR-033). */
@@ -35,6 +39,8 @@ export interface TranscriptLine {
 }
 
 export interface TranscriptRecord {
+  sourceEpoch?: string
+  sourceRef?: SourceRef
   id: string
   tabId: number
   generation: number
@@ -52,6 +58,8 @@ export interface TranscriptRecord {
 
 /** The shape returned by GET_HISTORY; never includes subtitle bodies. */
 export interface TranscriptSummary {
+  sourceEpoch?: string
+  sourceRef?: SourceRef
   id: string
   pageTitle: string
   url: string
@@ -65,6 +73,8 @@ export interface TranscriptSummary {
 }
 
 export interface BeginTranscriptInput {
+  sourceEpoch?: string
+  sourceRef?: SourceRef
   tabId: number
   generation: number
   pageTitle?: string
@@ -76,6 +86,8 @@ export interface BeginTranscriptInput {
 
 /** Minimal session shape needed by the lifecycle helpers. */
 export interface TranscriptSessionLike {
+  sourceEpoch?: string
+  sourceRef?: SourceRef
   tabId: number
   generation: number
   transcriptId: string | null
@@ -91,25 +103,6 @@ export interface TranscriptMeta {
   startedAt?: number
 }
 
-interface ActiveTranscript {
-  record: TranscriptRecord
-  chunkIndex: number
-  lines: TranscriptLine[]
-  writing: boolean
-  pending: boolean
-  writePromise: Promise<void> | null
-}
-
-const active = new Map<string, ActiveTranscript>()
-const appendQueues = new Map<string, Promise<void>>()
-const beginAttempts = new Map<string, Promise<TranscriptRecord>>()
-
-let indexCache: TranscriptRecord[] | null = null
-let indexLoad: Promise<TranscriptRecord[]> | null = null
-let indexWrite: Promise<void> = Promise.resolve()
-
-/* ===== Normalization ===== */
-
 function toNumber(value: unknown, fallback = 0): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
@@ -123,6 +116,8 @@ function normalizeLine(raw: any): TranscriptLine | null {
     ? raw.videoTime
     : null
   return {
+    ...(raw.kind === 'screen' ? { kind: 'screen' as const } : {}),
+    ...(raw.sourceRef && typeof raw.sourceRef === 'object' ? { sourceRef: raw.sourceRef } : {}),
     ...(typeof raw.id === 'string' && raw.id ? { id: raw.id } : {}),
     at: toNumber(raw.at),
     endedAt: raw.endedAt == null ? null : toNumber(raw.endedAt),
@@ -139,6 +134,8 @@ function normalizeRecord(raw: any): TranscriptRecord | null {
   const status: TranscriptStatus = raw.status === 'recording' ? 'recording' : 'completed'
   return {
     id: raw.id,
+    sourceEpoch: typeof raw.sourceEpoch === 'string' ? raw.sourceEpoch : undefined,
+    sourceRef: raw.sourceRef || legacySourceRef(raw.url || '', raw.pageTitle || '', raw.id),
     tabId: toNumber(raw.tabId, -1),
     generation: toNumber(raw.generation, 0),
     pageTitle: typeof raw.pageTitle === 'string' ? raw.pageTitle.slice(0, 300) : '',
@@ -170,6 +167,8 @@ function normalizeIndex(raw: any): TranscriptRecord[] {
 function toSummary(record: TranscriptRecord): TranscriptSummary {
   return {
     id: record.id,
+    sourceEpoch: record.sourceEpoch,
+    sourceRef: record.sourceRef,
     pageTitle: record.pageTitle,
     url: record.url,
     startedAt: record.startedAt,
@@ -182,571 +181,265 @@ function toSummary(record: TranscriptRecord): TranscriptSummary {
   }
 }
 
-/* ===== Storage keys ===== */
+const DELETE_JOURNAL_KEY = 'snooper.extension.transcript-deletions.v1'
+const pending = new Map<string, TranscriptLine[]>()
+const knownIds = new Map<string, Set<string>>()
+let queue: Promise<unknown> = Promise.resolve()
 
-function chunkKey(id: string, chunkIndex: number): string {
-  return `${TRANSCRIPT_CHUNK_PREFIX}${id}.${chunkIndex}`
-}
-
-function chunkKeys(record: TranscriptRecord): string[] {
-  const count = Math.max(record.chunkCount, Math.ceil(record.subtitleCount / TRANSCRIPT_CHUNK_SIZE))
-  return Array.from({ length: count }, (_, index) => chunkKey(record.id, index))
-}
-
-/* ===== Index persistence ===== */
-
-async function loadIndexFromStorage(): Promise<TranscriptRecord[]> {
-  const got = await chrome.storage.local.get([TRANSCRIPT_INDEX_KEY, LEGACY_HISTORY_KEY])
-  let records = normalizeIndex(got[TRANSCRIPT_INDEX_KEY])
-  const legacy = got[LEGACY_HISTORY_KEY]
-
-  if (Array.isArray(legacy) && legacy.length > 0) {
-    const existing = new Set(records.map((record) => record.id))
-    const migrated = await migrateLegacy(legacy, existing)
-    if (migrated.length > 0) {
-      records = [...migrated, ...records].sort((a, b) => b.startedAt - a.startedAt)
-      await writeIndexNow(records)
-    }
-    // The legacy key is only removed after the new index is safely written.
-    await chrome.storage.local.remove(LEGACY_HISTORY_KEY)
-  }
-
-  indexCache = records
-  return records
-}
-
-async function getIndex(): Promise<TranscriptRecord[]> {
-  if (indexCache) return indexCache
-  if (!indexLoad) {
-    indexLoad = loadIndexFromStorage().finally(() => {
-      indexLoad = null
-    })
-  }
-  return indexLoad
-}
-
-/**
- * Serialize index writes. Chunk writes can overlap; index snapshots must not
- * land out of order or an older summary would overwrite a newer count.
- */
-function writeIndexNow(records: TranscriptRecord[]): Promise<void> {
-  const snapshot = records.map((record) => ({ ...record }))
-  indexWrite = indexWrite
-    .then(() => chrome.storage.local.set({ [TRANSCRIPT_INDEX_KEY]: snapshot }))
-    .catch((err) => {
-      console.warn('[RTTS] transcript index write failed:', err)
-    })
-  return indexWrite
-}
-
-async function persistRecord(record: TranscriptRecord): Promise<void> {
-  const records = await getIndex()
-  if (!records.includes(record)) return
-  await writeIndexNow(records)
-}
-
-async function removeChunks(records: TranscriptRecord[]): Promise<void> {
-  const keys = records.flatMap(chunkKeys)
-  if (keys.length === 0) return
-  try {
-    await chrome.storage.local.remove(keys)
-  } catch (err) {
-    console.warn('[RTTS] transcript chunk removal failed:', err)
-  }
-}
-
-/* ===== Legacy migration ===== */
-
-async function migrateLegacy(
-  legacy: any[],
-  existingIds: Set<string>,
-): Promise<TranscriptRecord[]> {
-  const records: TranscriptRecord[] = []
-  for (const raw of legacy) {
-    if (!raw || typeof raw.id !== 'string' || !raw.id || existingIds.has(raw.id)) continue
-    const lines = Array.isArray(raw.subtitles)
-      ? raw.subtitles.map(normalizeLine).filter((line: TranscriptLine | null): line is TranscriptLine => !!line)
-      : []
-    const startedAt = toNumber(raw.startedAt, Date.now())
-    const endedAt = toNumber(raw.endedAt, startedAt)
-    const record: TranscriptRecord = {
-      id: raw.id,
-      tabId: -1,
-      generation: 0,
-      pageTitle: typeof raw.pageTitle === 'string' ? raw.pageTitle.slice(0, 300) : '',
-      url: typeof raw.url === 'string' ? raw.url.slice(0, 2048) : '',
-      startedAt,
-      endedAt,
-      sourceLang: typeof raw.sourceLang === 'string' ? raw.sourceLang : 'auto',
-      targetLang: typeof raw.targetLang === 'string' ? raw.targetLang : 'zh',
-      subtitleCount: Math.max(lines.length, Math.floor(toNumber(raw.subtitleCount, lines.length))),
-      chunkCount: Math.ceil(lines.length / TRANSCRIPT_CHUNK_SIZE),
-      status: 'completed',
-      lastAt: lines.length > 0 ? lines[lines.length - 1]!.at : endedAt,
-    }
-    for (let offset = 0; offset < lines.length; offset += TRANSCRIPT_CHUNK_SIZE) {
-      const chunkIndex = Math.floor(offset / TRANSCRIPT_CHUNK_SIZE)
-      await chrome.storage.local.set({
-        [chunkKey(record.id, chunkIndex)]: lines.slice(offset, offset + TRANSCRIPT_CHUNK_SIZE),
-      })
-    }
-    existingIds.add(record.id)
-    records.push(record)
-  }
-  return records
-}
-
-/* ===== Active transcript writes ===== */
-
-async function hydrateActive(record: TranscriptRecord): Promise<ActiveTranscript> {
-  const chunkIndex = record.subtitleCount > 0
-    ? Math.floor((record.subtitleCount - 1) / TRANSCRIPT_CHUNK_SIZE)
-    : 0
-  const key = chunkKey(record.id, chunkIndex)
-  const got = await chrome.storage.local.get(key)
-  const lines = Array.isArray(got[key])
-    ? got[key].map(normalizeLine).filter((line: TranscriptLine | null): line is TranscriptLine => !!line)
-    : []
-  const entry: ActiveTranscript = {
-    record,
-    chunkIndex,
-    lines,
-    writing: false,
-    pending: false,
-    writePromise: null,
-  }
-  active.set(record.id, entry)
-  return entry
-}
-
-/**
- * Repair a recording record whose index write may have lagged behind its
- * chunk write. Reads one chunk beyond the expected end to catch the rollover
- * window.
- */
-async function repairRecord(record: TranscriptRecord): Promise<void> {
-  if (record.status !== 'recording') return
-  const expected = Math.max(
-    1,
-    record.chunkCount,
-    Math.ceil(record.subtitleCount / TRANSCRIPT_CHUNK_SIZE),
-  )
-  const maxChunk = expected + 1
-  const keys = Array.from({ length: maxChunk }, (_, index) => chunkKey(record.id, index))
-  const got = await chrome.storage.local.get(keys)
-  let subtitleCount = 0
-  let chunkCount = 0
-  let lastAt = record.lastAt
-  for (let index = 0; index < maxChunk; index += 1) {
-    const chunk = got[keys[index]]
-    if (!Array.isArray(chunk) || chunk.length === 0) continue
-    subtitleCount += chunk.length
-    chunkCount = index + 1
-    const last = chunk[chunk.length - 1]
-    if (last && typeof last.at === 'number' && Number.isFinite(last.at)) {
-      lastAt = Math.max(lastAt, last.at)
-    }
-  }
-  if (subtitleCount !== record.subtitleCount || chunkCount !== record.chunkCount) {
-    record.subtitleCount = subtitleCount
-    record.chunkCount = chunkCount
-    record.lastAt = lastAt
-    await persistRecord(record)
-  }
-}
-
-async function flushActive(recordId: string): Promise<void> {
-  const entry = active.get(recordId)
-  if (!entry) return
-  if (entry.writing) {
-    entry.pending = true
-    if (entry.writePromise) await entry.writePromise
-    return
-  }
-
-  entry.writing = true
-  const run = (async () => {
-    try {
-      do {
-        entry.pending = false
-        const key = chunkKey(recordId, entry.chunkIndex)
-        const lines = entry.lines.slice()
-        if (lines.length > 0) {
-          await chrome.storage.local.set({ [key]: lines })
-          entry.record.chunkCount = Math.max(entry.record.chunkCount, entry.chunkIndex + 1)
-        }
-        await persistRecord(entry.record)
-      } while (entry.pending)
-    } catch (err) {
-      console.warn('[RTTS] transcript chunk write failed:', err)
-    }
-  })()
-
-  entry.writePromise = run
-  await run
-  entry.writing = false
-  entry.writePromise = null
-}
-
-async function appendNow(recordId: string, line: TranscriptLine): Promise<void> {
-  let entry = active.get(recordId)
-  if (!entry) {
-    const records = await getIndex()
-    const record = records.find((item) => item.id === recordId)
-    if (!record || record.status !== 'recording') return
-    entry = await hydrateActive(record)
-  }
-
-  const nextChunk = Math.floor(entry.record.subtitleCount / TRANSCRIPT_CHUNK_SIZE)
-  if (nextChunk !== entry.chunkIndex) {
-    // The old chunk must reach storage before its buffer is replaced.
-    await flushActive(recordId)
-    entry.chunkIndex = nextChunk
-    entry.lines = []
-  }
-
-  entry.lines.push(line)
-  entry.record.subtitleCount += 1
-  entry.record.lastAt = line.at || Date.now()
-  entry.record.chunkCount = Math.max(entry.record.chunkCount, entry.chunkIndex + 1)
-  void flushActive(recordId)
-}
-
-/* ===== Public lifecycle ===== */
-
-async function beginNow(input: BeginTranscriptInput): Promise<TranscriptRecord> {
-  const records = await getIndex()
-  const existing = records.find(
-    (record) =>
-      record.status === 'recording' &&
-      record.tabId === input.tabId &&
-      record.generation === input.generation,
-  )
-  if (existing) return existing
-
-  // A recording that was never finalized (missed CAPTURE_ENDED) must not
-  // absorb the new session's lines.
-  for (const stale of records.filter(
-    (record) => record.status === 'recording' && record.tabId === input.tabId,
-  )) {
-    await finalizeTranscript(stale.id)
-  }
-
-  const now = input.startedAt ?? Date.now()
-  const record: TranscriptRecord = {
-    id: `tr_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-    tabId: input.tabId,
-    generation: input.generation,
-    pageTitle: (input.pageTitle || '').slice(0, 300),
-    url: (input.url || '').slice(0, 2048),
-    startedAt: now,
-    endedAt: null,
-    sourceLang: input.sourceLang || 'auto',
-    targetLang: input.targetLang || 'zh',
-    subtitleCount: 0,
-    chunkCount: 0,
-    status: 'recording',
-    lastAt: now,
-  }
-
-  records.unshift(record)
-  active.set(record.id, {
-    record,
-    chunkIndex: 0,
-    lines: [],
-    writing: false,
-    pending: false,
-    writePromise: null,
-  })
-
-  const evicted = pruneCompleted(records)
-  await writeIndexNow(records)
-  if (evicted.length > 0) await removeChunks(evicted)
-  return record
-}
-
-/** Idempotent for one `(tabId, generation)` pair. */
-export function beginTranscript(input: BeginTranscriptInput): Promise<TranscriptRecord> {
-  const key = `${input.tabId}:${input.generation}`
-  const pending = beginAttempts.get(key)
-  if (pending) return pending
-  const run = beginNow(input).finally(() => {
-    if (beginAttempts.get(key) === run) beginAttempts.delete(key)
-  })
-  beginAttempts.set(key, run)
+/** Failures unlock the queue but remain rejected for the original caller. */
+function serial<T>(operation: () => Promise<T>): Promise<T> {
+  const run = queue.catch(() => {}).then(operation)
+  queue = run.catch(() => {})
   return run
 }
-
-/** Create the record lazily if START could not create it. */
-export async function ensureTranscript(
-  session: TranscriptSessionLike,
-  meta: TranscriptMeta = {},
-): Promise<string | null> {
-  if (session.transcriptId) return session.transcriptId
-  try {
-    const record = await beginTranscript({
-      tabId: session.tabId,
-      generation: session.generation,
-      sourceLang: meta.sourceLang || session.sourceLang,
-      targetLang: meta.targetLang || session.targetLang,
-      pageTitle: meta.pageTitle,
-      url: meta.url,
-      startedAt: meta.startedAt,
-    })
-    session.transcriptId = record.id
-    return record.id
-  } catch (err) {
-    console.warn('[RTTS] transcript creation failed:', err)
-    return null
-  }
+function chunkKey(id: string, index: number): string {
+  return `${TRANSCRIPT_CHUNK_PREFIX}${id}.${index}`
 }
-
-/** Append one final subtitle. Ordering is serialized per transcript. */
-export function appendTranscriptLine(
-  recordId: string,
-  line: TranscriptLine,
-): Promise<void> {
-  if (!recordId) return Promise.resolve()
-  const previous = appendQueues.get(recordId) || Promise.resolve()
-  const next = previous
-    .then(() => appendNow(recordId, line))
-    .catch((err) => {
-      console.warn('[RTTS] transcript append failed:', err)
-    })
-  appendQueues.set(recordId, next)
-  void next.finally(() => {
-    if (appendQueues.get(recordId) === next) appendQueues.delete(recordId)
+function chunkKeys(record: TranscriptRecord): string[] {
+  return Array.from({ length: record.chunkCount }, (_, i) => chunkKey(record.id, i))
+}
+function normalizeChunk(raw: unknown, id: string, index: number, sourceRef?: SourceRef): TranscriptLine[] {
+  if (!Array.isArray(raw)) throw new Error(`转写正文缺块：${id} / ${index}，请重试或导出可用内容`)
+  return raw.flatMap((value, offset) => {
+    const line = normalizeLine(value)
+    return line ? [{ ...line, sourceRef: line.sourceRef || sourceRef || legacySourceRef('', '', id), id: line.id || `${id}:${index}:${offset}` }] : []
   })
-  return next
 }
-
-function pruneCompleted(records: TranscriptRecord[]): TranscriptRecord[] {
-  const completed = records.filter((record) => record.status === 'completed')
-  if (completed.length <= MAX_COMPLETED_TRANSCRIPTS) return []
-  const keep = new Set(
-    [...completed]
-      .sort((a, b) => b.startedAt - a.startedAt)
-      .slice(0, MAX_COMPLETED_TRANSCRIPTS)
-      .map((record) => record.id),
-  )
-  const evicted = completed.filter((record) => !keep.has(record.id))
-  for (const record of evicted) {
-    const index = records.indexOf(record)
-    if (index >= 0) records.splice(index, 1)
+async function writeIndex(records: TranscriptRecord[]): Promise<void> {
+  await chrome.storage.local.set({ [TRANSCRIPT_INDEX_KEY]: records })
+}
+async function loadIndex(): Promise<TranscriptRecord[]> {
+  const got = await chrome.storage.local.get([TRANSCRIPT_INDEX_KEY, LEGACY_HISTORY_KEY, DELETE_JOURNAL_KEY])
+  let records = normalizeIndex(got[TRANSCRIPT_INDEX_KEY])
+  const deleting = normalizeIndex(got[DELETE_JOURNAL_KEY])
+  if (deleting.length) {
+    // The journal makes deletion retryable across worker restarts, including
+    // a crash between deleting bodies and updating the index.
+    await chrome.storage.local.remove(deleting.flatMap(chunkKeys))
+    records = records.filter(r => !deleting.some(d => d.id === r.id))
+    await writeIndex(records)
+    await chrome.storage.local.remove(DELETE_JOURNAL_KEY)
   }
-  return evicted
-}
-
-async function deleteRecord(record: TranscriptRecord): Promise<void> {
-  active.delete(record.id)
-  const records = await getIndex()
-  const index = records.indexOf(record)
-  if (index >= 0) records.splice(index, 1)
-  await removeChunks([record])
-  await writeIndexNow(records)
-}
-
-/**
- * Finalize a transcript and return whether a non-empty record remains.
- * Empty sessions are removed from history.
- */
-export async function finalizeTranscript(recordId: string): Promise<boolean> {
-  if (!recordId) return false
-
-  const pending = appendQueues.get(recordId)
-  if (pending) await pending.catch(() => {})
-
-  const records = await getIndex()
-  const record = records.find((item) => item.id === recordId)
-  if (!record) {
-    active.delete(recordId)
-    return false
+  const legacy = got[LEGACY_HISTORY_KEY]
+  if (Array.isArray(legacy)) {
+    for (const raw of legacy) {
+      if (!raw?.id || records.some(r => r.id === raw.id)) continue
+      const lines = Array.isArray(raw.subtitles) ? raw.subtitles.map(normalizeLine).filter(Boolean) as TranscriptLine[] : []
+      const count = lines.length || (Array.isArray(raw.subtitles) ? 0 : Math.max(0, toNumber(raw.subtitleCount)))
+      const record = normalizeRecord({ ...raw, tabId: -1, status: 'completed', subtitleCount: count, chunkCount: Math.ceil(count / TRANSCRIPT_CHUNK_SIZE) })!
+      for (let i = 0; i < Math.ceil(lines.length / TRANSCRIPT_CHUNK_SIZE); i++) {
+        await chrome.storage.local.set({ [chunkKey(record.id, i)]: lines.slice(i * TRANSCRIPT_CHUNK_SIZE, (i + 1) * TRANSCRIPT_CHUNK_SIZE) })
+      }
+      records.push(record)
+    }
+    await writeIndex(records)
+    await chrome.storage.local.remove(LEGACY_HISTORY_KEY)
   }
+  return records.sort((a, b) => b.startedAt - a.startedAt)
+}
+async function repair(record: TranscriptRecord, records: TranscriptRecord[]): Promise<void> {
+  if (record.status !== 'recording') return
+  const keys = Array.from({ length: Math.max(1, record.chunkCount) + 1 }, (_, i) => chunkKey(record.id, i))
+  const got = await chrome.storage.local.get(keys)
+  let count = 0
+  let chunks = 0
+  let lastAt = record.lastAt
+  for (let i = 0; i < keys.length; i++) {
+    if (got[keys[i]!] === undefined && i >= record.chunkCount) break
+    const lines = normalizeChunk(got[keys[i]!], record.id, i, record.sourceRef)
+    if (!lines.length) break
+    count += lines.length
+    chunks++
+    for (const line of lines) lastAt = Math.max(lastAt, line.at)
+  }
+  if (count !== record.subtitleCount || chunks !== record.chunkCount) {
+    Object.assign(record, { subtitleCount: count, chunkCount: chunks, lastAt })
+    await writeIndex(records)
+  }
+}
+async function readBody(record: TranscriptRecord): Promise<TranscriptLine[]> {
+  const got = await chrome.storage.local.get(chunkKeys(record))
+  return chunkKeys(record).flatMap((key, i) => normalizeChunk(got[key], record.id, i, record.sourceRef))
+}
+async function flushNow(id: string): Promise<void> {
+  const waiting = pending.get(id)
+  if (!waiting?.length) return
+  const records = await loadIndex()
+  const record = records.find(r => r.id === id)
+  if (!record) throw new Error('转写记录不存在，未保存内容仍可导出')
+  if (record.status === 'completed') { pending.delete(id); return }
+  let seen = knownIds.get(id)
+  if (!seen) {
+    await repair(record, records)
+    seen = new Set((await readBody(record)).map(l => l.id!))
+    knownIds.set(id, seen)
+  }
+  while (waiting.length) {
+    const line = waiting[0]!
+    if (line.id && seen.has(line.id)) { waiting.shift(); continue }
+    const chunkIndex = Math.floor(record.subtitleCount / TRANSCRIPT_CHUNK_SIZE)
+    const offset = record.subtitleCount % TRANSCRIPT_CHUNK_SIZE
+    const key = chunkKey(id, chunkIndex)
+    const got = offset ? await chrome.storage.local.get(key) : {}
+    const lines = offset ? normalizeChunk(got[key], id, chunkIndex, record.sourceRef).slice(0, offset) : []
+    const savedLine = { ...line, id: line.id || `${id}:${chunkIndex}:${offset}` }
+    // Keep waiting[0] until BOTH body and index succeed. Retrying overwrites
+    // the same chunk/offset after an index failure, never duplicates a row.
+    await chrome.storage.local.set({ [key]: [...lines, savedLine] })
+    const next = { ...record, subtitleCount: record.subtitleCount + 1, chunkCount: chunkIndex + 1, lastAt: Math.max(record.lastAt, line.at) }
+    await writeIndex(records.map(r => r.id === id ? next : r))
+    Object.assign(record, next)
+    seen.add(savedLine.id)
+    waiting.shift()
+  }
+  pending.delete(id)
+}
+async function deleteNow(ids: string[]): Promise<{ deleted: number; skipped: number }> {
+  const records = await loadIndex()
+  const selected = records.filter(r => ids.includes(r.id))
+  const removable = selected.filter(r => r.status !== 'recording' || r.subtitleCount === 0)
+  if (removable.length) {
+    await chrome.storage.local.set({ [DELETE_JOURNAL_KEY]: removable })
+    await chrome.storage.local.remove(removable.flatMap(chunkKeys))
+    await writeIndex(records.filter(r => !removable.some(d => d.id === r.id)))
+    await chrome.storage.local.remove(DELETE_JOURNAL_KEY)
+    removable.forEach(r => { pending.delete(r.id); knownIds.delete(r.id) })
+  }
+  return { deleted: removable.length, skipped: selected.length - removable.length }
+}
+async function finalizeNow(id: string): Promise<boolean> {
+  await flushNow(id)
+  const records = await loadIndex()
+  const record = records.find(r => r.id === id)
+  if (!record) return false
   if (record.status === 'completed') return record.subtitleCount > 0
-
-  const entry = active.get(recordId)
-  if (entry) {
-    await flushActive(recordId)
-    active.delete(recordId)
-  } else {
-    // A restart may leave the index behind the last chunk write.
-    await repairRecord(record)
-  }
-
-  if (record.subtitleCount === 0) {
-    await deleteRecord(record)
-    return false
-  }
-
-  record.status = 'completed'
-  record.endedAt = Date.now()
-  record.lastAt = record.lastAt || record.endedAt
-  // Enforce the cap at finalization too: pruning only on the next begin
-  // would briefly leave 101 completed records after the last one closes.
-  const evicted = pruneCompleted(records)
-  await writeIndexNow(records)
-  if (evicted.length > 0) await removeChunks(evicted)
+  await repair(record, records)
+  if (!record.subtitleCount) { await deleteNow([id]); return false }
+  await writeIndex(records.map(r => r.id === id ? { ...r, status: 'completed', endedAt: Date.now() } : r))
+  knownIds.delete(id)
   return true
 }
-
-/** Finalize the current tab's transcript, if any. */
-export async function finalizeSessionTranscript(
-  session: TranscriptSessionLike & { subtitles: TranscriptLine[] },
-): Promise<boolean> {
-  let recordId = session.transcriptId
-  if (!recordId) {
-    // Legacy session that predates ADR-031: persist the visible window rather
-    // than silently producing no history.
-    if (!Array.isArray(session.subtitles) || session.subtitles.length === 0) return false
-    const record = await beginTranscript({
-      tabId: session.tabId,
-      generation: session.generation,
-      sourceLang: session.sourceLang,
-      targetLang: session.targetLang,
-    })
-    recordId = record.id
-    session.transcriptId = recordId
-    for (const subtitle of session.subtitles) {
-      await appendTranscriptLine(recordId, subtitle)
-    }
+/** Idempotent for a capture generation + lesson epoch; failed creates are never cached. */
+export function beginTranscript(input: BeginTranscriptInput): Promise<TranscriptRecord> {
+  return serial(async () => {
+    let records = await loadIndex()
+    const existing = records.find(r => r.status === 'recording' && r.tabId === input.tabId && r.generation === input.generation && r.sourceEpoch === input.sourceEpoch)
+    if (existing) return existing
+    for (const stale of records.filter(r => r.status === 'recording' && r.tabId === input.tabId && r.generation !== input.generation)) await finalizeNow(stale.id)
+    records = await loadIndex()
+    const now = input.startedAt ?? Date.now()
+    const record = normalizeRecord({ ...input, id: `tr_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`, startedAt: now, status: 'recording' })!
+    await writeIndex([record, ...records])
+    return record
+  })
+}
+export async function ensureTranscript(session: TranscriptSessionLike, meta: TranscriptMeta = {}): Promise<string> {
+  if (session.transcriptId) return session.transcriptId
+  const record = await beginTranscript({ ...session, pageTitle: session.sourceRef?.title, url: session.sourceRef?.url, ...meta })
+  session.transcriptId = record.id
+  return record.id
+}
+/** Retains a rejected row for explicit flush/retry; stable IDs make retries idempotent. */
+export function appendTranscriptLine(id: string, line: TranscriptLine): Promise<void> {
+  if (!id) return Promise.reject(new Error('缺少转写记录 ID'))
+  const waiting = pending.get(id) || []
+  if (!line.id || !waiting.some(l => l.id === line.id)) {
+    if (waiting.length >= MAX_PENDING_TRANSCRIPT_LINES) return Promise.reject(new Error('未保存内容已达到缓存上限，请停止采集并重试或导出'))
+    waiting.push(structuredClone(line))
+    pending.set(id, waiting)
   }
-  const kept = await finalizeTranscript(recordId)
+  return serial(() => flushNow(id))
+}
+export function flushTranscript(id: string): Promise<void> { return serial(() => flushNow(id)) }
+export function finalizeTranscript(id: string): Promise<boolean> { return serial(() => finalizeNow(id)) }
+export async function finalizeSessionTranscript(session: TranscriptSessionLike & { subtitles: TranscriptLine[] }): Promise<boolean> {
+  if (!session.transcriptId) {
+    if (!session.subtitles.length) return false
+    await ensureTranscript(session)
+    for (const line of session.subtitles) await appendTranscriptLine(session.transcriptId!, line)
+  }
+  const kept = await finalizeTranscript(session.transcriptId!)
   if (!kept) session.transcriptId = null
   return kept
 }
-
-/* ===== Reads ===== */
-
-export async function listTranscripts(): Promise<TranscriptSummary[]> {
-  const records = await getIndex()
-  return records.map(toSummary)
-}
-
-export async function getTranscriptRecord(id: string): Promise<TranscriptRecord | null> {
-  const records = await getIndex()
-  return records.find((record) => record.id === id) ?? null
-}
-
+export function listTranscripts(): Promise<TranscriptSummary[]> { return serial(async () => (await loadIndex()).map(toSummary)) }
+export function getTranscriptRecord(id: string): Promise<TranscriptRecord | null> { return serial(async () => (await loadIndex()).find(r => r.id === id) ?? null) }
 export async function findLatestTranscriptIdForTab(tabId: number): Promise<string | null> {
-  const records = await getIndex()
-  const record = [...records]
-    .sort((a, b) => b.startedAt - a.startedAt)
-    .find((item) => item.tabId === tabId)
-  return record?.id ?? null
+  return serial(async () => (await loadIndex()).find(r => r.tabId === tabId)?.id ?? null)
 }
-
-export async function readTranscript(id: string): Promise<TranscriptLine[]> {
-  if (!id) return []
-  // Include appends that resolved but whose chunk flush is still queued.
-  const pending = appendQueues.get(id)
-  if (pending) await pending.catch(() => {})
-  await flushActive(id)
-  const record = await getTranscriptRecord(id)
-  if (!record) return []
-  const keys = chunkKeys(record)
-  if (keys.length === 0) return []
-  const got = await chrome.storage.local.get(keys)
-  const lines: TranscriptLine[] = []
-  for (const key of keys) {
-    const chunk = got[key]
-    if (!Array.isArray(chunk)) continue
-    for (const raw of chunk) {
-      const line = normalizeLine(raw)
-      if (line) lines.push(line)
-    }
-  }
-  // ADR-038: chunks are append-only, so two in-flight segments can be stored
-  // out of order. Readers (history, copy, export) need speech order.
-  return sortByStart(lines)
+export interface TranscriptPage {
+  record: TranscriptRecord
+  chunkIndex: number
+  lines: TranscriptLine[]
+  nextChunkIndex: number | null
 }
-
+/** Storage order, one chunk per call. IDs use persisted chunk/offset BEFORE sorting. Missing chunks reject. */
+export function readTranscriptPage(id: string, chunkIndex: number): Promise<TranscriptPage> {
+  return serial(async () => {
+    const record = (await loadIndex()).find(r => r.id === id)
+    if (!record) throw new Error('转写记录不存在')
+    if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= Math.max(1, record.chunkCount)) throw new Error('无效的转写块索引')
+    const key = chunkKey(id, chunkIndex)
+    const got = record.chunkCount ? await chrome.storage.local.get(key) : {}
+    return { record, chunkIndex, lines: record.chunkCount ? normalizeChunk(got[key], id, chunkIndex, record.sourceRef) : [], nextChunkIndex: chunkIndex + 1 < record.chunkCount ? chunkIndex + 1 : null }
+  })
+}
+export function readTranscript(id: string): Promise<TranscriptLine[]> {
+  return serial(async () => {
+    await flushNow(id)
+    const record = (await loadIndex()).find(r => r.id === id)
+    return record ? sortByStart(await readBody(record)) : []
+  })
+}
+/** Export rescue path: explicitly labels partial reads and includes failed in-memory writes. */
+export function readAvailableTranscript(id: string): Promise<{ lines: TranscriptLine[]; complete: boolean; error?: string }> {
+  return serial(async () => {
+    let lines: TranscriptLine[] = []
+    let error = ''
+    try {
+      const record = (await loadIndex()).find(r => r.id === id)
+      if (!record) throw new Error('转写记录不存在，仅能导出当前可用内容')
+      if (record) {
+        for (let i = 0; i < record.chunkCount; i++) {
+          try {
+            const key = chunkKey(id, i)
+            const got = await chrome.storage.local.get(key)
+            lines.push(...normalizeChunk(got[key], id, i, record.sourceRef))
+          } catch (err) { error = String(err) }
+        }
+      }
+    } catch (err) { error = String(err) }
+    const seen = new Set(lines.map(l => l.id))
+    lines.push(...(pending.get(id) || []).filter(l => !l.id || !seen.has(l.id)))
+    return { lines: sortByStart(lines), complete: !error, ...(error ? { error } : {}) }
+  })
+}
 export async function readTranscriptForTab(tabId: number): Promise<TranscriptLine[]> {
   const id = await findLatestTranscriptIdForTab(tabId)
   return id ? readTranscript(id) : []
 }
-
-/* ===== Deletion ===== */
-
-export async function deleteTranscripts(
-  ids: string[],
-): Promise<{ deleted: number; skipped: number }> {
-  const records = await getIndex()
-  const wanted = new Set(ids.filter(Boolean))
-  const removable = records.filter(
-    (record) => wanted.has(record.id) && record.status !== 'recording',
-  )
-  const skipped = records.filter(
-    (record) => wanted.has(record.id) && record.status === 'recording',
-  ).length
-  if (removable.length === 0) return { deleted: 0, skipped }
-
-  await removeChunks(removable)
-  for (const record of removable) {
-    active.delete(record.id)
-    const index = records.indexOf(record)
-    if (index >= 0) records.splice(index, 1)
-  }
-  await writeIndexNow(records)
-  return { deleted: removable.length, skipped }
+export function deleteTranscripts(ids: string[]): Promise<{ deleted: number; skipped: number }> {
+  return serial(async () => {
+    const records = await loadIndex()
+    const protectedIds = new Set(records.filter(r => r.status === 'recording').map(r => r.id))
+    const result = await deleteNow(ids.filter(id => !protectedIds.has(id)))
+    return { ...result, skipped: ids.filter(id => protectedIds.has(id)).length }
+  })
 }
-
 export async function clearTranscripts(): Promise<{ deleted: number; skipped: number }> {
-  const records = await getIndex()
-  const removable = records.filter((record) => record.status !== 'recording')
-  const skipped = records.length - removable.length
-  if (removable.length === 0) return { deleted: 0, skipped }
-
-  await removeChunks(removable)
-  for (const record of removable) {
-    active.delete(record.id)
-    const index = records.indexOf(record)
-    if (index >= 0) records.splice(index, 1)
-  }
-  await writeIndexNow(records)
-  return { deleted: removable.length, skipped }
+  return deleteTranscripts((await listTranscripts()).map(r => r.id))
 }
-
-/* ===== Recovery ===== */
-
-/**
- * Reconcile recording records after a service-worker restart.
- *
- * Returns the recording transcript ids that still have a live capture, keyed
- * by tab. Callers attach those ids to the recovered `SessionState` objects.
- */
-export async function recoverTranscripts(
-  liveGenerations: Record<string, number> = {},
-): Promise<Map<number, string>> {
-  const records = await getIndex()
-  const liveByTab = new Map<number, string>()
-  const now = Date.now()
-
-  for (const record of [...records]) {
-    if (record.status !== 'recording') continue
-    const live = liveGenerations[String(record.tabId)]
-    if (typeof live === 'number' && live === record.generation) {
-      await repairRecord(record)
-      await hydrateActive(record)
-      liveByTab.set(record.tabId, record.id)
-      continue
+export function recoverTranscripts(liveGenerations: Record<string, number> = {}, pendingRecordIds: string[] = []): Promise<Map<number, string>> {
+  return serial(async () => {
+    const records = await loadIndex()
+    const live = new Map<number, string>()
+    for (const record of records.filter(r => r.status === 'recording')) {
+      if (liveGenerations[String(record.tabId)] === record.generation || pendingRecordIds.includes(record.id)) {
+        const current = await loadIndex()
+        await repair(current.find(r => r.id === record.id)!, current)
+        live.set(record.tabId, record.id)
+      } else await finalizeNow(record.id)
     }
-
-    // No live capture: keep the persisted prefix, close the record.
-    await repairRecord(record)
-    if (record.subtitleCount === 0) {
-      await deleteRecord(record)
-      continue
-    }
-    record.status = 'completed'
-    record.endedAt = record.lastAt || now
-    await persistRecord(record)
-  }
-
-  const evicted = pruneCompleted(records)
-  if (evicted.length > 0) {
-    await writeIndexNow(records)
-    await removeChunks(evicted)
-  }
-
-  return liveByTab
+    return live
+  })
 }

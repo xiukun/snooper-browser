@@ -221,7 +221,7 @@ The ZIP is intentionally readable and contains no encrypted or remotely loaded c
 4. Start microphone or tab-audio transcription. Grant the browser capture permission when prompted.
 5. Use the in-page toolbar to pause, stop, save notes, export subtitles, or ask the configured model about the current page.
 6. To read burned-in subtitles, open **… → 画面字幕** while recording. The channel is manual and per capture.
-7. Open the side panel to review notes and transcription history, export Markdown, delete records, or configure optional Obsidian sync.
+7. Open the side panel to search saved course content, review notes and transcription history, export Markdown, delete records, or configure optional Obsidian sync.
 
 ### Screenshots, notes, and citations
 
@@ -232,7 +232,7 @@ The page toolbar keeps screenshot and note actions in its **…** menu:
    inserted.
 2. **Save a subtitle line**: click **记入笔记** to append the current subtitle to
    the active note.
-3. **Review notes**: open the extension side panel and switch to **笔记历史**.
+3. **Review notes**: open the extension side panel and switch to **笔记**.
    Each card shows the title, entry count, a short preview, and the export and
    delete actions.
 4. **Cite a note image in chat**: open the companion drawer, click **引用**, pick
@@ -247,23 +247,21 @@ The page toolbar keeps screenshot and note actions in its **…** menu:
 
 ### Transcription history
 
-Realtime translation is recorded while it runs, not only when it stops: every
-final line is appended to the local transcript immediately. Each line also
-carries the video's playback position when the page exposes a `<video>`, so
-history and Markdown exports show where in the video a sentence was spoken
-instead of only when it was recorded — and clicking that timestamp seeks the
-video to the moment (both in the in-page overlay and the side panel). Exported
-Markdown and 「记入笔记」 entries carry the anchor too: on Bilibili and YouTube
-pages the timestamp is a `?t=` deep link, so clicking it inside Obsidian opens
-the video at that moment. History record titles are clickable and return to the
-original video page. A session has no
-per-record row cap; the page renders the most recent 200 lines, while history,
-copy, and export read the complete transcript on demand. At most 100 completed
-records are kept. Closing the panel, navigating away, or a browser crash still
-leaves the lines that were already written. Open the side panel → **历史** to
-expand a record, read the transcript, copy it, export it as Markdown, or delete
-it. A record that is still recording cannot be deleted. Records saved by older
-versions only contain counts and are marked accordingly.
+Final subtitle lines are saved locally after successful storage writes. A failed write stays visibly pending with retry and export controls; unsaved page/session drafts are not guaranteed to survive full browser shutdown. Saved bodies are never automatically removed because of age, count, or favorite status. The live overlay displays the latest 200 lines; history and export read the full saved transcript without a row limit.
+
+Open the side panel → **历史** to read all entries in batches, favorite a particular line, copy or export Markdown, and manually delete records. Recording records cannot be deleted. Deletion first previews the exact affected records, note entries, and favorites; incomplete deletions remain visible and retryable. Independently saved notes survive deletion of their source recording.
+
+Saved source identity and video playback seconds are distinct from recording time. Verified YouTube videos and Bilibili parts support source-aware seeking: opening A's history while watching B cannot seek B. If the source or time is unverified, the action opens the saved page and states the limitation. It only reports “located” after a verified seek.
+
+### Local course search and favorites
+
+The side panel opens on **搜索**. Enter a literal keyword such as 手机 or 电脑 to search every saved subtitle source/translation and note text; the default includes unfavorited content. **只看收藏** filters matching entries. Search runs entirely in browser storage without model calls, a cloud index, or an account. It does not provide cross-device sync, AI questions over a whole course, or automatic backups.
+
+Results group verified video/lesson identities and keep uncertain sources separate by original recording or note. Each group starts with three previews; expanding and “show more” exposes all matches in DOM batches. Context reads neighboring saved entries across transcript blocks. A subtitle's original and translation share one favorite, while identical text saved as separate entries stays independent. Unsaved live subtitles and pending notes cannot be favorited. Removing a favorite preserves its body.
+
+The panel distinguishes a complete search with no matches, an empty library, changing content, canceled searches, and incomplete reads. Read errors pause scanning; **重试读取** retries the failed batch, while **刷新结果** starts again. The storage area shows actual local bytes (including settings and attachments), saved counts, unavailable statistics, pending writes/deletes, and links to export/manual cleanup. Keep important material in exported files; browser/profile removal still removes local data.
+
+Validation uses isolated synthetic course fixtures, not private browsing data: 151 long transcripts / 68,101 subtitle rows plus notes, exact 手机/电脑 counts, full broad-query coverage, cancellation, source boundaries, and three viewport sizes. Native media and side-panel messaging are exercised in Chromium fixtures with YouTube/Bilibili-shaped URLs. These checks do not claim end-to-end validation against real course sites or the Edge product; site changes, login restrictions, and native player behavior still require real-site testing.
 
 ### Session summary
 
@@ -313,7 +311,7 @@ button on that row to open the plugin settings and copy its API key.
 | `activeTab`, `scripting` | Opens or injects the toolbar after the user invokes the extension. |
 | `storage` | Stores provider settings, notes, history, Obsidian settings, and session recovery in extension storage. |
 | `tabCapture`, `offscreen` | Captures and processes tab audio after the user starts transcription. |
-| `sidePanel` | Provides the optional notes, history, and Obsidian panel. |
+| `sidePanel` | Provides local search, notes, history, and the optional Obsidian panel. |
 | `management` | Read-only: when another extension holds the capture stream, the error hint lists which extensions hold the `tabCapture` permission. |
 | `<all_urls>` | Allows the user-invoked toolbar to work on arbitrary websites. |
 

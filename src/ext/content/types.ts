@@ -1,3 +1,4 @@
+import type { SaveState, SourceRef } from '../../lib/knowledge-types'
 /** Shared content-script session shapes. */
 
 import type { NoteDocument, SubtitleLine } from '../../lib/types'
@@ -27,6 +28,9 @@ export interface ChatMessage {
 }
 
 export interface SessionState {
+  sourceRef?: SourceRef
+  sourceEpoch?: string
+  chatSourceRef?: SourceRef
   state: string
   sourceLang: string
   targetLang: string
@@ -35,6 +39,8 @@ export interface SessionState {
   /** Active companion session for the current video (ADR-030). */
   agentSessionId?: string | null
   /** Durable transcript id for the active capture (ADR-031). */
+  saveState?: SaveState
+  currentTranscriptSaveState?: SaveState
   transcriptId?: string | null
   streamingSubtitle?: StreamingSubtitle | null
   audioSilent?: boolean

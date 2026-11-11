@@ -1,6 +1,12 @@
 (() => {
   // src/ext/content/styles/panels.ts
-  var PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
+  var PANELS_CSS = `
+    .sub-favorite { grid-column: 2; justify-self: start; background: transparent; color: inherit; border: 1px solid currentColor; border-radius: 6px; padding: 3px 7px; font-size: 11px; cursor: pointer; }
+    .sub-row:not(.has-time) .sub-favorite { grid-column: 1; }
+    .library-favorite:disabled { opacity: .5; cursor: default; }
+    .library-favorite[aria-pressed="true"] { font-weight: 700; }
+    .library-favorite:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+/* === Unified side drawer: chat + notes tabs === */
     #rtts-drawer-tabs {
       display: flex; align-items: center; gap: 4px;
       background: rgba(255,255,255,0.04);
@@ -1658,51 +1664,269 @@
     <div id="rtts-toasts" aria-live="polite"></div>
   `;
 
+  // src/lib/knowledge-search.ts
+  function refKey(ref) {
+    return ref.kind === "transcript" ? JSON.stringify(["transcript", ref.recordId, ref.lineId]) : JSON.stringify(["note", ref.noteId, ref.entryId]);
+  }
+
+  // src/ext/content/favorite-control.ts
+  var libraryRequest = (type, fields = {}) => chrome.runtime.sendMessage({ target: "background", type, ...fields });
+  function requireSuccess(result) {
+    if (!result?.ok) {
+      const messages = { CURSOR_EXPIRED: "\u8FD9\u6B21\u641C\u7D22\u5DF2\u5931\u6548\uFF0C\u8BF7\u5237\u65B0\u7ED3\u679C", CURSOR_MISMATCH: "\u641C\u7D22\u6761\u4EF6\u5DF2\u66F4\u6539\uFF0C\u8BF7\u5237\u65B0\u7ED3\u679C", CONFIRMATION_STALE: "\u8D44\u6599\u6216\u6536\u85CF\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9884\u89C8\u5220\u9664\u8303\u56F4" };
+      throw Object.assign(new Error(messages[result?.code || ""] || result?.error || "\u8BF7\u6C42\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5"), { code: result?.code });
+    }
+  }
+  function createFavoriteState(request2 = libraryRequest) {
+    let refs = /* @__PURE__ */ new Set();
+    let status = "loading";
+    let error = "";
+    let serial = 0;
+    const busy = /* @__PURE__ */ new Set();
+    const listeners = /* @__PURE__ */ new Set();
+    const emit = () => listeners.forEach((fn) => fn());
+    async function refresh() {
+      const sequence = ++serial;
+      try {
+        const result = await request2("LIBRARY_FAVORITES");
+        requireSuccess(result);
+        if (sequence !== serial) return;
+        refs = new Set(result.refs.map(refKey));
+        status = "ready";
+        error = "";
+      } catch (cause) {
+        if (sequence !== serial) return;
+        status = "error";
+        error = String(cause);
+      }
+      emit();
+    }
+    async function toggle(ref) {
+      const key = refKey(ref);
+      if (status !== "ready") throw new Error("\u6536\u85CF\u72B6\u6001\u5C1A\u672A\u8BFB\u53D6\uFF0C\u8BF7\u91CD\u8BD5");
+      if (busy.has(key)) return refs.has(key);
+      busy.add(key);
+      emit();
+      try {
+        const result = await request2("LIBRARY_FAVORITE", { ref, favorite: !refs.has(key) });
+        requireSuccess(result);
+        const favorite = result.favorite === true;
+        if (favorite) refs.add(key);
+        else refs.delete(key);
+        await refresh();
+        return favorite;
+      } finally {
+        busy.delete(key);
+        emit();
+      }
+    }
+    return { refresh, toggle, get status() {
+      return status;
+    }, get error() {
+      return error;
+    }, has: (ref) => refs.has(refKey(ref)), busy: (ref) => busy.has(refKey(ref)), subscribe(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    } };
+  }
+  var shared;
+  function favoriteState() {
+    if (!shared) {
+      shared = createFavoriteState();
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === "local" && changes["snooper.library.favorites.v1"]) void shared?.refresh();
+      });
+      void shared.refresh();
+    }
+    return shared;
+  }
+  function subtitleFavoriteRef(session, line) {
+    return !session.isDemoMode && session.saveState?.status === "saved" && session.transcriptId && line.id ? { kind: "transcript", recordId: session.transcriptId, lineId: line.id } : null;
+  }
+  var favoriteDisposers = /* @__PURE__ */ new WeakMap();
+  function disposeFavoriteControls(container) {
+    favoriteDisposers.get(container)?.();
+    favoriteDisposers.delete(container);
+    for (const child of Array.from(container.children)) disposeFavoriteControls(child);
+  }
+  function createFavoriteButton(ref, notify, state = favoriteState()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "library-favorite btn btn-sm btn-secondary";
+    button.dataset.action = "favorite";
+    const update = () => {
+      button.disabled = !ref || state.busy(ref) || state.status === "loading";
+      button.textContent = !ref ? "\u4FDD\u5B58\u540E\u53EF\u6536\u85CF" : state.status === "loading" ? "\u8BFB\u53D6\u6536\u85CF\u2026" : state.status === "error" ? "\u91CD\u8BD5\u8BFB\u53D6\u6536\u85CF" : state.has(ref) ? "\u2605 \u5DF2\u6536\u85CF" : "\u2606 \u6536\u85CF";
+      button.setAttribute("aria-pressed", String(!!ref && state.has(ref)));
+      button.title = !ref ? "\u6B63\u6587\u6210\u529F\u4FDD\u5B58\u540E\u624D\u80FD\u6536\u85CF" : state.status === "error" ? state.error : "\u6536\u85CF\u6B64\u6761\u539F\u6587\u4E0E\u8BD1\u6587";
+    };
+    update();
+    favoriteDisposers.set(button, state.subscribe(update));
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (!ref) return;
+      if (state.status === "error") {
+        await state.refresh();
+        return;
+      }
+      try {
+        await state.toggle(ref);
+      } catch (error) {
+        notify(`\u6536\u85CF\u672A\u66F4\u6539\uFF1A${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+    return button;
+  }
+
+  // src/ext/content/library-client.ts
+  async function confirmLibraryDelete(selection) {
+    const preview = await libraryRequest("LIBRARY_PREPARE_DELETE", selection);
+    requireSuccess(preview);
+    const targets = preview.targets;
+    const skipped = preview.skipped;
+    if (!targets.length) throw new Error(skipped[0]?.reason || "\u6CA1\u6709\u53EF\u5220\u9664\u7684\u8D44\u6599");
+    const transcripts = targets.filter((t) => t.kind === "transcript").length;
+    const notes = targets.filter((t) => t.kind === "note");
+    const noteEntries = notes.reduce((sum, t) => sum + (t.kind === "note" ? t.entryIds.length : 0), 0);
+    const previousFocus = document.activeElement;
+    const dialog = document.createElement("dialog");
+    dialog.className = "library-delete-dialog";
+    dialog.setAttribute("aria-label", "\u786E\u8BA4\u5220\u9664\u8D44\u6599");
+    dialog.style.cssText = "max-width:min(440px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;padding:20px;border-radius:12px;border:1px solid var(--border-color,GrayText);background:var(--bg-secondary,Canvas);color:var(--text-main,CanvasText);margin:auto;line-height:1.7";
+    const heading = document.createElement("h2");
+    heading.textContent = "\u786E\u8BA4\u5220\u9664\u8D44\u6599";
+    heading.style.fontSize = "18px";
+    const summary = document.createElement("p");
+    summary.dataset.testid = "delete-impact";
+    summary.textContent = `\u5C06\u5220\u9664 ${transcripts} \u6761\u8F6C\u5199\u8BB0\u5F55\u3001${noteEntries} \u6761\u7B14\u8BB0\u5185\u5BB9\uFF0C\u540C\u65F6\u79FB\u9664 ${preview.favoriteCount} \u6761\u6536\u85CF\u3002\u72EC\u7ACB\u53E6\u5B58\u7684\u7B14\u8BB0\u4F1A\u4FDD\u7559\u3002\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002`;
+    const status = document.createElement("p");
+    status.setAttribute("role", "alert");
+    status.style.overflowWrap = "anywhere";
+    if (skipped.length) status.textContent = `${skipped.length} \u9879\u5DF2\u8DF3\u8FC7\uFF1A${skipped.map((s) => s.reason).join("\uFF1B")}`;
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;margin-top:14px";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "btn btn-secondary";
+    cancel.textContent = "\u53D6\u6D88";
+    cancel.dataset.action = "cancel-delete";
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "btn btn-danger";
+    confirm.textContent = "\u786E\u8BA4\u5220\u9664";
+    confirm.dataset.action = "confirm-delete";
+    actions.append(cancel, confirm);
+    dialog.append(heading, summary, status, actions);
+    document.body.append(dialog);
+    return new Promise((resolve) => {
+      let result = null;
+      let busy = false;
+      let stale = false;
+      dialog.addEventListener("cancel", (event) => {
+        if (busy) event.preventDefault();
+      });
+      dialog.addEventListener("close", () => {
+        dialog.remove();
+        previousFocus?.focus();
+        resolve(result);
+      }, { once: true });
+      cancel.addEventListener("click", () => dialog.close());
+      confirm.addEventListener("click", async () => {
+        busy = true;
+        confirm.disabled = true;
+        cancel.disabled = true;
+        status.textContent = "\u6B63\u5728\u5220\u9664\u2026";
+        try {
+          const response = await libraryRequest("LIBRARY_DELETE", { token: preview.token });
+          requireSuccess(response);
+          const deletion = response;
+          if (deletion.pending.length) {
+            status.textContent = `\u5DF2\u5B8C\u6210 ${deletion.completed.length} \u9879\uFF0C${deletion.pending.length} \u9879\u5C1A\u672A\u5B8C\u6210\uFF1A${deletion.pending.map((p) => p.error).join("\uFF1B")}\u3002\u53EF\u91CD\u8BD5\uFF0C\u6216\u7A0D\u540E\u5728\u641C\u7D22\u9875\u7684\u5B58\u50A8\u72B6\u6001\u4E2D\u5904\u7406\u3002`;
+          } else {
+            result = deletion;
+            dialog.close();
+            return;
+          }
+        } catch (error) {
+          stale = !!error && typeof error === "object" && "code" in error && error.code === "CONFIRMATION_STALE";
+          status.textContent = `\u5220\u9664\u672A\u5B8C\u6210\uFF1A${error instanceof Error ? error.message : String(error)}${stale ? "\u3002\u8BF7\u5173\u95ED\u540E\u91CD\u65B0\u9009\u62E9\uFF0C\u6838\u5BF9\u6700\u65B0\u5F71\u54CD\u6570\u91CF\u3002" : ""}`;
+        } finally {
+          busy = false;
+          confirm.disabled = stale;
+          cancel.disabled = false;
+        }
+        confirm.textContent = stale ? "\u8BF7\u91CD\u65B0\u9884\u89C8" : "\u91CD\u8BD5\u5220\u9664";
+        cancel.textContent = "\u7A0D\u540E\u5904\u7406";
+      });
+      dialog.showModal();
+      cancel.focus();
+    });
+  }
+
   // src/ext/content/notes-store.ts
   var NOTES_STORAGE_KEY = "snooper.notes.v1";
-  async function loadNotes() {
+  var retainedLegacySnapshot = null;
+  async function requestResult(type, fields = {}) {
+    const result = await chrome.runtime.sendMessage({ target: "background", type, ...fields });
+    if (!result?.ok || !Array.isArray(result.notes)) throw new Error(result?.error || "\u7B14\u8BB0\u4FDD\u5B58\u670D\u52A1\u4E0D\u53EF\u7528\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA");
+    return result;
+  }
+  async function request(type, fields = {}) {
+    return (await requestResult(type, fields)).notes;
+  }
+  function hasRetainedLegacyNotes() {
+    return retainedLegacySnapshot !== null;
+  }
+  function readRetainedLegacyNotes() {
     try {
-      const got = await chrome.storage.local.get(NOTES_STORAGE_KEY);
-      const stored = got?.[NOTES_STORAGE_KEY];
-      if (Array.isArray(stored)) return stored;
+      return localStorage.getItem(NOTES_STORAGE_KEY) ?? retainedLegacySnapshot;
+    } catch {
+      return retainedLegacySnapshot;
+    }
+  }
+  function exportRetainedLegacyNotes() {
+    const raw = readRetainedLegacyNotes();
+    if (!raw) return;
+    const url = URL.createObjectURL(new Blob([raw], { type: "application/json" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "snooper-legacy-notes.json";
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2e3);
+  }
+  async function loadNotes() {
+    let legacy;
+    let submitted = null;
+    try {
+      submitted = localStorage.getItem(NOTES_STORAGE_KEY);
+      if (submitted) legacy = JSON.parse(submitted);
     } catch {
     }
+    retainedLegacySnapshot = submitted;
+    const result = await requestResult("NOTES_LIST", { legacy });
     try {
-      const raw = localStorage.getItem(NOTES_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          try {
-            await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: parsed });
-          } catch {
-          }
-          return parsed;
-        }
+      const current = localStorage.getItem(NOTES_STORAGE_KEY);
+      if (submitted && current === submitted && result.legacyAcknowledged === true) {
+        localStorage.removeItem(NOTES_STORAGE_KEY);
+        retainedLegacySnapshot = null;
+      } else {
+        retainedLegacySnapshot = current;
+        if (current === submitted && Array.isArray(legacy) && legacy.length === 0) retainedLegacySnapshot = null;
       }
     } catch {
     }
-    return [];
+    return result.notes;
   }
-  async function saveNotes(notes) {
-    try {
-      await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes });
-    } catch {
-    }
-    try {
-      localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
-    } catch {
-    }
+  function addNoteEntry(note, entry) {
+    return request("NOTES_ADD_ENTRY", { input: { noteId: note.id, title: note.title, createdAt: note.createdAt, sessionInfo: note.sessionInfo, entry } });
+  }
+  async function deleteNoteEntry(noteId, entryId) {
+    if (!await confirmLibraryDelete({ noteEntries: [{ noteId, entryId }] })) return null;
+    return request("NOTES_LIST");
   }
   function createNoteDocument(title, source) {
     const now = Date.now();
-    return {
-      id: `note_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-      title,
-      createdAt: now,
-      updatedAt: now,
-      entries: [],
-      sessionInfo: source
-    };
+    return { id: `note_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`, title, createdAt: now, updatedAt: now, entries: [], sessionInfo: source };
   }
 
   // src/ext/content/markdown.ts
@@ -2387,207 +2611,14 @@
     return items.slice().sort(compareStart);
   }
 
-  // src/ext/screenshot.ts
-  function loadImageElement(src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error("\u622A\u56FE\u89E3\u7801\u5931\u8D25"));
-      img.src = src;
-    });
-  }
-  function collectVideos(root, out, depth) {
-    if (depth > 3) return;
-    root.querySelectorAll("video").forEach((video) => out.push(video));
-    root.querySelectorAll("iframe").forEach((frame) => {
-      try {
-        const doc = frame.contentDocument;
-        if (doc) collectVideos(doc, out, depth + 1);
-      } catch {
-      }
-    });
-    root.querySelectorAll("*").forEach((el) => {
-      const shadowRoot = el.shadowRoot;
-      if (shadowRoot) collectVideos(shadowRoot, out, depth + 1);
-    });
-  }
-  function getFrameGeometry(win) {
-    const frames = [];
-    let current = win;
-    for (let depth = 0; current && current !== window && depth < 5; depth++) {
-      let frame = null;
-      try {
-        frame = current.frameElement;
-      } catch {
-        break;
-      }
-      if (!frame) break;
-      frames.unshift(frame);
-      current = frame.ownerDocument.defaultView;
-    }
-    let x = 0;
-    let y = 0;
-    let clip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
-    for (const frame of frames) {
-      const rect = frame.getBoundingClientRect();
-      const left = x + rect.left;
-      const top = y + rect.top;
-      clip = {
-        left: Math.max(clip.left, left),
-        top: Math.max(clip.top, top),
-        right: Math.min(clip.right, left + rect.width),
-        bottom: Math.min(clip.bottom, top + rect.height)
-      };
-      x = left;
-      y = top;
-    }
-    return { x, y, clip };
-  }
-  function getVideoContentRect(video) {
-    if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
-    const win = video.ownerDocument.defaultView;
-    if (!win) return null;
-    const style = win.getComputedStyle(video);
-    if (style.display === "none" || style.visibility === "hidden") return null;
-    if (Number(style.opacity) < 0.05) return null;
-    const r = video.getBoundingClientRect();
-    if (!r.width || !r.height) return null;
-    const frame = getFrameGeometry(win);
-    let x = r.left + frame.x;
-    let y = r.top + frame.y;
-    let w = r.width;
-    let h = r.height;
-    const fit = style.objectFit || "contain";
-    if (fit === "contain" || fit === "scale-down") {
-      const videoAspect = video.videoWidth / video.videoHeight;
-      const boxAspect = w / h;
-      if (videoAspect > boxAspect) {
-        const nh = w / videoAspect;
-        y += (h - nh) / 2;
-        h = nh;
-      } else {
-        const nw = h * videoAspect;
-        x += (w - nw) / 2;
-        w = nw;
-      }
-    }
-    const left = Math.max(frame.clip.left, x);
-    const top = Math.max(frame.clip.top, y);
-    const right = Math.min(frame.clip.right, x + w);
-    const bottom = Math.min(frame.clip.bottom, y + h);
-    if (right - left < 64 || bottom - top < 64) return null;
-    return { x: left, y: top, w: right - left, h: bottom - top };
-  }
-  function findBestVideoCandidate() {
-    const videos = [];
-    collectVideos(document, videos, 0);
-    let best = null;
-    for (const video of videos) {
-      const rect = getVideoContentRect(video);
-      if (!rect) continue;
-      const score = rect.w * rect.h * (video.paused ? 0.6 : 1);
-      if (!best || score > best.score) best = { video, rect, score };
-    }
-    return best ? { video: best.video, rect: best.rect, count: videos.length } : null;
-  }
-  function createScreenshotCapturer(deps) {
-    const maxWidth = deps.maxWidth ?? 1600;
-    const quality = deps.jpegQuality ?? 0.9;
-    const hideDelayMs = deps.hideDelayMs ?? 120;
-    async function render(dataUrl, rect) {
-      const img = await loadImageElement(dataUrl);
-      const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
-      const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
-      let sx = 0;
-      let sy = 0;
-      let sw = img.naturalWidth;
-      let sh = img.naturalHeight;
-      if (rect) {
-        sx = Math.min(img.naturalWidth - 1, Math.max(0, Math.round(rect.x * scaleX)));
-        sy = Math.min(img.naturalHeight - 1, Math.max(0, Math.round(rect.y * scaleY)));
-        sw = Math.min(img.naturalWidth - sx, Math.max(1, Math.round(rect.w * scaleX)));
-        sh = Math.min(img.naturalHeight - sy, Math.max(1, Math.round(rect.h * scaleY)));
-        if (sw < 32 || sh < 32) throw new Error("\u89C6\u9891\u88C1\u526A\u533A\u57DF\u8FC7\u5C0F");
-      }
-      let outW = sw;
-      let outH = sh;
-      if (outW > maxWidth) {
-        outH = Math.round(outH * maxWidth / outW);
-        outW = maxWidth;
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = outW;
-      canvas.height = outH;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("\u65E0\u6CD5\u521B\u5EFA\u753B\u5E03");
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
-      return canvas.toDataURL("image/jpeg", quality);
-    }
-    async function captureVideoFrame() {
-      const candidate = findBestVideoCandidate();
-      console.log("[RTTS] screenshot candidates", {
-        count: candidate?.count ?? 0,
-        chosen: candidate ? { width: candidate.video.videoWidth, height: candidate.video.videoHeight, area: Math.round(candidate.rect.w * candidate.rect.h) } : null
-      });
-      deps.host.style.display = "none";
-      try {
-        await new Promise((resolve) => {
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-        });
-        await new Promise((resolve) => setTimeout(resolve, hideDelayMs));
-        const res = await deps.capture();
-        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u6D4F\u89C8\u5668\u622A\u56FE\u5931\u8D25");
-        let dataUrl = res.dataUrl;
-        let cropped = false;
-        if (candidate) {
-          try {
-            dataUrl = await render(res.dataUrl, candidate.rect);
-            cropped = true;
-          } catch (err) {
-            console.warn("[RTTS] screenshot crop failed, using the full frame:", err);
-          }
-        }
-        if (!cropped) dataUrl = await render(res.dataUrl, null);
-        console.log("[RTTS] screenshot", {
-          path: res.path || "unknown",
-          cropped,
-          bytes: dataUrl.length
-        });
-        return { dataUrl, cropped };
-      } finally {
-        deps.host.style.display = "";
-      }
-    }
-    return { captureVideoFrame, findBestVideoCandidate };
-  }
-
-  // src/ext/content/video-seek.ts
-  var SEEK_LEAD_SECONDS = 0.25;
-  var afterSeekHook = null;
-  function onAfterSeek(hook) {
-    afterSeekHook = hook;
-  }
-  function seekTo(seconds) {
-    let video = null;
+  // src/ext/content/source-opening.ts
+  async function openSavedSource(sourceRef, videoTime) {
+    if (!sourceRef?.url) return { ok: false, error: "\u6CA1\u6709\u53EF\u6253\u5F00\u7684\u6765\u6E90\u5730\u5740" };
     try {
-      video = findBestVideoCandidate()?.video ?? null;
+      return await chrome.runtime.sendMessage({ target: "background", type: "OPEN_SOURCE", sourceRef, videoTime });
     } catch {
-      video = null;
+      return { ok: false, error: "\u65E0\u6CD5\u6253\u5F00\u6765\u6E90\uFF0C\u8BF7\u91CD\u8BD5" };
     }
-    if (!video) return { ok: false, reason: "no-video" };
-    const target = Math.max(0, (Number.isFinite(seconds) ? seconds : 0) - SEEK_LEAD_SECONDS);
-    const before = video.currentTime;
-    try {
-      video.currentTime = target;
-    } catch {
-      return { ok: false, reason: "no-progress" };
-    }
-    if (Math.abs(video.currentTime - before) < 1e-6 && Math.abs(target - before) > 1e-6) {
-      return { ok: false, reason: "no-progress" };
-    }
-    video.pause();
-    afterSeekHook?.();
-    return { ok: true, time: video.currentTime };
   }
 
   // src/ext/content/subtitle-view.ts
@@ -2596,6 +2627,7 @@
   var SUB_BOX_IDLE_MS = 6500;
   function createSubtitleView(deps) {
     const r = deps.refs;
+    const favorites = favoriteState();
     let subBoxAutoPosition = true;
     let subBoxCompact = false;
     let subIdleTimer = null;
@@ -2634,11 +2666,12 @@
         if (s !== "running" && s !== "starting") {
           markSubtitleActivity();
         }
-        const rowsSignature = subs.map((sub) => `${sub.id ?? ""}${sub.at ?? ""}${sub.videoTime ?? ""}${sub.target ?? ""}${sub.source ?? ""}${sub.kind ?? ""}`).join("");
+        const rowsSignature = `${session.transcriptId || ""}:${session.currentTranscriptSaveState?.status || session.saveState?.status || ""}:${session.isDemoMode}:` + subs.map((sub) => `${sub.id ?? ""}${sub.at ?? ""}${sub.videoTime ?? ""}${sub.target ?? ""}${sub.source ?? ""}${sub.kind ?? ""}`).join("");
         const rowsChanged = rowsSignature !== lastRowsSignature;
         const wasAtBottom = r.subScroll.scrollHeight - r.subScroll.scrollTop - r.subScroll.clientHeight < 40;
         if (rowsChanged) {
           lastRowsSignature = rowsSignature;
+          disposeFavoriteControls(r.subRows);
           r.subRows.textContent = "";
           subs.forEach((sub) => {
             const row = document.createElement("div");
@@ -2651,9 +2684,10 @@
               chip.className = "sub-time-chip";
               chip.textContent = formatVideoTime(sub.videoTime);
               chip.setAttribute("aria-label", `\u8DF3\u8F6C\u5230 ${formatVideoTime(sub.videoTime)}`);
-              chip.title = "\u70B9\u51FB\u8DF3\u8F6C\u5230\u89C6\u9891\u5BF9\u5E94\u4F4D\u7F6E";
-              const activate = () => {
-                const result = seekTo(sub.videoTime);
+              chip.title = sub.sourceRef?.confidence === "exact" ? "\u70B9\u51FB\u8DF3\u8F6C\u5230\u89C6\u9891\u5BF9\u5E94\u4F4D\u7F6E" : "\u6253\u5F00\u6765\u6E90\uFF08\u8BFE\u8282\u672A\u6838\u9A8C\uFF09";
+              const activate = async () => {
+                const result = await openSavedSource(sub.sourceRef, sub.videoTime);
+                chip.title = result.action === "seeked" ? "\u5DF2\u5B9A\u4F4D" : result.ok ? "\u5DF2\u6253\u5F00\u6765\u6E90" : "\u65E0\u6CD5\u6253\u5F00\u6765\u6E90";
                 row.classList.remove("seek-ok", "seek-fail");
                 void row.offsetWidth;
                 row.classList.add(result.ok ? "seek-ok" : "seek-fail");
@@ -2691,6 +2725,13 @@
             if (isFillerOnly(sub.target || sub.source || "")) {
               row.classList.add("filler");
             }
+            const ref = subtitleFavoriteRef({ ...session, saveState: session.currentTranscriptSaveState || session.saveState }, sub);
+            const favorite = createFavoriteButton(ref, (message) => {
+              favorite.title = message;
+              deps.notify?.(message);
+            }, favorites);
+            favorite.classList.add("sub-favorite");
+            row.appendChild(favorite);
             r.subRows.appendChild(row);
           });
           const lastRow = r.subRows.lastElementChild;
@@ -2707,6 +2748,7 @@
       } else {
         r.subPlaceholder.style.display = "";
         r.subPlaceholder.textContent = "\u70B9\u51FB\u300C\u5F55\u97F3\u300D\u5F00\u59CB\u5B9E\u65F6\u8F6C\u5199";
+        disposeFavoriteControls(r.subRows);
         r.subRows.textContent = "";
         lastRowsSignature = "";
         clearStreaming();
@@ -2759,12 +2801,13 @@
       }
       r.chatEl.scrollTop = r.chatEl.scrollHeight;
     }
-    r.chatEl.addEventListener("click", (event) => {
+    r.chatEl.addEventListener("click", async (event) => {
       const target = event.target?.closest?.(".chat-time-ref");
       if (!target) return;
       const seconds = Number(target.dataset.t);
       if (!Number.isFinite(seconds)) return;
-      const result = seekTo(seconds);
+      const result = await openSavedSource(deps.getSession().chatSourceRef, seconds);
+      target.title = result.action === "seeked" ? "\u5DF2\u5B9A\u4F4D" : result.ok ? "\u5DF2\u6253\u5F00\u6765\u6E90" : "\u65E0\u6CD5\u6253\u5F00\u6765\u6E90";
       const bubble = target.closest(".rtts-msg");
       if (bubble) {
         bubble.classList.remove("seek-ok", "seek-fail");
@@ -3224,17 +3267,355 @@
     };
   }
 
+  // src/lib/video-key.ts
+  var TRACKING_PARAMS = /* @__PURE__ */ new Set([
+    "t",
+    "si",
+    "feature",
+    "index",
+    "list",
+    "start_radio",
+    "spm_id_from",
+    "vd_source",
+    "share_source",
+    "share_medium",
+    "share_plat",
+    "share_session_id",
+    "share_tag",
+    "timestamp",
+    "unique_k",
+    "from",
+    "ref",
+    "ref_src",
+    "fbclid",
+    "gclid"
+  ]);
+  function stripWww(host) {
+    return host.replace(/^www\./, "");
+  }
+  function youtubeId(url) {
+    const host = stripWww(url.hostname);
+    if (host === "youtu.be") {
+      const id = url.pathname.split("/").filter(Boolean)[0];
+      return id || null;
+    }
+    if (host !== "youtube.com" && !host.endsWith(".youtube.com")) return null;
+    const direct = url.searchParams.get("v");
+    if (direct) return direct;
+    const match = url.pathname.match(/^\/(?:shorts|embed|live)\/([^/?#]+)/);
+    return match?.[1] ?? null;
+  }
+  function bilibiliKey(url) {
+    const host = stripWww(url.hostname);
+    if (host !== "bilibili.com" && !host.endsWith(".bilibili.com")) return null;
+    const bv = url.pathname.match(/\/(BV[0-9A-Za-z]+)/);
+    if (bv?.[1]) return `bilibili:${bv[1]}`;
+    const av = url.pathname.match(/\/av(\d+)/i);
+    if (av?.[1]) return `bilibili:av${av[1]}`;
+    const episode = url.pathname.match(/^\/(bangumi|cheese)\/play\/(ep\d+)(?:\/|$)/);
+    if (episode) return `bilibili:${episode[1]}/play/${episode[2]}`;
+    return null;
+  }
+  function videoKeyForUrl(rawUrl) {
+    let url;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      return `page:${(rawUrl || "unknown").slice(0, 160)}`;
+    }
+    const yt = youtubeId(url);
+    if (yt) return `youtube:${yt}`;
+    const bili = bilibiliKey(url);
+    if (bili) {
+      const part = bilibiliPart(url);
+      if (part !== null) return `${bili}:p${part}`;
+      for (const key of [...url.searchParams.keys()]) if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) url.searchParams.delete(key);
+      url.searchParams.sort();
+      return `unknown:${bili}:${url.search}`;
+    }
+    const normalized = new URL(url.toString());
+    normalized.hash = "";
+    for (const key of [...normalized.searchParams.keys()]) {
+      if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) {
+        normalized.searchParams.delete(key);
+      }
+    }
+    return `page:${normalized.toString()}`;
+  }
+  function videoTitleFromDocumentTitle(rawTitle) {
+    const title = (rawTitle || "").trim();
+    if (!title) return "";
+    const stripped = title.replace(/\s*[-–—_|]\s*YouTube\s*$/i, "").replace(/[_\-–—|]\s*哔哩哔哩.*$/i, "").replace(/\s*[-–—|]\s*Bilibili\s*$/i, "").trim();
+    return (stripped || title).slice(0, 120);
+  }
+  function bilibiliPart(url) {
+    if (!url.searchParams.has("p")) return 1;
+    const parts = url.searchParams.getAll("p");
+    if (parts.length !== 1 || !/^[1-9]\d*$/.test(parts[0])) return null;
+    const n = Number(parts[0]);
+    return Number.isSafeInteger(n) ? n : null;
+  }
+  function sourceRefForUrl(rawUrl, title = "", scope = "page") {
+    let exact = false;
+    try {
+      const url = new URL(rawUrl);
+      exact = !!youtubeId(url) || !!bilibiliKey(url) && bilibiliPart(url) !== null;
+    } catch {
+    }
+    return { key: exact ? videoKeyForUrl(rawUrl) : `unknown:${scope}`, url: rawUrl, title, confidence: exact ? "exact" : "unknown" };
+  }
+  function legacySourceRef(url, title, scope) {
+    return { key: `legacy:${scope}`, url, title, confidence: url ? "legacy" : "unknown" };
+  }
+
+  // src/ext/screenshot.ts
+  function loadImageElement(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("\u622A\u56FE\u89E3\u7801\u5931\u8D25"));
+      img.src = src;
+    });
+  }
+  function collectVideos(root, out, depth) {
+    if (depth > 3) return;
+    root.querySelectorAll("video").forEach((video) => out.push(video));
+    root.querySelectorAll("iframe").forEach((frame) => {
+      try {
+        const doc = frame.contentDocument;
+        if (doc) collectVideos(doc, out, depth + 1);
+      } catch {
+      }
+    });
+    root.querySelectorAll("*").forEach((el) => {
+      const shadowRoot = el.shadowRoot;
+      if (shadowRoot) collectVideos(shadowRoot, out, depth + 1);
+    });
+  }
+  function getFrameGeometry(win) {
+    const frames = [];
+    let current = win;
+    for (let depth = 0; current && current !== window && depth < 5; depth++) {
+      let frame = null;
+      try {
+        frame = current.frameElement;
+      } catch {
+        break;
+      }
+      if (!frame) break;
+      frames.unshift(frame);
+      current = frame.ownerDocument.defaultView;
+    }
+    let x = 0;
+    let y = 0;
+    let clip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    for (const frame of frames) {
+      const rect = frame.getBoundingClientRect();
+      const left = x + rect.left;
+      const top = y + rect.top;
+      clip = {
+        left: Math.max(clip.left, left),
+        top: Math.max(clip.top, top),
+        right: Math.min(clip.right, left + rect.width),
+        bottom: Math.min(clip.bottom, top + rect.height)
+      };
+      x = left;
+      y = top;
+    }
+    return { x, y, clip };
+  }
+  function getVideoContentRect(video) {
+    if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
+    const win = video.ownerDocument.defaultView;
+    if (!win) return null;
+    const style = win.getComputedStyle(video);
+    if (style.display === "none" || style.visibility === "hidden") return null;
+    if (Number(style.opacity) < 0.05) return null;
+    const r = video.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const frame = getFrameGeometry(win);
+    let x = r.left + frame.x;
+    let y = r.top + frame.y;
+    let w = r.width;
+    let h = r.height;
+    const fit = style.objectFit || "contain";
+    if (fit === "contain" || fit === "scale-down") {
+      const videoAspect = video.videoWidth / video.videoHeight;
+      const boxAspect = w / h;
+      if (videoAspect > boxAspect) {
+        const nh = w / videoAspect;
+        y += (h - nh) / 2;
+        h = nh;
+      } else {
+        const nw = h * videoAspect;
+        x += (w - nw) / 2;
+        w = nw;
+      }
+    }
+    const left = Math.max(frame.clip.left, x);
+    const top = Math.max(frame.clip.top, y);
+    const right = Math.min(frame.clip.right, x + w);
+    const bottom = Math.min(frame.clip.bottom, y + h);
+    if (right - left < 64 || bottom - top < 64) return null;
+    return { x: left, y: top, w: right - left, h: bottom - top };
+  }
+  function findBestVideoCandidate() {
+    const videos = [];
+    collectVideos(document, videos, 0);
+    let best = null;
+    for (const video of videos) {
+      const rect = getVideoContentRect(video);
+      if (!rect) continue;
+      const score = rect.w * rect.h * (video.paused ? 0.6 : 1);
+      if (!best || score > best.score) best = { video, rect, score };
+    }
+    return best ? { video: best.video, rect: best.rect, count: videos.length } : null;
+  }
+  function createScreenshotCapturer(deps) {
+    const maxWidth = deps.maxWidth ?? 1600;
+    const quality = deps.jpegQuality ?? 0.9;
+    const hideDelayMs = deps.hideDelayMs ?? 120;
+    async function render(dataUrl, rect) {
+      const img = await loadImageElement(dataUrl);
+      const scaleX = img.naturalWidth / Math.max(1, window.innerWidth);
+      const scaleY = img.naturalHeight / Math.max(1, window.innerHeight);
+      let sx = 0;
+      let sy = 0;
+      let sw = img.naturalWidth;
+      let sh = img.naturalHeight;
+      if (rect) {
+        sx = Math.min(img.naturalWidth - 1, Math.max(0, Math.round(rect.x * scaleX)));
+        sy = Math.min(img.naturalHeight - 1, Math.max(0, Math.round(rect.y * scaleY)));
+        sw = Math.min(img.naturalWidth - sx, Math.max(1, Math.round(rect.w * scaleX)));
+        sh = Math.min(img.naturalHeight - sy, Math.max(1, Math.round(rect.h * scaleY)));
+        if (sw < 32 || sh < 32) throw new Error("\u89C6\u9891\u88C1\u526A\u533A\u57DF\u8FC7\u5C0F");
+      }
+      let outW = sw;
+      let outH = sh;
+      if (outW > maxWidth) {
+        outH = Math.round(outH * maxWidth / outW);
+        outW = maxWidth;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("\u65E0\u6CD5\u521B\u5EFA\u753B\u5E03");
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+      return canvas.toDataURL("image/jpeg", quality);
+    }
+    async function captureVideoFrame() {
+      const candidate = findBestVideoCandidate();
+      console.log("[RTTS] screenshot candidates", {
+        count: candidate?.count ?? 0,
+        chosen: candidate ? { width: candidate.video.videoWidth, height: candidate.video.videoHeight, area: Math.round(candidate.rect.w * candidate.rect.h) } : null
+      });
+      deps.host.style.display = "none";
+      try {
+        await new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        await new Promise((resolve) => setTimeout(resolve, hideDelayMs));
+        const res = await deps.capture();
+        if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u6D4F\u89C8\u5668\u622A\u56FE\u5931\u8D25");
+        let dataUrl = res.dataUrl;
+        let cropped = false;
+        if (candidate) {
+          try {
+            dataUrl = await render(res.dataUrl, candidate.rect);
+            cropped = true;
+          } catch (err) {
+            console.warn("[RTTS] screenshot crop failed, using the full frame:", err);
+          }
+        }
+        if (!cropped) dataUrl = await render(res.dataUrl, null);
+        console.log("[RTTS] screenshot", {
+          path: res.path || "unknown",
+          cropped,
+          bytes: dataUrl.length
+        });
+        return { dataUrl, cropped };
+      } finally {
+        deps.host.style.display = "";
+      }
+    }
+    return { captureVideoFrame, findBestVideoCandidate };
+  }
+
+  // src/ext/content/video-context.ts
+  function readVideoContext() {
+    const videoUrl = location.href;
+    let videoTime = null;
+    try {
+      const candidate = findBestVideoCandidate();
+      const time = candidate?.video?.currentTime;
+      if (typeof time === "number" && Number.isFinite(time) && time >= 0) videoTime = time;
+    } catch {
+    }
+    return {
+      videoKey: videoKeyForUrl(videoUrl),
+      videoTitle: videoTitleFromDocumentTitle(document.title),
+      videoUrl,
+      videoTime,
+      sourceRef: sourceRefForUrl(videoUrl, videoTitleFromDocumentTitle(document.title))
+    };
+  }
+
   // src/ext/content/notes.ts
   function createNotes(deps) {
     const r = deps.refs;
-    r.list.addEventListener("click", (event) => {
+    const favorites = favoriteState();
+    r.list.addEventListener("click", async (event) => {
       const target = event.target?.closest?.(".chat-time-ref");
       if (!target) return;
       const seconds = Number(target.dataset.t);
-      if (Number.isFinite(seconds)) seekTo(seconds);
+      const entryId = target.closest("[data-entry-id]")?.dataset.entryId;
+      const entry = deps.getSession().notes.flatMap((note) => note.entries).find((item) => item.id === entryId);
+      if (entry && Number.isFinite(seconds)) {
+        const result = await openSavedSource(entry.sourceRef, seconds);
+        deps.toast(result.ok ? result.action === "seeked" ? "\u5DF2\u5B9A\u4F4D" : "\u5DF2\u6253\u5F00\u6765\u6E90" : result.error || "\u65E0\u6CD5\u6253\u5F00\u6765\u6E90", result.ok ? "ok" : "err");
+      }
     });
-    function persistNotes() {
-      saveNotes(deps.getSession().notes);
+    let loadError = "";
+    function setLoadError(error) {
+      loadError = String(error);
+      render();
+    }
+    const pending = /* @__PURE__ */ new Map();
+    const saving = /* @__PURE__ */ new Map();
+    function adopt(notes) {
+      loadError = "";
+      const merged = structuredClone(notes);
+      for (const item of pending.values()) {
+        let note = merged.find((n) => n.id === item.note.id);
+        if (!note) {
+          note = { ...item.note, entries: [] };
+          merged.push(note);
+        }
+        if (!note.entries.some((e) => e.id === item.entry.id)) note.entries.push(item.entry);
+      }
+      const session = deps.getSession();
+      session.notes = merged;
+      if (!merged.some((n) => n.id === session.activeNoteId)) session.activeNoteId = merged[0]?.id ?? null;
+      render();
+    }
+    function persistEntry(key) {
+      const current = saving.get(key);
+      if (current) return current;
+      const item = pending.get(key);
+      if (!item) return Promise.resolve(true);
+      const run = addNoteEntry(item.note, item.entry).then((notes) => {
+        pending.delete(key);
+        adopt(notes);
+        return true;
+      }).catch((error) => {
+        item.error = error.message || String(error);
+        deps.toast("\u6709\u7B14\u8BB0\u672A\u4FDD\u5B58\uFF0C\u8BF7\u5728\u7B14\u8BB0\u4E2D\u91CD\u8BD5\u6216\u5BFC\u51FA", "err");
+        render();
+        return false;
+      }).finally(() => saving.delete(key));
+      saving.set(key, run);
+      return run;
     }
     function getOrCreateActiveNote() {
       const session = deps.getSession();
@@ -3248,15 +3629,24 @@
       );
       session.notes.push(note);
       session.activeNoteId = note.id;
-      persistNotes();
       return note;
     }
     function addEntry(entry) {
       const note = getOrCreateActiveNote();
-      note.entries.push(entry);
+      const key = `${note.id}:${entry.id}`;
+      if (pending.has(key)) return persistEntry(key);
+      if (!entry.sourceRef) {
+        const context = readVideoContext();
+        entry = { ...entry, sourceRef: entry.videoUrl ? legacySourceRef(entry.videoUrl, "", note.id) : sourceRefForUrl(context.videoUrl, context.videoTitle, note.id), videoUrl: entry.videoUrl || context.videoUrl, videoTime: entry.videoTime ?? (entry.videoUrl ? null : context.videoTime) };
+      }
+      if (entry.sourceRef?.confidence !== "exact") {
+        entry = { ...entry, sourceRef: { ...entry.sourceRef, key: `${entry.sourceRef?.confidence || "unknown"}:${note.id}` } };
+      }
+      if (!note.entries.some((e) => e.id === entry.id)) note.entries.push(entry);
+      pending.set(key, { note, entry, error: "" });
       note.updatedAt = Date.now();
-      persistNotes();
       render();
+      return persistEntry(key);
     }
     function render() {
       const session = deps.getSession();
@@ -3266,18 +3656,71 @@
       r.button.setAttribute("data-tip", `\u7B14\u8BB0${count ? `\uFF08${count}\uFF09` : ""}`);
       r.badge.textContent = count > 99 ? "99+" : String(count);
       r.badge.hidden = count === 0;
+      disposeFavoriteControls(r.list);
       r.list.textContent = "";
+      if (hasRetainedLegacyNotes()) {
+        const legacyWarning = document.createElement("p");
+        legacyWarning.setAttribute("role", "status");
+        legacyWarning.textContent = "\u6B64\u9875\u7684\u65E7\u7248\u7B14\u8BB0\u5C1A\u672A\u786E\u8BA4\u5408\u5E76\uFF0C\u539F\u526F\u672C\u5DF2\u4FDD\u7559\u3002\u8BF7\u5BFC\u51FA\u65E7\u526F\u672C\uFF1B\u68C0\u7D22\u53EA\u5305\u542B\u5DF2\u4FDD\u5B58\u8D44\u6599\u3002";
+        const exportLegacy = document.createElement("button");
+        exportLegacy.textContent = "\u5BFC\u51FA\u65E7\u7248\u526F\u672C";
+        exportLegacy.className = "rtts-btn-ghost";
+        exportLegacy.addEventListener("click", exportRetainedLegacyNotes);
+        legacyWarning.appendChild(exportLegacy);
+        r.list.appendChild(legacyWarning);
+      }
+      if (loadError) {
+        const error = document.createElement("p");
+        error.textContent = `\u7B14\u8BB0\u8BFB\u53D6\u5931\u8D25\uFF1A${loadError}`;
+        const retry = document.createElement("button");
+        retry.textContent = "\u91CD\u8BD5\u8BFB\u53D6";
+        retry.className = "rtts-btn-ghost";
+        retry.addEventListener("click", () => {
+          void loadNotes().then(adopt).catch(setLoadError);
+        });
+        error.appendChild(retry);
+        r.list.appendChild(error);
+      }
       const hasEntries = !!(active && active.entries.length > 0);
-      if (!hasEntries) {
+      if (!hasEntries && !loadError) {
         const empty = document.createElement("p");
         empty.id = "rtts-notes-empty";
         empty.textContent = "\u8FD8\u6CA1\u6709\u7B14\u8BB0\uFF0C\u70B9\u51FB\u53F3\u4FA7\u7684\u300C\u8BB0\u5165\u7B14\u8BB0\u300D\u5F00\u59CB\u8BB0\u5F55\u3002";
         r.list.appendChild(empty);
       }
       if (!hasEntries || !active) return;
+      if (pending.size) {
+        const status = document.createElement("p");
+        const cause = [...pending.values()].find((item) => item.error)?.error;
+        status.textContent = `\u6709 ${pending.size} \u6761\u7B14\u8BB0\u672A\u4FDD\u5B58\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA\u3002${cause ? `\u539F\u56E0\uFF1A${cause}\u3002` : ""}\u5173\u95ED\u9875\u9762\u53EF\u80FD\u4E22\u5931\u672A\u4FDD\u5B58\u5185\u5BB9\u3002`;
+        const retry = document.createElement("button");
+        retry.textContent = "\u91CD\u8BD5\u4FDD\u5B58";
+        retry.className = "rtts-btn-ghost";
+        retry.addEventListener("click", () => {
+          for (const key of pending.keys()) void persistEntry(key);
+        });
+        const exportBtn = document.createElement("button");
+        exportBtn.textContent = "\u5BFC\u51FA\u672A\u4FDD\u5B58\u7B14\u8BB0";
+        exportBtn.className = "rtts-btn-ghost";
+        exportBtn.addEventListener("click", () => {
+          const url = URL.createObjectURL(new Blob([JSON.stringify([...pending.values()].map((p) => ({ ...p.note, entries: [p.entry] })), null, 2)], { type: "application/json" }));
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = "snooper-unsaved-notes.json";
+          anchor.click();
+          setTimeout(() => URL.revokeObjectURL(url), 2e3);
+        });
+        status.setAttribute("role", "status");
+        const actions = document.createElement("div");
+        actions.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:6px";
+        actions.append(retry, exportBtn);
+        status.appendChild(actions);
+        r.list.appendChild(status);
+      }
       active.entries.slice(-10).forEach((entry) => {
         const item = document.createElement("div");
         item.className = "note-item";
+        item.dataset.entryId = entry.id;
         if (entry.type === "image" || entry.type === "svg" || entry.type === "screenshot") {
           item.style.flexDirection = "column";
           item.style.gap = "4px";
@@ -3288,7 +3731,7 @@
           img.className = "note-img-preview";
           img.alt = "\u7B14\u8BB0\u56FE\u7247";
           img.style.cssText = "max-width:100%;max-height:80px;border-radius:4px;object-fit:cover;cursor:pointer";
-          img.addEventListener("click", () => deps.openShotPreview(entry.imageUrl, true, true));
+          img.addEventListener("click", () => deps.openShotPreview(entry.imageUrl, !pending.has(`${active.id}:${entry.id}`), true));
           item.appendChild(img);
         }
         if (entry.type === "svg" && entry.svg) {
@@ -3334,27 +3777,37 @@
         delBtn.className = "note-del";
         delBtn.setAttribute("aria-label", "\u5220\u9664\u7B14\u8BB0\u6761\u76EE");
         delBtn.innerHTML = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-        delBtn.addEventListener("click", (event) => {
+        delBtn.addEventListener("click", async (event) => {
           event.stopPropagation();
-          active.entries = active.entries.filter((candidate) => candidate.id !== entry.id);
-          persistNotes();
-          render();
+          try {
+            const notes = await deleteNoteEntry(active.id, entry.id);
+            if (!notes) return;
+            pending.delete(`${active.id}:${entry.id}`);
+            adopt(notes);
+          } catch (error) {
+            deps.toast(`\u5220\u9664\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\uFF1A${String(error)}`, "err");
+          }
         });
+        const favorite = createFavoriteButton(pending.has(`${active.id}:${entry.id}`) ? null : { kind: "note", noteId: active.id, entryId: entry.id }, (message) => deps.toast(message, "err"), favorites);
+        favorite.className = "library-favorite rtts-btn-ghost";
+        row.appendChild(favorite);
         row.appendChild(delBtn);
         item.appendChild(row);
         r.list.appendChild(item);
       });
       r.list.scrollTop = r.list.scrollHeight;
     }
-    return { addEntry, render, persistNotes };
+    return { addEntry, render, adopt, setLoadError };
   }
 
   // src/ext/content/shot.ts
   function createShotPreview(deps) {
     const r = deps.refs;
     let previewUrl = "";
-    function open(dataUrl, saved, insertable = false) {
+    let origin = null;
+    function open(dataUrl, saved, insertable = false, source) {
       previewUrl = dataUrl;
+      origin = source || readVideoContext();
       r.image.src = dataUrl;
       r.save.disabled = saved;
       r.save.textContent = saved ? "\u5DF2\u5B58\u5165\u7B14\u8BB0" : "\u5B58\u5165\u7B14\u8BB0";
@@ -3378,15 +3831,19 @@
     r.modal.addEventListener("click", (event) => {
       if (event.target === r.modal) close();
     });
-    r.save.addEventListener("click", () => {
+    r.save.addEventListener("click", async () => {
       if (!previewUrl) return;
-      deps.addNoteEntry({
+      const saved = await deps.addNoteEntry({
         id: `screenshot_${Date.now()}`,
         type: "screenshot",
+        sourceRef: origin?.sourceRef,
+        videoUrl: origin?.videoUrl,
+        videoTime: origin?.videoTime,
         at: Date.now(),
         imageUrl: previewUrl,
         text: "\u89C6\u9891\u622A\u56FE"
       });
+      if (!saved) return;
       r.save.disabled = true;
       r.save.textContent = "\u5DF2\u5B58\u5165\u7B14\u8BB0";
       deps.toast("\u622A\u56FE\u5DF2\u5B58\u5165\u7B14\u8BB0", "ok");
@@ -3733,100 +4190,6 @@
     };
   }
 
-  // src/lib/video-key.ts
-  var TRACKING_PARAMS = /* @__PURE__ */ new Set([
-    "t",
-    "si",
-    "feature",
-    "index",
-    "list",
-    "start_radio",
-    "spm_id_from",
-    "vd_source",
-    "share_source",
-    "share_medium",
-    "share_plat",
-    "share_session_id",
-    "share_tag",
-    "timestamp",
-    "unique_k",
-    "from",
-    "ref",
-    "ref_src",
-    "fbclid",
-    "gclid"
-  ]);
-  function stripWww(host) {
-    return host.replace(/^www\./, "");
-  }
-  function youtubeId(url) {
-    const host = stripWww(url.hostname);
-    if (host === "youtu.be") {
-      const id = url.pathname.split("/").filter(Boolean)[0];
-      return id || null;
-    }
-    if (host !== "youtube.com" && !host.endsWith(".youtube.com")) return null;
-    const direct = url.searchParams.get("v");
-    if (direct) return direct;
-    const match = url.pathname.match(/^\/(?:shorts|embed|live)\/([^/?#]+)/);
-    return match?.[1] ?? null;
-  }
-  function bilibiliKey(url) {
-    const host = stripWww(url.hostname);
-    if (host !== "bilibili.com" && !host.endsWith(".bilibili.com")) return null;
-    const bv = url.pathname.match(/\/(BV[0-9A-Za-z]+)/);
-    if (bv?.[1]) return `bilibili:${bv[1]}`;
-    const av = url.pathname.match(/\/av(\d+)/i);
-    if (av?.[1]) return `bilibili:av${av[1]}`;
-    const parts = url.pathname.split("/").filter(Boolean).slice(0, 3);
-    if (parts.length > 0) return `bilibili:${parts.join("/")}`;
-    return null;
-  }
-  function videoKeyForUrl(rawUrl) {
-    let url;
-    try {
-      url = new URL(rawUrl);
-    } catch {
-      return `page:${(rawUrl || "unknown").slice(0, 160)}`;
-    }
-    const yt = youtubeId(url);
-    if (yt) return `youtube:${yt}`;
-    const bili = bilibiliKey(url);
-    if (bili) return bili;
-    const normalized = new URL(url.toString());
-    normalized.hash = "";
-    for (const key of [...normalized.searchParams.keys()]) {
-      if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) {
-        normalized.searchParams.delete(key);
-      }
-    }
-    return `page:${normalized.toString()}`;
-  }
-  function videoTitleFromDocumentTitle(rawTitle) {
-    const title = (rawTitle || "").trim();
-    if (!title) return "";
-    const stripped = title.replace(/\s*[-–—_|]\s*YouTube\s*$/i, "").replace(/[_\-–—|]\s*哔哩哔哩.*$/i, "").replace(/\s*[-–—|]\s*Bilibili\s*$/i, "").trim();
-    return (stripped || title).slice(0, 120);
-  }
-
-  // src/ext/content/video-context.ts
-  function readVideoContext() {
-    const videoUrl = location.href;
-    let videoTime = 0;
-    try {
-      const candidate = findBestVideoCandidate();
-      const time = candidate?.video?.currentTime;
-      if (typeof time === "number" && Number.isFinite(time) && time > 0) videoTime = time;
-    } catch {
-    }
-    return {
-      videoKey: videoKeyForUrl(videoUrl),
-      videoTitle: videoTitleFromDocumentTitle(document.title),
-      videoUrl,
-      videoTime
-    };
-  }
-
   // src/ext/content/video-clock.ts
   var SAMPLE_INTERVAL_MS = 1e3;
   var EVENT_MIN_GAP_MS = 500;
@@ -3837,8 +4200,9 @@
     let video = null;
     let lastSentAt = 0;
     let nextResolveAt = 0;
+    let identity = videoKeyForUrl(location.href);
     function resolveVideo(force = false) {
-      if (video && video.isConnected) return video;
+      if (!force && video && video.isConnected) return video;
       video = null;
       const now = Date.now();
       if (!force && now < nextResolveAt) return null;
@@ -3852,12 +4216,23 @@
     }
     function sample(force = false) {
       if (!deps.isActive()) return;
+      const current = videoKeyForUrl(location.href);
+      if (identity !== current) {
+        identity = current;
+        video = null;
+        nextResolveAt = 0;
+        force = true;
+      }
+      const sourceRef = sourceRefForUrl(location.href, videoTitleFromDocumentTitle(document.title));
       const el = resolveVideo(force);
-      if (!el) return;
-      const time = el.currentTime;
-      if (!Number.isFinite(time) || time < 0) return;
+      const time = el?.currentTime;
+      if (!el || typeof time !== "number" || !Number.isFinite(time) || time < 0) {
+        deps.send({ sourceRef });
+        return;
+      }
       const now = Date.now();
       deps.send({
+        sourceRef,
         at: now,
         videoTime: time,
         paused: el.paused === true,
@@ -3868,11 +4243,11 @@
     function onMediaEvent(event) {
       if (!deps.isActive()) return;
       const target = event.target;
-      if (target && target.tagName === "VIDEO" && event.type === "play" && target !== video) {
+      if (target && target.tagName === "VIDEO" && (event.type === "play" && target !== video || event.type === "loadedmetadata" || event.type === "emptied")) {
         video = null;
         nextResolveAt = 0;
       }
-      if (Date.now() - lastSentAt < EVENT_MIN_GAP_MS) return;
+      if (Date.now() - lastSentAt < EVENT_MIN_GAP_MS && event.type !== "loadedmetadata" && event.type !== "emptied" && identity === videoKeyForUrl(location.href)) return;
       sample();
     }
     function start() {
@@ -3896,7 +4271,40 @@
     for (const type of MEDIA_EVENTS) {
       document.addEventListener(type, onMediaEvent, true);
     }
+    window.addEventListener("popstate", () => sample(true));
+    window.addEventListener("hashchange", () => sample(true));
     return { sync, start, stop, sample };
+  }
+
+  // src/ext/content/video-seek.ts
+  var SEEK_LEAD_SECONDS = 0.25;
+  var afterSeekHook = null;
+  function onAfterSeek(hook) {
+    afterSeekHook = hook;
+  }
+  function seekTo(seconds, expectedSourceKey) {
+    if (!Number.isFinite(seconds) || seconds < 0) return { ok: false, reason: "seek-failed" };
+    if (!expectedSourceKey || expectedSourceKey !== videoKeyForUrl(location.href)) return { ok: false, reason: "mismatched-source" };
+    let video = null;
+    try {
+      video = findBestVideoCandidate()?.video ?? null;
+    } catch {
+      video = null;
+    }
+    if (!video) return { ok: false, reason: "no-video" };
+    const target = Math.max(0, (Number.isFinite(seconds) ? seconds : 0) - SEEK_LEAD_SECONDS);
+    const before = video.currentTime;
+    try {
+      video.currentTime = target;
+    } catch {
+      return { ok: false, reason: "seek-failed" };
+    }
+    if (Math.abs(video.currentTime - before) < 1e-6 && Math.abs(target - before) > 1e-6) {
+      return { ok: false, reason: "seek-failed" };
+    }
+    video.pause();
+    afterSeekHook?.();
+    return { ok: true, time: video.currentTime };
   }
 
   // src/ext/content/tools-menu.ts
@@ -4179,7 +4587,9 @@
     }
     const t = floorSeconds(seconds);
     if (bilibiliKey(parsed)) {
-      return `https://www.bilibili.com${parsed.pathname}?t=${t}`;
+      const part = bilibiliPart(parsed);
+      if (part === null) return null;
+      return `https://www.bilibili.com${parsed.pathname}?${parsed.searchParams.has("p") ? `p=${part}&` : ""}t=${t}`;
     }
     const yt = youtubeId(parsed);
     if (yt) {
@@ -4252,8 +4662,8 @@
       const s = (sub.source || "").replace(/\|/g, "\\|");
       if (anchored) {
         const video = typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) ? formatVideoTime(sub.videoTime) : "";
-        const link = typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) ? videoDeepLink(session.pageUrl, sub.videoTime) : null;
-        const cell = link ? `[\`${video}\`](${link})` : video;
+        const link = sub.sourceRef?.confidence === "exact" && typeof sub.videoTime === "number" && Number.isFinite(sub.videoTime) ? videoDeepLink(sub.sourceRef.url, sub.videoTime) : null;
+        const cell = link ? `[\`${video}\`](${link})` : sub.sourceRef?.url ? `${video} [\u6765\u6E90](${sub.sourceRef.url})` : video;
         lines.push(`| ${cell} | ${wall} | ${t} | ${s} |`);
       } else {
         lines.push(`| ${wall} | ${t} | ${s} |`);
@@ -4276,6 +4686,10 @@
       lines.push("", "---", "", `## \u7B14\u8BB0\uFF1A${note.title || "\u672A\u547D\u540D\u7B14\u8BB0"}`, "");
       note.entries.forEach((entry) => {
         const label2 = entry.text || entry.target || "\u7B14\u8BB0";
+        if (entry.sourceRef?.url) {
+          const link = entry.sourceRef.confidence === "exact" && typeof entry.videoTime === "number" ? videoDeepLink(entry.sourceRef.url, entry.videoTime) : null;
+          lines.push(`[${link ? "\u89C6\u9891\u951A\u70B9" : "\u6765\u6E90"}](${link || entry.sourceRef.url})`, "");
+        }
         const isVisual = entry.type === "image" || entry.type === "screenshot" || entry.type === "svg";
         if (isVisual) {
           const uploaded = assetNames?.get(`note:${note.id}:${entry.id}`);
@@ -4330,11 +4744,14 @@
   }
   async function resolveSubtitles(deps) {
     try {
-      const rows = await deps.getTranscript();
-      if (Array.isArray(rows) && rows.length > 0) return rows;
+      const result = await deps.getTranscript();
+      if (result.complete) return result;
+      const byId = /* @__PURE__ */ new Map();
+      for (const [i, line] of [...result.subtitles, ...deps.getSession().subtitles].entries()) byId.set(line.id || `fallback:${i}`, line);
+      return { subtitles: [...byId.values()].sort((a, b) => (a.at || 0) - (b.at || 0)), complete: false };
     } catch {
+      return { subtitles: deps.getSession().subtitles, complete: false };
     }
-    return deps.getSession().subtitles;
   }
   function downloadZip(filename, files) {
     const blob = new Blob([buildZip(files)], { type: "application/zip" });
@@ -4348,7 +4765,8 @@
   function bindActions(deps) {
     const r = deps.refs;
     r.copy.addEventListener("click", async () => {
-      const text = getSubtitleText(await resolveSubtitles(deps));
+      const result = await resolveSubtitles(deps);
+      const text = getSubtitleText(result.subtitles);
       if (!text) {
         deps.toast("\u6CA1\u6709\u5B57\u5E55\u53EF\u590D\u5236", "err");
         return;
@@ -4356,24 +4774,26 @@
       const ok = await copyText(text);
       if (ok) {
         deps.flashChip(r.copy);
-        deps.toast("\u5DF2\u590D\u5236\u5168\u90E8\u5B57\u5E55", "ok");
+        deps.toast(result.complete ? "\u5DF2\u590D\u5236\u5168\u90E8\u5B57\u5E55" : "\u4EC5\u590D\u5236\u53EF\u7528\u5185\u5BB9\uFF0C\u5B8C\u6574\u6B63\u6587\u8BFB\u53D6\u5931\u8D25", result.complete ? "ok" : "err");
       } else {
         deps.toast("\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u8BBE\u7F6E\u4E2D\u5141\u8BB8\u526A\u8D34\u677F\u8BBF\u95EE", "err");
       }
     });
     r.exportTxt.addEventListener("click", async () => {
-      const text = getSubtitleText(await resolveSubtitles(deps));
+      const result = await resolveSubtitles(deps);
+      const text = getSubtitleText(result.subtitles);
       if (!text) {
         deps.toast("\u6CA1\u6709\u5B57\u5E55\u53EF\u5BFC\u51FA", "err");
         return;
       }
       downloadBlob(`snooper-subtitles-${Date.now()}.txt`, text);
       deps.flashChip(r.exportTxt);
-      deps.toast("TXT \u5DF2\u5BFC\u51FA", "ok");
+      deps.toast(result.complete ? "TXT \u5DF2\u5BFC\u51FA" : "\u4EC5\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9\uFF0C\u5B8C\u6574\u6B63\u6587\u8BFB\u53D6\u5931\u8D25", result.complete ? "ok" : "err");
     });
     r.exportMd.addEventListener("click", async () => {
       const session = deps.getSession();
-      const subtitles = await resolveSubtitles(deps);
+      const result = await resolveSubtitles(deps);
+      const subtitles = result.subtitles;
       const text = getSubtitleMarkdown({ ...session, subtitles, pageUrl: location.href, pageTitle: document.title });
       if (!text) {
         deps.toast("\u6CA1\u6709\u5185\u5BB9\u53EF\u5BFC\u51FA", "err");
@@ -4382,7 +4802,7 @@
       deps.flashChip(r.exportMd);
       if (!sessionHasAssets(session)) {
         downloadBlob(`snooper-notes-${Date.now()}.md`, text);
-        deps.toast("Markdown \u5DF2\u5BFC\u51FA", "ok");
+        deps.toast(result.complete ? "Markdown \u5DF2\u5BFC\u51FA" : "\u4EC5\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9\uFF0C\u5B8C\u6574\u6B63\u6587\u8BFB\u53D6\u5931\u8D25", result.complete ? "ok" : "err");
         return;
       }
       const assets = collectAssets(session.notes, session.messages);
@@ -4399,15 +4819,16 @@
         }
       }
       const markdown = getSubtitleMarkdown(
-        { ...session, pageUrl: location.href, pageTitle: document.title },
+        { ...session, subtitles, pageUrl: location.href, pageTitle: document.title },
         new Map([...names].map(([entryId, name]) => [entryId, name]))
       );
       files.unshift({ name: "record.md", bytes: new TextEncoder().encode(markdown) });
       downloadZip(`snooper-notes-${Date.now()}.zip`, files);
+      const partial = result.complete ? "" : "\uFF0C\u4EC5\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9\uFF08\u5B8C\u6574\u6B63\u6587\u8BFB\u53D6\u5931\u8D25\uFF09";
       const note = failed > 0 ? `\uFF0C${failed} \u5F20\u56FE\u7247\u65E0\u6CD5\u8BFB\u53D6\u5DF2\u7528\u5360\u4F4D\u8BF4\u660E` : "";
-      deps.toast(`\u5DF2\u5BFC\u51FA ZIP\uFF08${files.length} \u4E2A\u6587\u4EF6\uFF0C${formatBytes(files.reduce((sum, file) => sum + file.bytes.length, 0))}\uFF09${note}`, failed > 0 ? "err" : "ok");
+      deps.toast(`\u5DF2\u5BFC\u51FA ZIP\uFF08${files.length} \u4E2A\u6587\u4EF6\uFF0C${formatBytes(files.reduce((sum, file) => sum + file.bytes.length, 0))}\uFF09${note}${partial}`, failed > 0 || !result.complete ? "err" : "ok");
     });
-    r.note.addEventListener("click", () => {
+    r.note.addEventListener("click", async () => {
       const session = deps.getSession();
       const subs = session.subtitles;
       if (subs.length === 0) {
@@ -4415,7 +4836,7 @@
         return;
       }
       const last = subs[subs.length - 1];
-      deps.addNoteEntry({
+      const saved = await deps.addNoteEntry({
         id: `note_${Date.now()}`,
         type: "subtitle",
         at: Date.now(),
@@ -4425,8 +4846,10 @@
         targetLang: session.targetLang,
         // ADR-035: carry the anchor so exports can deep-link back to the video.
         videoTime: typeof last.videoTime === "number" ? last.videoTime : null,
-        videoUrl: location.href
+        sourceRef: last.sourceRef || legacySourceRef("", "", session.transcriptId || last.id || "subtitle"),
+        videoUrl: last.sourceRef?.url
       });
+      if (!saved) return;
       deps.flashChip(r.note);
       deps.toast("\u5DF2\u8BB0\u5165\u7B14\u8BB0", "ok");
     });
@@ -4447,15 +4870,17 @@
           deps.toast(res.error || "\u751F\u6210\u7EAA\u8981\u5931\u8D25", "err");
           return;
         }
-        deps.addNoteEntry({
+        const saved = await deps.addNoteEntry({
           id: `summary_${Date.now()}`,
           type: "summary",
           at: Date.now(),
           text: res.summary,
           videoTime: typeof res.videoTime === "number" ? res.videoTime : null,
-          videoUrl: location.href
+          sourceRef: res.sourceRef,
+          videoUrl: res.sourceRef?.url
         });
         deps.openNotes();
+        if (!saved) return;
         deps.flashChip(r.summary);
         deps.toast("\u7EAA\u8981\u5DF2\u8BB0\u5165\u7B14\u8BB0", "ok");
       } finally {
@@ -4471,15 +4896,20 @@
     r.screenshot.addEventListener("click", async () => {
       r.screenshot.classList.add("busy");
       try {
+        const origin = readVideoContext();
         const shot = await deps.captureVideoFrame();
-        deps.addNoteEntry({
+        const saved = await deps.addNoteEntry({
           id: `screenshot_${Date.now()}`,
           type: "screenshot",
+          sourceRef: origin.sourceRef,
+          videoUrl: origin.videoUrl,
+          videoTime: origin.videoTime,
           at: Date.now(),
           imageUrl: shot.dataUrl,
           text: shot.cropped ? "\u89C6\u9891\u622A\u56FE" : "\u9875\u9762\u622A\u56FE"
         });
-        deps.openShotPreview(shot.dataUrl, true, true);
+        deps.openShotPreview(shot.dataUrl, saved, true, origin);
+        if (!saved) return;
         deps.flashChip(r.screenshot);
         deps.toast(
           shot.cropped ? "\u5DF2\u622A\u53D6\u89C6\u9891\u753B\u9762\u5E76\u5B58\u5165\u7B14\u8BB0" : "\u5DF2\u622A\u53D6\u5F53\u524D\u753B\u9762\uFF08\u672A\u8BC6\u522B\u5230\u89C6\u9891\u533A\u57DF\uFF09\u5E76\u5B58\u5165\u7B14\u8BB0",
@@ -4701,7 +5131,7 @@
     async function saveToNotes() {
       try {
         const dataUrl = await ensureDataUrl();
-        deps.addNote(dataUrl, lastPrompt.slice(0, 80) || "\u751F\u6210\u914D\u56FE");
+        await deps.addNote(dataUrl, lastPrompt.slice(0, 80) || "\u751F\u6210\u914D\u56FE");
         deps.toast("\u5DF2\u5B58\u5165\u7B14\u8BB0", "ok");
         close();
       } catch (err) {
@@ -4786,14 +5216,15 @@ ${context}`;
         if (!res.ok || !res.dataUrl) throw new Error(res.error || "\u65E0\u6CD5\u7F13\u5B58\u56FE\u7247");
         return res.dataUrl;
       },
-      addNote: (imageUrl, text) => {
-        deps.addNoteEntry({
+      addNote: async (imageUrl, text) => {
+        const saved = await deps.addNoteEntry({
           id: `image_${Date.now()}`,
           type: "image",
           at: Date.now(),
           imageUrl,
           text
         });
+        if (!saved) throw new Error("\u914D\u56FE\u672A\u4FDD\u5B58\uFF0C\u8BF7\u5728\u7B14\u8BB0\u4E2D\u91CD\u8BD5\u6216\u5BFC\u51FA");
       },
       insertChat: (imageUrl) => {
         const outcome = deps.addImage(imageUrl);
@@ -5358,6 +5789,7 @@ ${context}`;
       };
       if (!Array.isArray(session.messages)) session.messages = [];
       render();
+      renderSaveStatus(incoming.saveState);
       videoClock.sync();
     }
     let sessionSyncSerial = 0;
@@ -5378,6 +5810,32 @@ ${context}`;
         el.style.transition = "opacity 0.2s";
         setTimeout(() => el.remove(), 220);
       }, 3200);
+    }
+    const saveNotice = document.createElement("div");
+    saveNotice.className = "rtts-toast err";
+    saveNotice.style.cssText = "pointer-events:auto;overflow-wrap:anywhere";
+    saveNotice.setAttribute("role", "status");
+    saveNotice.hidden = true;
+    toasts.appendChild(saveNotice);
+    function renderSaveStatus(state) {
+      saveNotice.hidden = state?.status !== "error";
+      if (saveNotice.hidden) return;
+      saveNotice.textContent = state?.message || "\u6709\u5185\u5BB9\u672A\u4FDD\u5B58\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA";
+      const retry = document.createElement("button");
+      retry.textContent = "\u91CD\u8BD5\u4FDD\u5B58";
+      retry.className = "rtts-btn-ghost";
+      retry.addEventListener("click", async () => {
+        retry.disabled = true;
+        const res = await bg("RETRY_TRANSCRIPT");
+        retry.disabled = false;
+        if (!res.ok) toast(res.error || "\u4FDD\u5B58\u5931\u8D25\uFF0C\u8BF7\u5BFC\u51FA", "err");
+        await syncSessionFromBackground();
+      });
+      const exportBtn = document.createElement("button");
+      exportBtn.textContent = "\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9";
+      exportBtn.className = "rtts-btn-ghost";
+      exportBtn.addEventListener("click", () => exportTxtBtn.click());
+      saveNotice.append(retry, exportBtn);
     }
     function flashChip(btn, ms = 1600) {
       btn.classList.add("success");
@@ -5421,6 +5879,7 @@ ${context}`;
       openSettings
     });
     const subtitleView = createSubtitleView({
+      notify: (message) => toast(message, "err"),
       refs: {
         recordBtn,
         recordLabelEl,
@@ -5711,9 +6170,10 @@ ${context}`;
         list: notesList
       },
       getSession: () => session,
+      toast,
       openShotPreview: (url, saved, insertable) => openShotPreview(url, saved, insertable)
     });
-    const addNoteEntry = notesCtrl.addEntry;
+    const addNoteEntry2 = notesCtrl.addEntry;
     function renderNotes() {
       notesCtrl.render();
     }
@@ -5737,7 +6197,7 @@ ${context}`;
       },
       getSession: () => session,
       bg,
-      addNoteEntry,
+      addNoteEntry: addNoteEntry2,
       addImage: (url) => chatAttachmentsCtrl.addUrl(url),
       openDrawer,
       submitQuestion,
@@ -5763,13 +6223,13 @@ ${context}`;
         save: shotSave,
         insert: shotInsert
       },
-      addNoteEntry,
+      addNoteEntry: addNoteEntry2,
       addImage: (url) => chatAttachmentsCtrl.addUrl(url),
       openDrawer,
       toast
     });
-    function openShotPreview(dataUrl, saved, insertable = false) {
-      shotPreview.open(dataUrl, saved, insertable);
+    function openShotPreview(dataUrl, saved, insertable = false, source) {
+      shotPreview.open(dataUrl, saved, insertable, source);
     }
     function closeShotPreview() {
       shotPreview.close();
@@ -5787,11 +6247,11 @@ ${context}`;
       getSession: () => session,
       getTranscript: async () => {
         const res = await bg("GET_TRANSCRIPT");
-        return Array.isArray(res?.subtitles) ? res.subtitles : [];
+        return { subtitles: Array.isArray(res?.subtitles) ? res.subtitles : [], complete: res?.ok === true && res?.complete === true };
       },
       toast,
       flashChip,
-      addNoteEntry,
+      addNoteEntry: addNoteEntry2,
       openImagePanel,
       captureVideoFrame,
       openShotPreview,
@@ -5822,17 +6282,25 @@ ${context}`;
     shadow.getElementById("rtts-tab-notes").addEventListener("click", () => {
       companionSessions.close();
     });
-    function addQuickNote() {
+    let quickNote = null;
+    let quickNoteBusy = false;
+    async function addQuickNote() {
+      if (quickNoteBusy) return;
       if (isNotesPreviewing) toggleNotesPreview();
       const text = getEditorText(notesEditor);
       if (!text) return;
-      addNoteEntry({
-        id: `text_${Date.now()}`,
+      if (!quickNote || quickNote.text !== text) quickNote = { text, id: `text_${Date.now()}` };
+      quickNoteBusy = true;
+      const saved = await addNoteEntry2({
+        id: quickNote.id,
         type: "text",
         at: Date.now(),
         text
       });
-      notesEditor.innerHTML = "";
+      quickNoteBusy = false;
+      if (!saved) return;
+      quickNote = null;
+      if (getEditorText(notesEditor) === text) notesEditor.innerHTML = "";
       notesEditor.focus();
     }
     notesAdd.addEventListener("click", addQuickNote);
@@ -5887,8 +6355,12 @@ ${context}`;
         sendResponse?.({ ok: true });
         return;
       }
+      if (msg && msg.type === "GET_VIDEO_CONTEXT") {
+        sendResponse?.({ ok: true, ...readVideoContext() });
+        return;
+      }
       if (msg && msg.type === "SEEK_VIDEO") {
-        const result = seekTo(msg.seconds);
+        const result = seekTo(msg.seconds, msg.expectedSourceKey);
         sendResponse?.({ ok: true, seek: result });
         return;
       }
@@ -5912,21 +6384,17 @@ ${context}`;
         if (area !== "local" || !changes?.[NOTES_STORAGE_KEY]) return;
         const next = changes[NOTES_STORAGE_KEY].newValue;
         if (!Array.isArray(next)) return;
-        session.notes = next;
-        if (session.activeNoteId && !next.some((note) => note.id === session.activeNoteId)) {
-          session.activeNoteId = next[0]?.id ?? null;
-        }
-        renderNotes();
+        notesCtrl.adopt(next);
       });
     } catch {
     }
     buildLangPicker();
     initBarPosition();
     (async () => {
-      const savedNotes = await loadNotes();
-      session.notes = savedNotes;
-      if (savedNotes.length > 0) {
-        session.activeNoteId = savedNotes[0].id;
+      try {
+        notesCtrl.adopt(await loadNotes());
+      } catch (error) {
+        notesCtrl.setLoadError(error);
       }
       session.isDemoMode = false;
       await syncSessionFromBackground();

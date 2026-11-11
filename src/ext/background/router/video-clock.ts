@@ -1,3 +1,6 @@
+import { videoKeyForUrl } from '../../../lib/video-key'
+import { openSource } from '../source-opening'
+import { transitionSource } from '../source-sessions'
 /**
  * Content → background video-clock samples (ADR-033).
  *
@@ -16,6 +19,10 @@ import type { MessageHandlerMap } from './types'
 const MAX_SAMPLE_SKEW_MS = 120_000
 
 export const videoClockHandlers: MessageHandlerMap = {
+  OPEN_SOURCE: (message, { tabId, sendResponse }) => {
+    void openSource(message.sourceRef, message.videoTime, tabId ?? message.tabId).then(sendResponse).catch(error => sendResponse({ ok: false, error: error.message }))
+    return true
+  },
   VIDEO_CLOCK: (message, { tabId, sendResponse }) => {
     const session = sessions.get(tabId)
     const active = session
@@ -25,14 +32,15 @@ export const videoClockHandlers: MessageHandlerMap = {
       return false
     }
 
-    const sample = sanitizeVideoClockSample(message)
-    if (!sample || Math.abs(Date.now() - sample.at) > MAX_SAMPLE_SKEW_MS) {
-      sendResponse({ ok: true, ignored: true })
-      return false
-    }
-
-    recordVideoClock(tabId, sample)
-    sendResponse({ ok: true })
-    return false
+    void (async () => {
+      const bound = message.sourceRef && typeof message.sourceRef.url === 'string'
+        ? await transitionSource(tabId, message.sourceRef)
+        : session
+      if (!bound || (bound.state !== 'running' && bound.state !== 'starting')) return
+      if (message.sourceRef?.url && bound.sourceIdentity !== videoKeyForUrl(message.sourceRef.url)) return
+      const sample = sanitizeVideoClockSample(message)
+      if (sample && Math.abs(Date.now() - sample.at) <= MAX_SAMPLE_SKEW_MS) recordVideoClock(tabId, sample, bound.sourceEpoch)
+    })().then(() => sendResponse({ ok: true })).catch(error => sendResponse({ ok: false, error: error.message }))
+    return true
   },
 }

@@ -1,3 +1,6 @@
+import { sourceRefForUrl, legacySourceRef } from '../../../lib/video-key'
+import { bindInitialSource } from '../source-sessions'
+import { persistSessionsStrict } from '../session-store'
 /** Session lifecycle + Q&A + panel-opening handlers. */
 
 import { describeCaptureSuspects } from '../../capture-recovery'
@@ -23,7 +26,6 @@ import { loadConfig } from '../config'
 import { askLLM } from '../llm'
 import {
   beginTranscript,
-  finalizeSessionTranscript,
   finalizeTranscript,
 } from '../transcript-store'
 import {
@@ -34,12 +36,17 @@ import {
 } from '../offscreen'
 import {
   getOrCreateSession,
-  maybeCloseOffscreen,
+  allSourceSessions,
+  finishSessionTranscript,
+  markTranscriptSaveError,
+  retrySessionTranscript,
   nextGeneration,
   pushSession,
   reconcileSessionState,
   safeSession,
   sessions,
+  pendingSessionStop,
+  stopSessionCapture,
 } from '../session-store'
 import { resetVideoClock } from '../video-clock'
 import type { MessageHandlerMap } from './types'
@@ -82,6 +89,8 @@ function videoKeyFromMessage(message: any): string | undefined {
 function showSessionInTab(tabId: number, session: AgentSession | null): void {
   const s = getOrCreateSession(tabId)
   s.agentSessionId = session?.id ?? null
+  const source = session ? sourceRefForUrl(session.videoUrl, session.videoTitle, session.id) : undefined
+  s.chatSourceRef = source && source.key === session?.videoKey ? source : session ? legacySourceRef(session.videoUrl, session.videoTitle, session.id) : undefined
   s.messages = session ? messagesFromTurns(session.turns) : []
   pushSession(tabId)
 }
@@ -128,6 +137,11 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     pushSession(tabId)
   }
 
+  if (allSourceSessions(s).some(epoch => epoch.saveState?.status === 'error' || epoch.pendingTranscriptLines?.length)) {
+    try { await retrySessionTranscript(s); await finishSessionTranscript(s) }
+    catch { return { ok: false, error: '上一场有内容未保存，请先重试或导出' } }
+  }
+
   const config: AppConfig = await loadConfig()
   if (currentStartVersion(tabId) !== startVersion) return { ok: true, cancelled: true }
 
@@ -167,6 +181,8 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
   s.generation = nextGeneration()
   s.stoppedGeneration = undefined
   s.subtitles = []
+  s.pendingTranscriptLines = []
+  s.saveState = { status: 'saved' }
   s.transcriptId = null
   s.streamingSubtitle = null
   s.audioSilent = false
@@ -189,7 +205,10 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     // lazy ensureTranscript path in offscreen-events retries later.
     try {
       const tab = await chrome.tabs.get(tabId).catch(() => null)
+      bindInitialSource(s, message.pageUrl || message.videoUrl || tab?.url || '', message.pageTitle || tab?.title || '')
       const record = await beginTranscript({
+        sourceEpoch: s.sourceEpoch,
+        sourceRef: s.sourceRef,
         tabId,
         generation,
         pageTitle: typeof message.pageTitle === 'string' && message.pageTitle
@@ -202,13 +221,13 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
         targetLang: s.targetLang,
       })
       if (!isCurrent()) {
-        void finalizeTranscript(record.id)
+        void finalizeTranscript(record.id).catch(error => markTranscriptSaveError(s, error))
         return { ok: true, cancelled: true }
       }
       s.transcriptId = record.id
       pushSession(tabId)
     } catch (err) {
-      console.warn('[RTTS] transcript begin failed:', err)
+      markTranscriptSaveError(s, err)
     }
 
     console.log('[RTTS] START:', tabId, 'gen:', generation, 'lang:', s.sourceLang, '→', s.targetLang)
@@ -244,9 +263,13 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     s.streamId = streamId
     console.log('[RTTS] streamId obtained for tab', tabId)
 
+    await persistSessionsStrict()
+    if (!isCurrent()) return { ok: true, cancelled: true }
     // Send to offscreen for capture
     const started = await sendToOffscreen({
       type: 'START_CAPTURE',
+      sourceEpoch: s.sourceEpoch,
+      sourceRef: s.sourceRef,
       tabId,
       streamId,
       sourceLang: s.sourceLang,
@@ -274,7 +297,7 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     if (!isCurrent()) {
       console.info('[RTTS] START cancelled during startup')
       // A STOP may have raced the record creation; finalize whatever exists.
-      try { await finalizeSessionTranscript(s) } catch { /* ignore */ }
+      try { await finishSessionTranscript(s) } catch { /* ignore */ }
       return { ok: true, cancelled: true }
     }
 
@@ -285,7 +308,7 @@ async function runStart(message: any, tabId: number, startVersion: number): Prom
     s.streamId = ''
     s.streamingSubtitle = null
     // An empty record is removed by finalization; a partial one is kept.
-    try { await finalizeSessionTranscript(s) } catch { /* ignore */ }
+    try { await finishSessionTranscript(s) } catch { /* ignore */ }
     pushSession(tabId)
     const msg = (err && err.message) || String(err)
     let friendly = msg
@@ -365,7 +388,7 @@ export const sessionHandlers: MessageHandlerMap = {
     if (previous?.version === startVersion) {
       attempt = previous
     } else {
-      const pendingStop = stopAttempts.get(tabId)
+      const pendingStop = pendingSessionStop(tabId) || stopAttempts.get(tabId)
       const afterPrevious = previous ? previous.promise.catch(() => undefined) : Promise.resolve()
       const afterStop = pendingStop ? pendingStop.catch(() => undefined) : Promise.resolve()
       const run = Promise.all([afterPrevious, afterStop])
@@ -405,7 +428,7 @@ export const sessionHandlers: MessageHandlerMap = {
     }
     // Deliberately idempotent. A stop request must always clear the capture;
     // refusing it with "not transcribing" is how an orphan stream survived.
-    if (s.state === 'idle' && s.generation !== 0) {
+    if (s.state === 'idle' && s.generation !== 0 && !s.transcriptFinalizationPending && !pendingSessionStop(tabId)) {
       const stop = stopOrphanCapture(tabId).then(() => undefined).catch(() => undefined)
       stopAttempts.set(tabId, stop)
       stop.finally(() => {
@@ -415,49 +438,15 @@ export const sessionHandlers: MessageHandlerMap = {
       return true
     }
 
-    s.state = 'stopping'
-    pushSession(tabId)
-
-    // Invalidate in-flight ASR/translation results immediately. Late
-    // responses from the stopped segment carry the old generation and are
-    // dropped, so nothing new appears after the user hits stop — except the
-    // final line of a rename that was already segmenting, which the router
-    // still accepts for `stoppedGeneration` while `stopping`.
-    const stoppedGeneration = s.generation
-    s.stoppedGeneration = stoppedGeneration
-    s.generation = nextGeneration()
-
-    const stop = sendToOffscreen({
-      type: 'STOP_CAPTURE',
-      tabId,
-      generation: stoppedGeneration,
-      // Bounded drain: let the in-flight segment finish so the last subtitle
-      // of the session reaches the transcript before it is finalized.
-      drain: true,
-    }).catch(() => {
-      // Offscreen may already be closed
-    }).finally(async () => {
-      s.state = 'idle'
-      s.stoppedGeneration = undefined
-      s.streamId = ''
-      s.configSnapshot = null
-      s.streamingSubtitle = null
-      s.audioSilent = false
-      // Flush the final chunk and close the record. Keeping transcriptId
-      // lets copy/export read the full session after stop (ADR-031).
-      try {
-        await finalizeSessionTranscript(s)
-      } catch (err) {
-        console.warn('[RTTS] transcript finalize failed:', err)
-      }
-      pushSession(tabId)
-      maybeCloseOffscreen()
-      sendResponse({ ok: true, session: safeSession(s) })
-    })
+    const stop = stopSessionCapture(s)
     stopAttempts.set(tabId, stop)
     stop.finally(() => {
       if (stopAttempts.get(tabId) === stop) stopAttempts.delete(tabId)
     }).catch(() => {})
+    stop.then(
+      () => sendResponse({ ok: true, session: safeSession(sessions.get(tabId) || s) }),
+      () => sendResponse({ ok: true, session: safeSession(sessions.get(tabId) || s) }),
+    )
     // Keep the response open until the offscreen teardown finishes. This
     // prevents an immediate GET_SESSION from observing the old live capture
     // and putting the toolbar back into the running state after STOP.
@@ -500,6 +489,8 @@ export const sessionHandlers: MessageHandlerMap = {
       // The tab may still be showing an older session (another tab switched,
       // or this page just reloaded). Replace the projection before answering
       // so the UI and the replayed memory describe the same conversation.
+      const chatSource = sourceRefForUrl(session.videoUrl, session.videoTitle, session.id)
+      s.chatSourceRef = chatSource.key === session.videoKey ? chatSource : legacySourceRef(session.videoUrl, session.videoTitle, session.id)
       if (s.agentSessionId !== session.id) {
         s.agentSessionId = session.id
         s.messages = [
@@ -559,8 +550,10 @@ export const sessionHandlers: MessageHandlerMap = {
    */
   SUMMARIZE: (message, { tabId, sendResponse }) => {
     const s = getOrCreateSession(tabId)
-    const digest = buildSubtitleDigest(s.subtitles)
-    if (!digest.trim() || s.subtitles.length === 0) {
+    const evidence = structuredClone(s.subtitles)
+    const sourceRef = s.sourceRef || evidence[0]?.sourceRef || legacySourceRef('', '', s.transcriptId || 'summary')
+    const digest = buildSubtitleDigest(evidence)
+    if (!digest.trim() || evidence.length === 0) {
       sendResponse({ ok: false, error: '还没有可总结的字幕，先开启实时翻译' })
       return false
     }
@@ -572,7 +565,7 @@ export const sessionHandlers: MessageHandlerMap = {
         const parts = buildSummaryParts({
           digest,
           videoTitle: video.videoTitle,
-          subtitleCount: s.subtitles.length,
+          subtitleCount: evidence.length,
         })
         const summary = await askLLM({
           parts,
@@ -582,14 +575,14 @@ export const sessionHandlers: MessageHandlerMap = {
         })
         // Anchor for the note entry: the evidence window's latest position.
         let videoTime: number | null = null
-        for (let i = s.subtitles.length - 1; i >= 0; i -= 1) {
-          const t = s.subtitles[i]?.videoTime
+        for (let i = evidence.length - 1; i >= 0; i -= 1) {
+          const t = evidence[i]?.videoTime
           if (typeof t === 'number' && Number.isFinite(t)) {
             videoTime = t
             break
           }
         }
-        sendResponse({ ok: true, summary, videoTime, subtitleCount: s.subtitles.length })
+        sendResponse({ ok: true, summary, sourceRef, videoTime, subtitleCount: evidence.length })
       } catch (err: any) {
         sendResponse({ ok: false, error: err?.message || '生成纪要失败' })
       }

@@ -1,55 +1,70 @@
-/**
- * Note persistence shared by the in-page drawer and the side panel.
- *
- * Notes live in chrome.storage.local so both surfaces edit one store. Page
- * localStorage is kept as a legacy mirror and migrated into the shared store
- * on first read.
- */
-
-import type { NoteDocument } from '../../lib/types'
-
+import { confirmLibraryDelete } from './library-client'
+/** Notes are written only by the serialized background operation queue. */
+import type { NoteDocument, NoteEntry } from '../../lib/types'
 export const NOTES_STORAGE_KEY = 'snooper.notes.v1'
-
+interface NotesResponse {
+  notes: NoteDocument[]
+  legacyAcknowledged?: boolean
+}
+let retainedLegacySnapshot: string | null = null
+async function requestResult(type: string, fields: Record<string, unknown> = {}): Promise<NotesResponse> {
+  const result = await chrome.runtime.sendMessage({ target: 'background', type, ...fields })
+  if (!result?.ok || !Array.isArray(result.notes)) throw new Error(result?.error || '笔记保存服务不可用，请重试或导出')
+  return result
+}
+async function request(type: string, fields: Record<string, unknown> = {}): Promise<NoteDocument[]> {
+  return (await requestResult(type, fields)).notes
+}
+export function hasRetainedLegacyNotes(): boolean { return retainedLegacySnapshot !== null }
+export function readRetainedLegacyNotes(): string | null {
+  try { return localStorage.getItem(NOTES_STORAGE_KEY) ?? retainedLegacySnapshot }
+  catch { return retainedLegacySnapshot }
+}
+export function exportRetainedLegacyNotes(): void {
+  const raw = readRetainedLegacyNotes()
+  if (!raw) return
+  const url = URL.createObjectURL(new Blob([raw], { type: 'application/json' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = 'snooper-legacy-notes.json'
+  anchor.click()
+  setTimeout(() => URL.revokeObjectURL(url), 2000)
+}
 export async function loadNotes(): Promise<NoteDocument[]> {
-  // 1. Shared store (page + side panel)
+  let legacy: NoteDocument[] | undefined
+  let submitted: string | null = null
   try {
-    const got = await (chrome as any).storage.local.get(NOTES_STORAGE_KEY)
-    const stored = got?.[NOTES_STORAGE_KEY]
-    if (Array.isArray(stored)) return stored as NoteDocument[]
-  } catch { /* ignore */ }
-  // 2. Legacy page localStorage -> migrate into the shared store
+    submitted = localStorage.getItem(NOTES_STORAGE_KEY)
+    if (submitted) legacy = JSON.parse(submitted)
+  } catch { /* Keep unreadable legacy originals available for rescue export. */ }
+  retainedLegacySnapshot = submitted
+  const result = await requestResult('NOTES_LIST', { legacy })
   try {
-    const raw = localStorage.getItem(NOTES_STORAGE_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw) as NoteDocument[]
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        try {
-          await (chrome as any).storage.local.set({ [NOTES_STORAGE_KEY]: parsed })
-        } catch { /* ignore */ }
-        return parsed
-      }
+    const current = localStorage.getItem(NOTES_STORAGE_KEY)
+    // Success alone is not migration acknowledgement. Also never remove a
+    // newer page snapshot written while the background request was pending.
+    if (submitted && current === submitted && result.legacyAcknowledged === true) {
+      localStorage.removeItem(NOTES_STORAGE_KEY)
+      retainedLegacySnapshot = null
+    } else {
+      retainedLegacySnapshot = current
+      if (current === submitted && Array.isArray(legacy) && legacy.length === 0) retainedLegacySnapshot = null
     }
-  } catch { /* ignore */ }
-  return []
+  } catch { /* Original remains; surface its rescue export. */ }
+  return result.notes
 }
-
-export async function saveNotes(notes: NoteDocument[]) {
-  try {
-    await (chrome as any).storage.local.set({ [NOTES_STORAGE_KEY]: notes })
-  } catch { /* ignore */ }
-  try {
-    localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes))
-  } catch { /* ignore */ }
+export function addNoteEntry(note: NoteDocument, entry: NoteEntry): Promise<NoteDocument[]> {
+  return request('NOTES_ADD_ENTRY', { input: { noteId: note.id, title: note.title, createdAt: note.createdAt, sessionInfo: note.sessionInfo, entry } })
 }
-
+export async function deleteNoteEntry(noteId: string, entryId: string): Promise<NoteDocument[] | null> {
+  if(!await confirmLibraryDelete({noteEntries:[{noteId,entryId}]})) return null
+  return request('NOTES_LIST')
+}
+export async function deleteNoteDocuments(ids: string[]): Promise<NoteDocument[] | null> {
+  if(!await confirmLibraryDelete({noteIds:ids})) return null
+  return request('NOTES_LIST')
+}
 export function createNoteDocument(title: string, source: NoteDocument['sessionInfo']): NoteDocument {
   const now = Date.now()
-  return {
-    id: `note_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-    title,
-    createdAt: now,
-    updatedAt: now,
-    entries: [],
-    sessionInfo: source,
-  }
+  return { id: `note_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`, title, createdAt: now, updatedAt: now, entries: [], sessionInfo: source }
 }

@@ -7,7 +7,7 @@
  * instead of a link that pretends to seek. Pure functions only.
  */
 
-import { youtubeId, bilibiliKey } from './video-key'
+import { youtubeId, bilibiliKey, bilibiliPart } from './video-key'
 
 function floorSeconds(seconds: number): number {
   return Math.max(0, Math.floor(seconds))
@@ -31,7 +31,9 @@ export function videoDeepLink(url: string | undefined | null, seconds: number): 
 
   if (bilibiliKey(parsed)) {
     // The stored pathname already carries `/video/` or `/bangumi/play/`.
-    return `https://www.bilibili.com${parsed.pathname}?t=${t}`
+    const part = bilibiliPart(parsed)
+    if (part === null) return null
+    return `https://www.bilibili.com${parsed.pathname}?${parsed.searchParams.has('p') ? `p=${part}&` : ''}t=${t}`
   }
 
   const yt = youtubeId(parsed)

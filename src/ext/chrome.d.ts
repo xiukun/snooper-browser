@@ -13,6 +13,7 @@ declare namespace chrome {
     }
   }
   namespace tabs {
+    function create(properties: { url: string; active?: boolean }): Promise<any>
     function sendMessage(tabId: number, message: any): Promise<any>
     function get(tabId: number): Promise<any>
     function query(queryInfo: any): Promise<any[]>
@@ -32,7 +33,11 @@ declare namespace chrome {
     }): Promise<any[]>
   }
   namespace storage {
+    namespace onChanged {
+      function addListener(callback: (changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) => void): void
+    }
     namespace local {
+      function getBytesInUse(keys: null | string | string[]): Promise<number>
       function get(keys: string | string[] | Record<string, any>): Promise<Record<string, any>>
       function set(items: Record<string, any>): Promise<void>
       function remove(keys: string | string[]): Promise<void>
@@ -40,6 +45,7 @@ declare namespace chrome {
     namespace session {
       function get(keys: string | string[] | Record<string, any>): Promise<Record<string, any>>
       function set(items: Record<string, any>): Promise<void>
+      function remove(keys: string | string[]): Promise<void>
     }
   }
   namespace sidePanel {

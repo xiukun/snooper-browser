@@ -43,7 +43,7 @@ export interface ImagePanelDeps {
   generate: (input: { prompt: string; size: string; negativePrompt: string }) => Promise<ImageGenerateResult>
   /** Background fetch fallback; must return a data URL or throw. */
   materialize: (url: string) => Promise<string>
-  addNote: (imageUrl: string, prompt: string) => void
+  addNote: (imageUrl: string, prompt: string) => Promise<void>
   insertChat: (imageUrl: string, prompt: string) => void
   play: (kind: ImageFunKind, imageUrl: string, prompt: string) => void
   toast: (message: string, tone?: ImageTone) => void
@@ -228,7 +228,7 @@ export function createImagePanel(deps: ImagePanelDeps) {
   async function saveToNotes() {
     try {
       const dataUrl = await ensureDataUrl()
-      deps.addNote(dataUrl, lastPrompt.slice(0, 80) || '生成配图')
+      await deps.addNote(dataUrl, lastPrompt.slice(0, 80) || '生成配图')
       deps.toast('已存入笔记', 'ok')
       close()
     } catch (err: any) {

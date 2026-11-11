@@ -26,7 +26,7 @@ export interface ImageGenDeps {
   }
   getSession: () => SessionState
   bg: (type: string, payload?: Record<string, any>) => Promise<any>
-  addNoteEntry: (entry: { id: string; type: 'image'; at: number; imageUrl: string; text: string }) => void
+  addNoteEntry: (entry: { id: string; type: 'image'; at: number; imageUrl: string; text: string }) => Promise<boolean>
   addImage: (url: string) => 'ok' | 'duplicate' | 'full'
   openDrawer: (tab: 'chat' | 'notes') => void
   submitQuestion: (question: string, images: string[]) => Promise<void>
@@ -62,14 +62,15 @@ export function createImageGen(deps: ImageGenDeps) {
       if (!res.ok || !res.dataUrl) throw new Error(res.error || '无法缓存图片')
       return res.dataUrl
     },
-    addNote: (imageUrl, text) => {
-      deps.addNoteEntry({
+    addNote: async (imageUrl, text) => {
+      const saved = await deps.addNoteEntry({
         id: `image_${Date.now()}`,
         type: 'image',
         at: Date.now(),
         imageUrl,
         text,
       })
+      if (!saved) throw new Error('配图未保存，请在笔记中重试或导出')
     },
     insertChat: (imageUrl) => {
       const outcome = deps.addImage(imageUrl)

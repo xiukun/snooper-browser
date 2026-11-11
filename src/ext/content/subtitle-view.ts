@@ -1,3 +1,5 @@
+import { createFavoriteButton, disposeFavoriteControls, favoriteState, subtitleFavoriteRef } from './favorite-control'
+import type { SaveState, SourceRef } from '../../lib/knowledge-types'
 /**
  * Subtitle overlay: history rows, streaming row, auto-idle collapse, sizing,
  * positioning and drag/resize handles.
@@ -8,7 +10,7 @@ import { renderMarkdownLite } from './markdown'
 import { formatVideoTime } from '../../lib/video-clock'
 import { isFillerOnly } from '../../lib/asr-guard'
 import { sortByStart } from '../../lib/subtitle-order'
-import { seekTo } from './video-seek'
+import { openSavedSource } from './source-opening'
 import type { StreamingSubtitle } from './types'
 
 const SUB_BOX_SIZE_KEY = 'snooper.subtitle-box-size.v1'
@@ -34,9 +36,14 @@ export interface SubtitleViewRefs {
 }
 
 export interface SubtitleViewSession {
+  sourceRef?: SourceRef
+  chatSourceRef?: SourceRef
+  transcriptId?: string | null
+  saveState?: SaveState
+  currentTranscriptSaveState?: SaveState
   state: string
   isDemoMode: boolean
-  subtitles: Array<{ target?: string; source?: string; id?: string; at?: number; videoTime?: number | null }>
+  subtitles: Array<{ kind?: 'screen'; sourceRef?: SourceRef; target?: string; source?: string; id?: string; at?: number; videoTime?: number | null }>
   messages?: Array<{ role: string; content: string; images?: string[] }>
   streamingSubtitle?: StreamingSubtitle | null
   audioSilent?: boolean
@@ -44,6 +51,7 @@ export interface SubtitleViewSession {
 
 export interface SubtitleViewDeps {
   refs: SubtitleViewRefs
+  notify?: (message: string) => void
   getSession: () => SubtitleViewSession
   isUiHidden: () => boolean
   applyUiHidden: () => void
@@ -54,6 +62,7 @@ export interface SubtitleViewDeps {
 
 export function createSubtitleView(deps: SubtitleViewDeps) {
   const r = deps.refs
+  const favorites = favoriteState()
   let subBoxAutoPosition = true
   let subBoxCompact = false
   let subIdleTimer: number | null = null
@@ -127,7 +136,7 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
       // ADR-041: a full rebuild on every session update was the visible
       // jitter — a long transcript was recreated just because the audio
       // silence flag flipped. Rebuild only when the rendered content changed.
-      const rowsSignature = subs
+      const rowsSignature = `${session.transcriptId || ''}:${session.currentTranscriptSaveState?.status || session.saveState?.status || ''}:${session.isDemoMode}:` + subs
         .map((sub) => `${sub.id ?? ''}\u0001${sub.at ?? ''}\u0001${sub.videoTime ?? ''}\u0001${sub.target ?? ''}\u0001${sub.source ?? ''}\u0001${(sub as { kind?: string }).kind ?? ''}`)
         .join('\u0002')
       const rowsChanged = rowsSignature !== lastRowsSignature
@@ -135,6 +144,7 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
 
       if (rowsChanged) {
         lastRowsSignature = rowsSignature
+        disposeFavoriteControls(r.subRows)
         r.subRows.textContent = ''
 
         subs.forEach((sub) => {
@@ -153,9 +163,10 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
             chip.className = 'sub-time-chip'
             chip.textContent = formatVideoTime(sub.videoTime!)
             chip.setAttribute('aria-label', `跳转到 ${formatVideoTime(sub.videoTime!)}`)
-            chip.title = '点击跳转到视频对应位置'
-            const activate = () => {
-              const result = seekTo(sub.videoTime!)
+            chip.title = sub.sourceRef?.confidence === 'exact' ? '点击跳转到视频对应位置' : '打开来源（课节未核验）'
+            const activate = async () => {
+              const result = await openSavedSource(sub.sourceRef, sub.videoTime)
+              chip.title = result.action === 'seeked' ? '已定位' : result.ok ? '已打开来源' : '无法打开来源'
               row.classList.remove('seek-ok', 'seek-fail')
               // Force a reflow so the flash restarts on rapid re-clicks.
               void row.offsetWidth
@@ -201,6 +212,10 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
             row.classList.add('filler')
           }
 
+          const ref = subtitleFavoriteRef({ ...session, saveState: session.currentTranscriptSaveState || session.saveState }, sub)
+          const favorite = createFavoriteButton(ref, message => { favorite.title = message; deps.notify?.(message) }, favorites)
+          favorite.classList.add('sub-favorite')
+          row.appendChild(favorite)
           r.subRows.appendChild(row)
         })
 
@@ -226,6 +241,7 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
     } else {
       r.subPlaceholder.style.display = ''
       r.subPlaceholder.textContent = '点击「录音」开始实时转写'
+      disposeFavoriteControls(r.subRows)
       r.subRows.textContent = ''
       lastRowsSignature = ''
       clearStreaming()
@@ -293,12 +309,13 @@ export function createSubtitleView(deps: SubtitleViewDeps) {
 
   // ADR-036: `[mm:ss]` stamps in answers seek the video. One delegated
   // listener covers every bubble, including re-renders.
-  r.chatEl.addEventListener('click', (event) => {
+  r.chatEl.addEventListener('click', async (event) => {
     const target = (event.target as HTMLElement | null)?.closest?.('.chat-time-ref') as HTMLElement | null
     if (!target) return
     const seconds = Number(target.dataset.t)
     if (!Number.isFinite(seconds)) return
-    const result = seekTo(seconds)
+    const result = await openSavedSource(deps.getSession().chatSourceRef, seconds)
+    target.title = result.action === 'seeked' ? '已定位' : result.ok ? '已打开来源' : '无法打开来源'
     const bubble = target.closest('.rtts-msg')
     if (bubble) {
       bubble.classList.remove('seek-ok', 'seek-fail')

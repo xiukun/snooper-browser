@@ -1,6 +1,12 @@
 /** Shadow-DOM CSS: drawer, chat, notes, cite popover, modals, toasts, image panel, motion. */
 
-export const PANELS_CSS = `/* === Unified side drawer: chat + notes tabs === */
+export const PANELS_CSS = `
+    .sub-favorite { grid-column: 2; justify-self: start; background: transparent; color: inherit; border: 1px solid currentColor; border-radius: 6px; padding: 3px 7px; font-size: 11px; cursor: pointer; }
+    .sub-row:not(.has-time) .sub-favorite { grid-column: 1; }
+    .library-favorite:disabled { opacity: .5; cursor: default; }
+    .library-favorite[aria-pressed="true"] { font-weight: 700; }
+    .library-favorite:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+/* === Unified side drawer: chat + notes tabs === */
     #rtts-drawer-tabs {
       display: flex; align-items: center; gap: 4px;
       background: rgba(255,255,255,0.04);

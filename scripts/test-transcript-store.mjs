@@ -7,6 +7,7 @@
  *
  *   node scripts/test-transcript-store.mjs
  */
+import assert from 'node:assert/strict'
 import { execSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -23,6 +24,14 @@ execSync(
 
 /* In-memory chrome.storage.local. Values are cloned like the real API. */
 const store = {}
+let fail = null
+function inject(method, key) { fail = { method, key } }
+function fault(method, keys) {
+  if (fail?.method === method && (!fail.key || keys.includes(fail.key))) {
+    fail = null
+    throw new Error('injected storage failure')
+  }
+}
 const clone = (value) => (value === undefined ? undefined : structuredClone(value))
 
 globalThis.chrome = {
@@ -30,6 +39,7 @@ globalThis.chrome = {
     local: {
       async get(keys) {
         const list = Array.isArray(keys) ? keys : [keys]
+        fault('get', list)
         const result = {}
         for (const key of list) {
           if (typeof key === 'string' && key in store) result[key] = clone(store[key])
@@ -37,10 +47,12 @@ globalThis.chrome = {
         return result
       },
       async set(items) {
+        fault('set', Object.keys(items))
         for (const [key, value] of Object.entries(items)) store[key] = clone(value)
       },
       async remove(keys) {
         const list = Array.isArray(keys) ? keys : [keys]
+        fault('remove', list)
         for (const key of list) delete store[key]
       },
     },
@@ -296,7 +308,7 @@ function line(index, tag = '') {
   await mod.appendTranscriptLine(live.id, line(0))
 
   const ids = []
-  for (let i = 0; i < 105; i += 1) {
+  for (let i = 0; i < 150; i += 1) {
     const record = await mod.beginTranscript({ tabId: 1000 + i, generation: 100 + i })
     await mod.appendTranscriptLine(record.id, line(i))
     await mod.finalizeTranscript(record.id)
@@ -305,13 +317,13 @@ function line(index, tag = '') {
 
   const summaries = await mod.listTranscripts()
   const completed = summaries.filter((item) => item.status === 'completed')
-  check('completed records capped at 100', completed.length, 100)
-  check('oldest completed record evicted', summaries.some((item) => item.id === ids[0]), false)
+  check('150 completed records retained', completed.length, 150)
+  check('oldest completed record retained', summaries.some((item) => item.id === ids[0]), true)
   check('recording record never evicted', summaries.some((item) => item.id === live.id), true)
   check(
-    'evicted chunks removed',
+    'oldest body retained',
     Object.keys(store).some((key) => key.startsWith(`${mod.TRANSCRIPT_CHUNK_PREFIX}${ids[0]}.`)),
-    false,
+    true,
   )
 }
 
@@ -360,6 +372,67 @@ function line(index, tag = '') {
     (await mod.listTranscripts()).find((item) => item.id === record.id).status,
     'completed',
   )
+}
+
+
+/* ---------- Legacy/recovery retention preserves 150 complete bodies ---------- */
+{
+  const mod = await freshStore()
+  store[mod.LEGACY_HISTORY_KEY] = Array.from({ length: 150 }, (_, i) => ({ id: `legacy-${i}`, startedAt: i + 1, subtitles: [line(0, `first-${i}-`), line(500, `last-${i}-`)] }))
+  assert.equal((await mod.listTranscripts()).length, 150)
+  const newRecord = await mod.beginTranscript({ tabId: 5000, generation: 1 })
+  await mod.appendTranscriptLine(newRecord.id, line(1))
+  const restarted = await loadModule()
+  await restarted.recoverTranscripts()
+  assert.equal((await restarted.listTranscripts()).length, 151)
+  assert.equal((await restarted.readTranscript('legacy-0'))[0].source, 'sfirst-0-0')
+  assert.equal((await restarted.readTranscript('legacy-149'))[1].target, 'tlast-149-500')
+  passed += 4
+}
+
+/* ---------- Storage failures are observable and retryable ---------- */
+{
+  const mod = await freshStore()
+  inject('set', mod.TRANSCRIPT_INDEX_KEY)
+  await assert.rejects(mod.beginTranscript({ tabId: 77, generation: 1 }), /injected/)
+  const record = await mod.beginTranscript({ tabId: 77, generation: 1 })
+  for (let i = 0; i < 199; i++) await mod.appendTranscriptLine(record.id, { ...line(i), id: `e${i}` })
+  inject('set', `${mod.TRANSCRIPT_CHUNK_PREFIX}${record.id}.0`)
+  await assert.rejects(mod.appendTranscriptLine(record.id, { ...line(199), id: 'e199' }), /injected/)
+  assert.equal(store[mod.TRANSCRIPT_INDEX_KEY][0].subtitleCount, 199)
+  await mod.appendTranscriptLine(record.id, { ...line(199), id: 'e199' })
+  inject('set', mod.TRANSCRIPT_INDEX_KEY)
+  await assert.rejects(mod.appendTranscriptLine(record.id, { ...line(200), id: 'e200' }), /injected/)
+  await mod.appendTranscriptLine(record.id, { ...line(200), id: 'e200' })
+  assert.equal((await mod.readTranscript(record.id)).length, 201)
+  inject('set', mod.TRANSCRIPT_INDEX_KEY)
+  await assert.rejects(mod.finalizeTranscript(record.id), /injected/)
+  assert.equal((await mod.getTranscriptRecord(record.id)).status, 'recording')
+  await mod.finalizeTranscript(record.id)
+  const page = await mod.readTranscriptPage(record.id, 1)
+  assert.equal(page.lines.length, 1)
+  assert.equal(page.lines[0].id, 'e200')
+  assert.equal(page.nextChunkIndex, null)
+  delete store[`${mod.TRANSCRIPT_CHUNK_PREFIX}${record.id}.0`]
+  await assert.rejects(mod.readTranscript(record.id), /缺|missing/i)
+  inject('remove')
+  await assert.rejects(mod.deleteTranscripts([record.id]), /injected/)
+  await mod.deleteTranscripts([record.id])
+  assert.equal((await mod.listTranscripts()).length, 0)
+  passed += 10
+}
+{
+  const mod = await freshStore()
+  store[mod.LEGACY_HISTORY_KEY] = [{ id: 'legacy-failure', startedAt: 1, subtitles: [line(2), { ...line(1), kind: 'screen' }] }]
+  inject('set', mod.TRANSCRIPT_INDEX_KEY)
+  await assert.rejects(mod.listTranscripts(), /injected/)
+  assert.ok(store[mod.LEGACY_HISTORY_KEY])
+  const rows = await mod.readTranscript('legacy-failure')
+  assert.equal(rows[0].kind, 'screen')
+  assert.equal(rows[0].id, 'legacy-failure:0:1')
+  assert.equal(rows[1].id, 'legacy-failure:0:0')
+  assert.equal(store[mod.LEGACY_HISTORY_KEY], undefined)
+  passed += 6
 }
 
 rmSync(outDir, { recursive: true, force: true })

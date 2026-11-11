@@ -1043,6 +1043,22 @@ ${question}`
     return output || "";
   }
 
+  // src/ext/offscreen/source-epochs.ts
+  function beginSourceRequest(session) {
+    const epoch = session.sourceEpoch;
+    if (epoch && session.sourceBindings?.[epoch]) session.sourceBindings[epoch].pending++;
+    return epoch;
+  }
+  async function drainSourceIfReady(session, epoch) {
+    if (!epoch || epoch === session.sourceEpoch || !session.sourceBindings?.[epoch] || session.sourceBindings[epoch].pending) return;
+    const reply = await chrome.runtime.sendMessage({ type: "CAPTURE_SOURCE_DRAINED", tabId: session.tabId, generation: session.generation, sourceEpoch: epoch }).catch(() => null);
+    if (reply?.ok) delete session.sourceBindings[epoch];
+  }
+  async function endSourceRequest(session, epoch) {
+    if (epoch && session.sourceBindings?.[epoch]) session.sourceBindings[epoch].pending--;
+    await drainSourceIfReady(session, epoch);
+  }
+
   // src/lib/audio-segments.ts
   var SPEECH_RMS_THRESHOLD = 0.012;
   var MIN_SPEECH_MS = 320;
@@ -1562,6 +1578,36 @@ ${question}`
   var WORKLET_PATH = chrome.runtime.getURL("audio-worklet.js");
   var STOP_DRAIN_MS = 4e3;
   var ASR_EVIDENCE_RESET_MS = 6e4;
+  function contextFor(session) {
+    return session.sourceContext ||= { recentContext: session.recentContext || [], recentAsrCandidates: session.recentAsrCandidates || [], recentAsrWindow: session.recentAsrWindow || [], recentWeakWindow: session.recentWeakWindow || [], lastAsrAt: session.lastAsrAt || 0 };
+  }
+  function prepareCaptureSource(tabId, generation, sourceEpoch) {
+    const session = captureSessions.get(tabId);
+    if (!session || session.generation !== generation || session.sourceEpoch !== sourceEpoch || session.captureStopped) return { ok: false, error: "\u91C7\u96C6\u8BFE\u8282\u7ED1\u5B9A\u4E0D\u5339\u914D" };
+    session.sourcePaused = true;
+    session.pcmBuffer = [];
+    session.frameRms = [];
+    session.frameLens = [];
+    return { ok: true };
+  }
+  function setCaptureSource(tabId, generation, previousSourceEpoch, sourceEpoch, sourceRef) {
+    const session = captureSessions.get(tabId);
+    if (!session || session.generation !== generation || session.sourceEpoch !== previousSourceEpoch || session.captureStopped) return { ok: false, error: "\u91C7\u96C6\u8BFE\u8282\u7ED1\u5B9A\u4E0D\u5339\u914D" };
+    if (!sourceEpoch || !sourceRef?.key) return { ok: false, error: "\u7F3A\u5C11\u8BFE\u8282\u6765\u6E90" };
+    session.sourceBindings ||= {};
+    session.sourceBindings[sourceEpoch] = { sourceRef: structuredClone(sourceRef), pending: 0 };
+    session.sourceEpoch = sourceEpoch;
+    session.sourcePaused = false;
+    session.sourceContext = { recentContext: [], recentAsrCandidates: [], recentAsrWindow: [], recentWeakWindow: [], lastAsrAt: 0 };
+    session.pcmBuffer = [];
+    session.frameRms = [];
+    session.frameLens = [];
+    session.segmentStartTime = Date.now();
+    session.lastSilenceTime = 0;
+    session.isSilent = false;
+    void drainSourceIfReady(session, previousSourceEpoch);
+    return { ok: true };
+  }
   var captureSessions = /* @__PURE__ */ new Map();
   var MAX_CONTEXT_ENTRIES = 5;
   function getContextSummary(session) {
@@ -1621,10 +1667,12 @@ ${question}`
   function isCurrentStart(tabId, generation) {
     return isCurrentCaptureGeneration(generationState(tabId), generation);
   }
-  async function startTabCaptureNow({ tabId, streamId, sourceLang, targetLang, config, generation }) {
+  async function startTabCaptureNow({ tabId, streamId, sourceLang, targetLang, config, generation, sourceEpoch, sourceRef }) {
     await stopCurrentCapture(tabId);
     if (!isCurrentStart(tabId, generation)) return { ok: true };
     const session = {
+      sourceEpoch,
+      sourceBindings: sourceEpoch && sourceRef ? { [sourceEpoch]: { sourceRef, pending: 0 } } : {},
       tabId,
       generation,
       sourceLang,
@@ -1805,7 +1853,7 @@ ${question}`
   }
   function onPcmChunk(tabId, msg) {
     const session = captureSessions.get(tabId);
-    if (!session || session.aborted || session.captureStopped) return;
+    if (!session || session.aborted || session.captureStopped || session.sourcePaused) return;
     const pcmData = new Int16Array(msg.buffer);
     session.pcmBuffer.push(pcmData);
     session.lastChunkTime = Date.now();
@@ -1838,6 +1886,7 @@ ${question}`
     session.audioSilent = silent;
     chrome.runtime.sendMessage({
       type: "CAPTURE_AUDIO_STATE",
+      sourceEpoch: session.sourceEpoch,
       tabId: session.tabId,
       generation: session.generation,
       silent
@@ -1846,7 +1895,7 @@ ${question}`
   }
   function checkSegment(tabId) {
     const session = captureSessions.get(tabId);
-    if (!session || session.aborted || session.captureStopped) return;
+    if (!session || session.aborted || session.captureStopped || session.sourcePaused) return;
     if (session.pendingTranscriptions >= MAX_QUEUE_SIZE) {
       trimBufferToMax(session, MAX_SEGMENT_DURATION_MS);
       return;
@@ -1894,17 +1943,12 @@ ${question}`
       generation: session.generation,
       ...payload
     };
-    if (session.draining) {
-      await chrome.runtime.sendMessage(message).catch(() => {
-      });
-      return;
-    }
-    chrome.runtime.sendMessage(message).catch(() => {
+    await chrome.runtime.sendMessage(message).catch(() => {
     });
   }
   async function finalizeSegment(tabId) {
     const session = captureSessions.get(tabId);
-    if (!session) return;
+    if (!session || session.sourcePaused) return;
     if (session.pendingTranscriptions >= MAX_QUEUE_SIZE) return;
     const segmentStartTime = session.segmentStartTime;
     const rawPcm = concatPcm(session.pcmBuffer);
@@ -1955,10 +1999,13 @@ ${question}`
     const durationMs = pcmData.length / TARGET_SAMPLE_RATE * 1e3;
     if (durationMs < 300) return;
     session.pendingTranscriptions++;
+    const sourceEpoch = beginSourceRequest(session);
+    const context = contextFor(session);
+    const { sourceLang, targetLang } = session;
     try {
       const wavBlob = createWavBlob(pcmData, TARGET_SAMPLE_RATE);
       const t0 = performance.now();
-      const transcription = await transcribeAudio2(wavBlob, session.config, session.sourceLang);
+      const transcription = await transcribeAudio2(wavBlob, session.config, sourceLang);
       if (session.aborted) return;
       if (!transcription) return;
       const asrMs = Math.round(performance.now() - t0);
@@ -1966,33 +2013,33 @@ ${question}`
         text: transcription,
         durationMs: Math.round(durationMs),
         speechMs,
-        sourceLang: session.sourceLang,
+        sourceLang,
         asrMs
       });
       const isHallucination = isLikelyAsrHallucinationSequence(
-        session.recentAsrCandidates,
+        context.recentAsrCandidates,
         transcription
       );
-      const isRepeatLoop = isLikelyAsrRepeatLoop(session.recentAsrWindow, transcription);
+      const isRepeatLoop = isLikelyAsrRepeatLoop(context.recentAsrWindow, transcription);
       const isLanguageMismatch = isLikelyAsrLanguageMismatch(
         transcription,
-        session.sourceLang
+        sourceLang
       );
       const asrNow = Date.now();
-      if (session.lastAsrAt > 0 && asrNow - session.lastAsrAt > ASR_EVIDENCE_RESET_MS) {
-        session.recentAsrCandidates = [];
-        session.recentAsrWindow = [];
-        session.recentWeakWindow = [];
+      if (context.lastAsrAt > 0 && asrNow - context.lastAsrAt > ASR_EVIDENCE_RESET_MS) {
+        context.recentAsrCandidates = [];
+        context.recentAsrWindow = [];
+        context.recentWeakWindow = [];
       }
-      session.lastAsrAt = asrNow;
-      const isArtifactBurst = isLikelyArtifactBurst(session.recentWeakWindow, transcription);
+      context.lastAsrAt = asrNow;
+      const isArtifactBurst = isLikelyArtifactBurst(context.recentWeakWindow, transcription);
       if (isArtifactLine(transcription) || isFillerOnly(transcription)) {
-        session.recentWeakWindow = [
-          ...session.recentWeakWindow.slice(-4),
+        context.recentWeakWindow = [
+          ...context.recentWeakWindow.slice(-4),
           transcription
         ];
       } else {
-        session.recentWeakWindow = [];
+        context.recentWeakWindow = [];
       }
       const isSparse = isLikelySparseTranscript(transcription, durationMs);
       if (isHallucination || isRepeatLoop || isLanguageMismatch || isSparse || isArtifactBurst) {
@@ -2003,29 +2050,29 @@ ${question}`
           languageMismatch: isLanguageMismatch,
           sparse: isSparse,
           artifactBurst: isArtifactBurst,
-          sourceLang: session.sourceLang,
+          sourceLang,
           durationMs: Math.round(durationMs),
           speechMs,
-          recentCandidates: [...session.recentAsrCandidates],
-          recentWindow: [...session.recentAsrWindow]
+          recentCandidates: [...context.recentAsrCandidates],
+          recentWindow: [...context.recentAsrWindow]
         });
-        session.recentAsrCandidates = [
-          ...session.recentAsrCandidates.slice(-5),
+        context.recentAsrCandidates = [
+          ...context.recentAsrCandidates.slice(-5),
           transcription
         ];
-        session.recentAsrWindow = [
-          ...session.recentAsrWindow.slice(-5),
+        context.recentAsrWindow = [
+          ...context.recentAsrWindow.slice(-5),
           transcription
         ];
         return;
       }
-      session.recentAsrCandidates = [];
-      session.recentAsrWindow = [
-        ...session.recentAsrWindow.slice(-2),
+      context.recentAsrCandidates = [];
+      context.recentAsrWindow = [
+        ...context.recentAsrWindow.slice(-2),
         transcription
       ];
       const asrLatency = asrMs;
-      if (shouldSkipTranslation(session.sourceLang, session.targetLang, transcription)) {
+      if (shouldSkipTranslation(sourceLang, targetLang, transcription)) {
         const passthroughLatency = Math.round(performance.now() - t0 + (Date.now() - segmentStartTime));
         if (session.aborted) return;
         console.log("[RTTS] subtitle emitted:", {
@@ -2035,6 +2082,7 @@ ${question}`
           asrMs
         });
         await emitFinalSubtitle(session, {
+          sourceEpoch,
           at: segmentStartTime,
           endedAt: Date.now(),
           source: transcription,
@@ -2043,11 +2091,12 @@ ${question}`
         });
         return;
       }
-      const contextSummary = getContextSummary(session);
+      const contextSummary = getContextSummary(context);
       chrome.runtime.sendMessage({
         type: "CAPTURE_SUBTITLE_STREAMING",
         tabId,
         generation: session.generation,
+        sourceEpoch,
         at: segmentStartTime,
         source: transcription,
         partialTarget: "",
@@ -2055,8 +2104,8 @@ ${question}`
       });
       let fullTranslation = "";
       const translation = await translateTextStream(transcription, {
-        source: session.sourceLang,
-        target: session.targetLang,
+        source: sourceLang,
+        target: targetLang,
         config: session.config,
         context: contextSummary,
         onDelta: (delta) => {
@@ -2069,6 +2118,7 @@ ${question}`
             type: "CAPTURE_SUBTITLE_STREAMING",
             tabId,
             generation: session.generation,
+            sourceEpoch,
             at: segmentStartTime,
             source: transcription,
             partialTarget: fullTranslation,
@@ -2077,7 +2127,7 @@ ${question}`
           });
         }
       });
-      const recentTargets = (session.recentContext || []).map((entry) => entry.target).filter(Boolean);
+      const recentTargets = (context.recentContext || []).map((entry) => entry.target).filter(Boolean);
       if (isLikelyShortRepeatLoop(recentTargets, translation)) {
         console.warn("[RTTS] dropped repeated translation:", {
           source: transcription,
@@ -2088,6 +2138,7 @@ ${question}`
           type: "CAPTURE_SUBTITLE_STREAMING",
           tabId,
           generation: session.generation,
+          sourceEpoch,
           at: segmentStartTime,
           source: "",
           partialTarget: "",
@@ -2100,7 +2151,7 @@ ${question}`
       const llmMs = Math.max(0, processingMs - asrMs);
       const totalLatency = processingMs + (Date.now() - segmentStartTime);
       if (transcription && translation) {
-        pushContext(session, transcription, translation);
+        pushContext(context, transcription, translation);
       }
       if (session.aborted) return;
       console.log("[RTTS] subtitle emitted:", {
@@ -2111,6 +2162,7 @@ ${question}`
         llmMs
       });
       await emitFinalSubtitle(session, {
+        sourceEpoch,
         at: segmentStartTime,
         endedAt: Date.now(),
         source: transcription,
@@ -2124,6 +2176,7 @@ ${question}`
         type: "CAPTURE_SUBTITLE_STREAMING",
         tabId,
         generation: session.generation,
+        sourceEpoch,
         at: segmentStartTime,
         source: "",
         partialTarget: "",
@@ -2134,10 +2187,12 @@ ${question}`
         type: "CAPTURE_ERROR",
         tabId,
         generation: session.generation,
+        sourceEpoch,
         error: err.message
       });
     } finally {
       session.pendingTranscriptions--;
+      await endSourceRequest(session, sourceEpoch);
     }
   }
   async function captureVideoFrame(tabId) {
@@ -2221,8 +2276,8 @@ ${question}`
   var SIGNATURE_ROWS = 8;
   var SIGNATURE_WIDTH = 128;
   var states = /* @__PURE__ */ new Map();
-  function emit(message) {
-    chrome.runtime.sendMessage(message).catch(() => {
+  async function emit(message) {
+    await chrome.runtime.sendMessage(message).catch(() => {
     });
   }
   function emitStatus(state, status, error = "") {
@@ -2341,6 +2396,14 @@ ${question}`
       stopScreenCaption(state.tabId);
       return;
     }
+    if (state.sourceEpoch !== session.sourceEpoch) {
+      state.sourceEpoch = session.sourceEpoch;
+      state.lastSignature = [];
+      state.lastCaption = null;
+      state.lastRequestAt = 0;
+      state.failures = 0;
+    }
+    if (session.sourcePaused) return;
     const video = session.videoEl;
     if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
     const now = Date.now();
@@ -2359,6 +2422,8 @@ ${question}`
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     const startedAt = Date.now();
+    const sourceEpoch = beginSourceRequest(session);
+    const lastCaption = state.lastCaption;
     try {
       const caption = await readScreenCaption2({
         imageDataUrl: sample.dataUrl,
@@ -2366,12 +2431,14 @@ ${question}`
         config: state.config,
         signal: controller.signal
       });
-      state.failures = 0;
+      const current = session.sourceEpoch === sourceEpoch;
+      if (current) state.failures = 0;
       if (!caption.source) {
-        emit({
+        await emit({
           type: "CAPTURE_SCREEN_SUBTITLE",
           tabId: state.tabId,
           generation: state.generation,
+          sourceEpoch,
           at: startedAt,
           source: "",
           target: "",
@@ -2379,11 +2446,12 @@ ${question}`
         });
         return;
       }
-      if (isDuplicateCaption(state.lastCaption, caption)) {
-        emit({
+      if (isDuplicateCaption(lastCaption, caption)) {
+        await emit({
           type: "CAPTURE_SCREEN_SUBTITLE",
           tabId: state.tabId,
           generation: state.generation,
+          sourceEpoch,
           at: startedAt,
           source: caption.source,
           target: caption.target,
@@ -2392,18 +2460,19 @@ ${question}`
         });
         return;
       }
-      state.lastCaption = caption;
-      emit({
+      if (current) state.lastCaption = caption;
+      await emit({
         type: "CAPTURE_SCREEN_SUBTITLE",
         tabId: state.tabId,
         generation: state.generation,
+        sourceEpoch,
         at: startedAt,
         source: caption.source,
         target: caption.target,
         latency: Date.now() - startedAt
       });
     } catch (err) {
-      if (state.stopped) return;
+      if (state.stopped || session.sourceEpoch !== sourceEpoch) return;
       state.lastSignature = [];
       state.failures += 1;
       if (state.failures >= MAX_CONSECUTIVE_FAILURES) {
@@ -2412,6 +2481,7 @@ ${question}`
     } finally {
       clearTimeout(timeout);
       state.inFlight = false;
+      await endSourceRequest(session, sourceEpoch);
     }
   }
 
@@ -2421,8 +2491,8 @@ ${question}`
     if (message?.target && message.target !== "offscreen") return false;
     switch (message.type) {
       case "START_CAPTURE": {
-        const { tabId, streamId, sourceLang, targetLang, config, generation } = message;
-        startTabCapture({ tabId, streamId, sourceLang, targetLang, config, generation }).then((result) => sendResponse(result)).catch((err) => sendResponse({ ok: false, error: err.message }));
+        const { tabId, streamId, sourceLang, targetLang, config, generation, sourceEpoch, sourceRef } = message;
+        startTabCapture({ tabId, streamId, sourceLang, targetLang, config, generation, sourceEpoch, sourceRef }).then((result) => sendResponse(result)).catch((err) => sendResponse({ ok: false, error: err.message }));
         return true;
       }
       case "STOP_CAPTURE": {
@@ -2430,6 +2500,14 @@ ${question}`
         stopScreenCaption(tabId);
         stopTabCapture(tabId, message.generation, message.drain === true).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: err.message }));
         return true;
+      }
+      case "PREPARE_CAPTURE_SOURCE": {
+        sendResponse(prepareCaptureSource(message.tabId, message.generation, message.sourceEpoch));
+        return false;
+      }
+      case "SET_CAPTURE_SOURCE": {
+        sendResponse(setCaptureSource(message.tabId, message.generation, message.previousSourceEpoch, message.sourceEpoch, message.sourceRef));
+        return false;
       }
       case "GET_CAPTURE_SESSIONS": {
         const sessions = {};
@@ -2439,7 +2517,8 @@ ${question}`
         sendResponse({
           ok: true,
           tabIds: Array.from(captureSessions.keys()),
-          sessions
+          sessions,
+          sources: Object.fromEntries([...captureSessions].map(([tabId, s]) => [String(tabId), { sourceEpoch: s.sourceEpoch, bindings: s.sourceBindings }]))
         });
         return false;
       }

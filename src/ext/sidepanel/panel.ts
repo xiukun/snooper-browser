@@ -1,3 +1,11 @@
+import { mountLibraryPanel } from './library-panel'
+import { renderEntry } from './library-render'
+import { disposeFavoriteControls, favoriteState } from '../content/favorite-control'
+import { legacySourceRef } from '../../lib/video-key'
+import { confirmLibraryDelete } from '../content/library-client'
+import type { SourceRef } from '../../lib/knowledge-types'
+import type { NoteDocument } from '../../lib/types'
+import { loadNotes, deleteNoteDocuments, hasRetainedLegacyNotes, exportRetainedLegacyNotes } from '../content/notes-store'
 /**
  * snooper-browser Side Panel — notes history + Obsidian integration.
  *
@@ -12,29 +20,6 @@ import { videoDeepLink } from '../../lib/deep-link'
 
 (() => {
   /* ===== Types ===== */
-  interface NoteEntry {
-    id: string
-    type: 'subtitle' | 'image' | 'svg' | 'screenshot' | 'text' | 'summary'
-    at: number
-    source?: string
-    target?: string
-    imageUrl?: string
-    svg?: string
-    text?: string
-    speaker?: string
-    sourceLang?: string
-    targetLang?: string
-  }
-
-  interface NoteDocument {
-    id: string
-    title: string
-    createdAt: number
-    updatedAt: number
-    entries: NoteEntry[]
-    sessionInfo?: { source: string; mediaName?: string; duration?: number }
-  }
-
   interface ObsidianConfig {
     enabled: boolean
     vaultPath: string
@@ -45,6 +30,9 @@ import { videoDeepLink } from '../../lib/deep-link'
   }
 
   interface HistorySubtitle {
+    id: string
+    kind?: 'screen'
+    sourceRef?: SourceRef
     at?: number
     endedAt?: number | null
     /** Video-timeline position in seconds (ADR-033). */
@@ -77,36 +65,7 @@ import { videoDeepLink } from '../../lib/deep-link'
   }
 
   /* ===== Persistence ===== */
-  const NOTES_KEY = 'snooper.notes.v1'
   const OBSIDIAN_KEY = 'snooper.obsidian-config.v1'
-
-  function loadNotes(): Promise<NoteDocument[]> {
-    return (async () => {
-      // 1. Shared store — same key the in-page drawer writes to
-      try {
-        const got = await chrome.storage.local.get(NOTES_KEY)
-        const stored = got?.[NOTES_KEY]
-        if (Array.isArray(stored)) return stored as NoteDocument[]
-      } catch { /* ignore */ }
-      // 2. Legacy panel localStorage -> migrate into the shared store
-      try {
-        const raw = localStorage.getItem(NOTES_KEY)
-        if (raw) {
-          const parsed = JSON.parse(raw)
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            try { await chrome.storage.local.set({ [NOTES_KEY]: parsed }) } catch { /* ignore */ }
-            return parsed as NoteDocument[]
-          }
-        }
-      } catch { /* ignore */ }
-      return []
-    })()
-  }
-
-  async function saveNotes(next: NoteDocument[]) {
-    try { await chrome.storage.local.set({ [NOTES_KEY]: next }) } catch { /* ignore */ }
-    try { localStorage.setItem(NOTES_KEY, JSON.stringify(next)) } catch { /* ignore */ }
-  }
 
   function normalizeObsidianConfig(raw: any): ObsidianConfig {
     const r = raw && typeof raw === 'object' ? raw : {}
@@ -206,10 +165,14 @@ import { videoDeepLink } from '../../lib/deep-link'
     nextTab?.classList.add('active')
     nextTab?.setAttribute('aria-selected', 'true')
     document.getElementById(`panel-${tab}`)?.classList.add('active')
+    document.querySelector<HTMLElement>('.panel-footer')!.hidden = tab !== 'obsidian'
+    if (tab === 'search') library.activate()
     if (tab === 'notes') void loadAndRenderNotes()
     if (tab === 'history') void loadAndRenderHistory()
   }
 
+  const library = mountLibraryPanel(switchTab)
+  document.getElementById('tab-search')!.addEventListener('click', () => switchTab('search'))
   tabNotes.addEventListener('click', () => switchTab('notes'))
   tabObsidian.addEventListener('click', () => switchTab('obsidian'))
   tabHistory.addEventListener('click', () => switchTab('history'))
@@ -245,9 +208,81 @@ import { videoDeepLink } from '../../lib/deep-link'
     notesSelectAll.disabled = all.length === 0
   }
 
-  async function loadAndRenderNotes() {
-    notes = await loadNotes()
+  const saveFailures = document.createElement('div')
+  saveFailures.setAttribute('role', 'status')
+  notesList.before(saveFailures)
+  async function renderSaveFailures(): Promise<void> {
+    try {
+      const result = await chrome.runtime.sendMessage({ target: 'background', type: 'GET_SAVE_FAILURES' })
+      if (!result?.ok) return
+      saveFailures.textContent = ''
+      for (const failure of result.failures || []) {
+        const item = document.createElement('p')
+        item.className = 'empty-hint'
+        item.textContent = `有内容未保存（${failure.pendingCount} 条待保存）：${failure.saveState.message}`
+        const retry = document.createElement('button')
+        retry.textContent = '重试保存'
+        retry.className = 'btn btn-sm btn-secondary'
+        retry.addEventListener('click', async () => {
+          retry.disabled = true
+          try {
+            const res = await chrome.runtime.sendMessage({ target: 'background', type: 'RETRY_TRANSCRIPT', tabId: failure.tabId })
+            if (!res?.ok) showNotice(res?.error || '保存失败，请导出')
+          } catch (error) { showNotice(`保存失败：${String(error)}`) }
+          await renderSaveFailures()
+        })
+        const exportBtn = document.createElement('button')
+        exportBtn.textContent = '导出可用内容'
+        exportBtn.className = 'btn btn-sm btn-secondary'
+        exportBtn.addEventListener('click', async () => {
+          try {
+            const res = await chrome.runtime.sendMessage({ target: 'background', type: 'GET_TRANSCRIPT', tabId: failure.tabId })
+            const lines = Array.isArray(res?.subtitles) ? res.subtitles : []
+            if (!lines.length) { showNotice(res?.error || '暂无可导出内容，请重试读取'); return }
+            const text = lines.map((line: HistorySubtitle) => `${line.source}\n${line.target}`).join('\n\n')
+            const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
+            const a = document.createElement('a')
+            a.href = url
+            a.download = 'snooper-unsaved-transcript.txt'
+            a.click()
+            setTimeout(() => URL.revokeObjectURL(url), 2000)
+            showNotice(res.complete ? '已导出当前转写（含未保存内容）' : '仅导出可用内容，部分正文读取失败')
+          } catch (error) { showNotice(`导出失败：${String(error)}`) }
+        })
+        item.style.overflowWrap = 'anywhere'
+        const actions = document.createElement('div')
+        actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-top:6px'
+        actions.append(retry, exportBtn)
+        item.appendChild(actions)
+        saveFailures.appendChild(item)
+      }
+    } catch (error) { showNotice(`保存状态读取失败：${String(error)}`) }
+  }
 
+  const legacyWarning = document.createElement('p')
+  notesList.before(legacyWarning)
+  function renderLegacyWarning(): void {
+    legacyWarning.textContent = ''
+    legacyWarning.hidden = !hasRetainedLegacyNotes()
+    if (hasRetainedLegacyNotes()) {
+      legacyWarning.className = 'empty-hint'
+      legacyWarning.setAttribute('role', 'status')
+      legacyWarning.textContent = '侧栏旧版笔记尚未确认合并，原副本已保留。请导出旧副本；检索只包含已保存资料。'
+      const exportLegacy = document.createElement('button')
+      exportLegacy.textContent = '导出旧版副本'
+      exportLegacy.className = 'btn btn-sm btn-secondary'
+      exportLegacy.addEventListener('click', exportRetainedLegacyNotes)
+      legacyWarning.appendChild(exportLegacy)
+    }
+  }
+
+  async function loadAndRenderNotes() {
+    await renderSaveFailures()
+    try { notes = await loadNotes() }
+    catch (error) { showNotice(`笔记读取失败，请点刷新重试：${String(error)}`); return }
+    finally { renderLegacyWarning() }
+
+    disposeFavoriteControls(notesList)
     notesList.textContent = ''
     if (notes.length === 0) {
       const empty = document.createElement('p')
@@ -317,6 +352,36 @@ import { videoDeepLink } from '../../lib/deep-link'
         exportNote(note)
       })
       actions.appendChild(exportBtn)
+      const detail = document.createElement('div')
+      detail.className = 'note-entry-detail'
+      detail.hidden = true
+      let shown = 0
+      const rows = document.createElement('div')
+      const more = document.createElement('button')
+      more.type = 'button'; more.className = 'btn btn-sm btn-secondary'; more.dataset.action = 'note-more'
+      function paintNotes(): void {
+        const end = Math.min(note.entries.length, shown + 50)
+        for (; shown < end; shown++) {
+          const entry = note.entries[shown]!
+          rows.append(renderEntry({
+            ref: { kind: 'note', noteId: note.id, entryId: entry.id },
+            sourceRef: entry.sourceRef || legacySourceRef(entry.videoUrl || '', note.title, note.id),
+            title: note.title, at: entry.at, videoTime: entry.videoTime ?? null,
+            source: entry.source || '', target: entry.target || '', text: entry.text || '', type: entry.type,
+          }, text => showNotice(text)))
+        }
+        more.hidden = shown >= note.entries.length
+        more.textContent = `显示更多（剩余 ${note.entries.length - shown} 条）`
+      }
+      more.addEventListener('click', paintNotes); detail.append(rows, more)
+      const view = document.createElement('button')
+      view.type = 'button'; view.className = 'btn btn-ghost btn-xs'; view.textContent = '查看全部内容'; view.dataset.action = 'note-detail'
+      view.addEventListener('click', () => {
+        detail.hidden = !detail.hidden; view.textContent = detail.hidden ? '查看全部内容' : '收起内容'
+        if (!shown) paintNotes()
+      })
+      actions.appendChild(view)
+      card.appendChild(detail)
 
       const delBtn = document.createElement('button')
       delBtn.type = 'button'
@@ -326,13 +391,13 @@ import { videoDeepLink } from '../../lib/deep-link'
       delBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>'
       delBtn.addEventListener('click', async (e) => {
         e.stopPropagation()
-        if (!confirm('确定删除这篇笔记？')) return
-        // Re-read first so notes added by the page since the last render are
-        // preserved instead of being overwritten by this panel's snapshot.
-        notes = (await loadNotes()).filter((n) => n.id !== note.id)
-        await saveNotes(notes)
-        await loadAndRenderNotes()
-        showNotice('笔记已删除')
+        try {
+          const updated = await deleteNoteDocuments([note.id])
+          if (!updated) return
+          notes = updated
+          await loadAndRenderNotes()
+          showNotice('笔记已删除')
+        } catch (error) { showNotice(`删除失败，请重试：${String(error)}`) }
       })
       actions.appendChild(delBtn)
 
@@ -379,8 +444,8 @@ import { videoDeepLink } from '../../lib/deep-link'
           if (entry.target) lines.push(`**译文**：${entry.target}`)
           if (entry.source) lines.push(`**原文**：${entry.source}`)
           // ADR-035: deep-link the anchor when the entry carries one.
-          const link = typeof entry.videoTime === 'number' && Number.isFinite(entry.videoTime)
-            ? videoDeepLink(entry.videoUrl, entry.videoTime)
+          const link = entry.sourceRef?.confidence === 'exact' && typeof entry.videoTime === 'number' && Number.isFinite(entry.videoTime)
+            ? videoDeepLink(entry.sourceRef.url, entry.videoTime)
             : null
           if (link) lines.push(`**视频锚点**：[\`${formatVideoTime(entry.videoTime!)}\`](${link})`)
           lines.push('')
@@ -457,11 +522,13 @@ import { videoDeepLink } from '../../lib/deep-link'
   notesDeleteSelected.addEventListener('click', async () => {
     const ids = getSelectedNoteIds()
     if (ids.length === 0) return
-    if (!confirm(`确定删除选中的 ${ids.length} 篇笔记？此操作不可恢复。`)) return
-    notes = (await loadNotes()).filter((note) => !ids.includes(note.id))
-    await saveNotes(notes)
-    await loadAndRenderNotes()
-    showNotice(`已删除 ${ids.length} 篇笔记`)
+    try {
+      const updated = await deleteNoteDocuments(ids)
+      if (!updated) return
+      notes = updated
+      await loadAndRenderNotes()
+      showNotice(`已删除 ${ids.length} 篇笔记`)
+    } catch (error) { showNotice(`删除失败，请重试：${String(error)}`) }
   })
 
   /* ===== History ===== */
@@ -497,74 +564,19 @@ import { videoDeepLink } from '../../lib/deep-link'
       type: 'GET_HISTORY_TRANSCRIPT',
       id,
     })
-    return res?.ok && Array.isArray(res.subtitles) ? res.subtitles : []
+    if (!res?.ok || !Array.isArray(res.subtitles)) throw new Error(res?.error || '正文读取失败，请重试')
+    return res.subtitles
   }
 
-  const seekFailureNotice = '页面里没有可定位的视频，或视频拒绝了跳转'
-
-  /** ADR-034: forward a seek to the active tab's content script. */
-  async function seekVideoInPage(seconds: number): Promise<boolean> {
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-      if (!tab?.id) return false
-      const res: any = await sendToPageWithInjection(tab.id, { type: 'SEEK_VIDEO', seconds }, tab.url, {
-        sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
-        injectContentScript: injectContentScriptFresh,
-        // The content script answers `{ ok, seek }`; the generic envelope
-        // discards it, so pass the verdict through explicitly (ADR-036).
-        collectResponse: (raw: any) => raw?.seek?.ok === true,
-      })
-      return res?.responseOk === true
-    } catch {
-      return false
-    }
-  }
-
-  function appendHistoryRows(
-    container: HTMLElement,
-    subtitles: HistorySubtitle[],
-    from: number,
-    to: number,
-  ) {
-    for (let index = from; index < to && index < subtitles.length; index += 1) {
-      const subtitle = subtitles[index]!
-      const row = document.createElement('div')
-      row.className = 'history-subtitle-row'
-      const time = document.createElement('time')
-      const anchored = typeof subtitle.videoTime === 'number' && Number.isFinite(subtitle.videoTime)
-      const wall = subtitle.at ? new Date(subtitle.at).toLocaleTimeString('zh-CN') : ''
-      time.textContent = anchored ? formatVideoTime(subtitle.videoTime!) : (wall || '--:--:--')
-      if (anchored && wall) time.title = `录制时间 ${wall}`
-      if (anchored) {
-        // Same affordance as the in-page overlay (ADR-034): the chip seeks
-        // through the page's content script, which owns the video element.
-        time.classList.add('history-time-chip')
-        time.setAttribute('role', 'button')
-        time.tabIndex = 0
-        time.title = `点击跳转到视频 ${formatVideoTime(subtitle.videoTime!)}`
-        const activate = async () => {
-          time.classList.remove('seek-ok', 'seek-fail')
-          void time.offsetWidth
-          const result = await seekVideoInPage(subtitle.videoTime!)
-          time.classList.add(result ? 'seek-ok' : 'seek-fail')
-          if (!result) showNotice(seekFailureNotice, true)
-        }
-        time.addEventListener('click', activate)
-        time.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault()
-            void activate()
-          }
-        })
-      }
-      const source = document.createElement('span')
-      source.className = 'history-source'
-      source.textContent = subtitle.source || '（无原文）'
-      const target = document.createElement('span')
-      target.className = 'history-target'
-      target.textContent = subtitle.target || '（无译文）'
-      row.append(time, source, target)
-      container.appendChild(row)
+  function appendHistoryRows(container: HTMLElement, subtitles: HistorySubtitle[], from: number, to: number, record: HistoryEntry): void {
+    for (let index = from; index < to && index < subtitles.length; index++) {
+      const line = subtitles[index]!
+      container.append(renderEntry({
+        ref: { kind: 'transcript', recordId: record.id, lineId: line.id },
+        sourceRef: line.sourceRef || legacySourceRef(record.url, record.pageTitle, record.id),
+        title: record.pageTitle, at: line.at || 0, videoTime: line.videoTime ?? null,
+        source: line.source || '', target: line.target || '', text: '', type: line.kind || 'subtitle',
+      }, text => showNotice(text)))
     }
   }
 
@@ -587,7 +599,7 @@ import { videoDeepLink } from '../../lib/deep-link'
 
     function paintNextBatch() {
       const next = Math.min(rows.length, shown + HISTORY_PAGE_SIZE)
-      appendHistoryRows(list, rows, shown, next)
+      appendHistoryRows(list, rows, shown, next, item)
       shown = next
       const remaining = rows.length - shown
       more.hidden = remaining <= 0
@@ -599,7 +611,10 @@ import { videoDeepLink } from '../../lib/deep-link'
     return async function ensureLoaded(): Promise<void> {
       if (loaded) return
       detail.textContent = '正在读取…'
-      rows = await fetchHistoryTranscript(item.id)
+      try { rows = await fetchHistoryTranscript(item.id) }
+      catch (error) { detail.textContent = `读取失败：${String(error)}。收起后重新展开可重试。`; return }
+      if (!detail.isConnected) return
+      disposeFavoriteControls(detail)
       detail.textContent = ''
       detail.append(list, more)
       loaded = true
@@ -612,9 +627,15 @@ import { videoDeepLink } from '../../lib/deep-link'
   }
 
   async function loadAndRenderHistory() {
-    const res: any = await chrome.runtime.sendMessage({ target: 'background', type: 'GET_HISTORY' })
-    const items: HistoryEntry[] = Array.isArray(res?.history) ? res.history : []
+    let res: any
+    try { res = await chrome.runtime.sendMessage({ target: 'background', type: 'GET_HISTORY' }) }
+    catch (error) { historyEmpty.style.display = 'block'; historyEmpty.textContent = `历史读取失败：${String(error)}。请切换回来重试。`; return }
+    if (!res?.ok || !Array.isArray(res.history)) { historyEmpty.style.display = 'block'; historyEmpty.textContent = `历史读取失败：${res?.error || '请切换回来重试'}`; return }
+    await favoriteState().refresh()
+    const items: HistoryEntry[] = res.history
+    historyEmpty.textContent = '还没有历史记录'
     historyCount.textContent = String(items.length)
+    disposeFavoriteControls(historyList)
     historyList.textContent = ''
 
     if (items.length === 0) {
@@ -652,8 +673,11 @@ import { videoDeepLink } from '../../lib/deep-link'
         title.setAttribute('role', 'link')
         title.tabIndex = 0
         title.title = `打开原视频：${item.pageTitle || ''}`
-        const open = () => {
-          void chrome.tabs.create({ url: item.url, active: true }).catch(() => {})
+        const open = async () => {
+          try {
+            const result = await chrome.runtime.sendMessage({ target: 'background', type: 'LIBRARY_OPEN_SOURCE', recordId: item.id })
+            showNotice(result?.ok ? '已打开来源页面' : result?.error || '打开来源失败', !result?.ok)
+          } catch (error) { showNotice(`打开来源失败：${String(error)}`, true) }
         }
         title.addEventListener('click', open)
         title.addEventListener('keydown', (event) => {
@@ -724,7 +748,7 @@ import { videoDeepLink } from '../../lib/deep-link'
           const text = rows.map((subtitle) => `${subtitle.source || ''}\n${subtitle.target || ''}`).join('\n\n')
           const ok = await copyText(text)
           showNotice(ok ? '已复制完整转写内容' : '复制失败，请在浏览器设置中允许剪贴板访问', !ok)
-        } finally {
+        } catch (error) { showNotice(`复制失败：${String(error)}`, true) } finally {
           copy.disabled = false
         }
       })
@@ -749,7 +773,7 @@ import { videoDeepLink } from '../../lib/deep-link'
           anchor.download = `snooper-history-${item.id}.md`
           anchor.click()
           setTimeout(() => URL.revokeObjectURL(url), 2000)
-        } finally {
+        } catch (error) { showNotice(`导出失败：${String(error)}`, true) } finally {
           exportButton.disabled = false
         }
       })
@@ -762,14 +786,12 @@ import { videoDeepLink } from '../../lib/deep-link'
       del.disabled = recording
       del.title = recording ? '正在录制的记录不能删除' : ''
       del.addEventListener('click', async () => {
-        if (!confirm(`确定删除「${item.pageTitle || '这条记录'}」？`)) return
-        const res: any = await chrome.runtime.sendMessage({
-          target: 'background',
-          type: 'DELETE_HISTORY',
-          id: item.id,
-        })
-        if (res?.skipped) showNotice('正在录制的记录已跳过', true)
-        await loadAndRenderHistory()
+        try {
+          const res = await confirmLibraryDelete({transcriptIds:[item.id]})
+          if (!res) return
+          if (res.skipped.length) showNotice('正在录制的记录已跳过', true)
+          await loadAndRenderHistory()
+        } catch (error) { showNotice(`删除未完成：${String(error)}`, true) }
       })
       actions.appendChild(del)
       el.appendChild(actions)
@@ -791,17 +813,23 @@ import { videoDeepLink } from '../../lib/deep-link'
   historyDeleteSelected.addEventListener('click', async () => {
     const ids = getSelectedHistoryIds()
     if (ids.length === 0) return
-    if (!confirm(`确定删除选中的 ${ids.length} 条历史记录？此操作不可恢复。`)) return
-    const res: any = await chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_HISTORY', ids })
-    if (res?.skipped) showNotice('正在录制的记录已跳过', true)
-    await loadAndRenderHistory()
+    try {
+      const res = await confirmLibraryDelete({transcriptIds:ids})
+      if (!res) return
+      if (res.skipped.length) showNotice('正在录制的记录已跳过', true)
+      await loadAndRenderHistory()
+    } catch (error) { showNotice(`删除未完成：${String(error)}`, true) }
   })
 
   historyClear.addEventListener('click', async () => {
-    if (!confirm('确定清空全部历史记录？此操作不可恢复。')) return
-    const res: any = await chrome.runtime.sendMessage({ target: 'background', type: 'DELETE_ALL_HISTORY' })
-    if (res?.skipped) showNotice('正在录制的记录已跳过', true)
-    await loadAndRenderHistory()
+    try {
+      const history = await chrome.runtime.sendMessage({target:'background',type:'GET_HISTORY'})
+      if (!history?.ok) throw new Error(history?.error || '无法读取历史记录')
+      const res = await confirmLibraryDelete({transcriptIds:history.history.map((item: HistoryEntry)=>item.id)})
+      if (!res) return
+      if (res.skipped.length) showNotice('正在录制的记录已跳过', true)
+      await loadAndRenderHistory()
+    } catch (error) { showNotice(`删除未完成：${String(error)}`, true) }
   })
 
   function historyMarkdown(item: HistoryEntry, subtitles: HistorySubtitle[]): string {
@@ -828,7 +856,7 @@ import { videoDeepLink } from '../../lib/deep-link'
         const video = hasTime ? formatVideoTime(subtitle.videoTime!) : ''
         // ADR-035: link the timestamp back to the record's own page when the
         // site supports ?t= seeks.
-        const link = hasTime ? videoDeepLink(item.url, subtitle.videoTime!) : null
+        const link = hasTime && subtitle.sourceRef?.confidence === 'exact' ? videoDeepLink(subtitle.sourceRef.url, subtitle.videoTime!) : null
         lines.push(`| ${link ? `[\`${video}\`](${link})` : video} | ${wall} | ${source} | ${target} |`)
       } else {
         lines.push(`| ${wall} | ${source} | ${target} |`)
@@ -919,10 +947,14 @@ import { videoDeepLink } from '../../lib/deep-link'
 
   /* ===== Init ===== */
   void renderObsidianConfig()
+  library.activate()
   void loadAndRenderNotes()
 
   // Keep the note counter fresh when the panel is reopened.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') void loadAndRenderNotes()
+    if (document.visibilityState === 'visible') {
+      void loadAndRenderNotes()
+      if (document.getElementById('panel-search')?.classList.contains('active')) library.activate()
+    }
   })
 })()

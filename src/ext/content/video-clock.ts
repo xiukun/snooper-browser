@@ -1,3 +1,5 @@
+import type { SourceRef } from '../../lib/knowledge-types'
+import { sourceRefForUrl, videoTitleFromDocumentTitle, videoKeyForUrl } from '../../lib/video-key'
 /**
  * Content-side video clock (ADR-033).
  *
@@ -16,7 +18,7 @@ import { findBestVideoCandidate } from '../screenshot'
 
 export interface VideoClockDeps {
   /** Send one sample to the background. Failures are the caller's problem. */
-  send: (sample: VideoClockSample) => void
+  send: (sample: Partial<VideoClockSample> & { sourceRef: SourceRef }) => void
   /** True while the capture session is starting, running, or stopping. */
   isActive: () => boolean
 }
@@ -31,9 +33,10 @@ export function createVideoClock(deps: VideoClockDeps) {
   let video: HTMLVideoElement | null = null
   let lastSentAt = 0
   let nextResolveAt = 0
+  let identity = videoKeyForUrl(location.href)
 
   function resolveVideo(force = false): HTMLVideoElement | null {
-    if (video && video.isConnected) return video
+    if (!force && video && video.isConnected) return video
     video = null
     const now = Date.now()
     if (!force && now < nextResolveAt) return null
@@ -49,12 +52,15 @@ export function createVideoClock(deps: VideoClockDeps) {
 
   function sample(force = false): void {
     if (!deps.isActive()) return
+    const current = videoKeyForUrl(location.href)
+    if (identity !== current) { identity = current; video = null; nextResolveAt = 0; force = true }
+    const sourceRef = sourceRefForUrl(location.href, videoTitleFromDocumentTitle(document.title))
     const el = resolveVideo(force)
-    if (!el) return
-    const time = el.currentTime
-    if (!Number.isFinite(time) || time < 0) return
+    const time = el?.currentTime
+    if (!el || typeof time !== 'number' || !Number.isFinite(time) || time < 0) { deps.send({ sourceRef }); return }
     const now = Date.now()
     deps.send({
+      sourceRef,
       at: now,
       videoTime: time,
       paused: el.paused === true,
@@ -69,11 +75,11 @@ export function createVideoClock(deps: VideoClockDeps) {
     // A new player (ad, episode switch) may have taken over. Re-resolve
     // instead of trusting the event target: a tiny auto-playing ad must not
     // displace the main video.
-    if (target && target.tagName === 'VIDEO' && event.type === 'play' && target !== video) {
+    if (target && target.tagName === 'VIDEO' && ((event.type === 'play' && target !== video) || event.type === 'loadedmetadata' || event.type === 'emptied')) {
       video = null
       nextResolveAt = 0
     }
-    if (Date.now() - lastSentAt < EVENT_MIN_GAP_MS) return
+    if (Date.now() - lastSentAt < EVENT_MIN_GAP_MS && event.type !== 'loadedmetadata' && event.type !== 'emptied' && identity === videoKeyForUrl(location.href)) return
     sample()
   }
 
@@ -105,5 +111,7 @@ export function createVideoClock(deps: VideoClockDeps) {
     document.addEventListener(type, onMediaEvent, true)
   }
 
+  window.addEventListener('popstate', () => sample(true))
+  window.addEventListener('hashchange', () => sample(true))
   return { sync, start, stop, sample }
 }

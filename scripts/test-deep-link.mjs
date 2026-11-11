@@ -48,6 +48,14 @@ try {
     videoDeepLink('https://www.bilibili.com/bangumi/play/ep123456', 61),
     'https://www.bilibili.com/bangumi/play/ep123456?t=61')
 
+  check('bilibili part preserved',
+    videoDeepLink('https://www.bilibili.com/video/BV1xx411c7mD?p=2', 90),
+    'https://www.bilibili.com/video/BV1xx411c7mD?p=2&t=90')
+  for (const p of ['0', '-1', 'no', '1.5', '', '2&p=3']) {
+    check(`invalid part ${p} cannot create a seek link`, videoDeepLink(`https://www.bilibili.com/video/BV1?p=${p}`, 10), null)
+  }
+  check('unknown time cannot create a zero anchor', videoDeepLink('https://youtu.be/abc', null), null)
+
   /* ---------- YouTube ---------- */
 
   check('youtube watch page',

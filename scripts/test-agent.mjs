@@ -307,11 +307,16 @@ try {
     check('migration: v2 persisted', Array.isArray(localStore['snooper.agent.sessions.v2']?.sessions), true)
     check('migration: v1 removed', 'snooper.agent.sessions.v1' in sessionStore, false)
 
-    const adopted = await resolveCurrentSession(migrated, video('bilibili:BV1TEST', '旧视频'))
-    check('migration: legacy session adopted by first video', adopted.id, 'legacy1')
-    check('migration: no duplicate session created', migrated.sessions.length, 1)
-    check('migration: adopted session scoped', adopted.videoKey, 'bilibili:BV1TEST')
-    check('migration: adopted session active', migrated.activeByVideo['bilibili:BV1TEST'], 'legacy1')
+    const fresh = await resolveCurrentSession(migrated, video('bilibili:BV1TEST:p2', '新课节'))
+    check('migration: old mixed session is not rebound', fresh.id === 'legacy1', false)
+    check('migration: legacy body preserved alongside fresh session', migrated.sessions.length, 2)
+    check('migration: legacy key remains unproven', migrated.sessions.find(s => s.id === 'legacy1').videoKey, '')
+    check('migration: new lesson has its own active session', migrated.activeByVideo['bilibili:BV1TEST:p2'], fresh.id)
+    check('migration: old unscoped session remains discoverable', listSessions(migrated, 'bilibili:BV1TEST:p2').some(s => s.id === 'legacy1'), true)
+    const oldPart = { ...migrated.sessions.find(s => s.id === 'legacy1'), id:'old-bili', videoKey:'bilibili:BV1TEST', videoUrl:'https://www.bilibili.com/video/BV1TEST?p=1' }
+    migrated.sessions.push(oldPart)
+    check('legacy Bili base key still readable', listSessions(migrated, 'bilibili:BV1TEST:p2').some(s => s.id === oldPart.id), true)
+    check('legacy Bili key not rebound to P2', oldPart.videoKey, 'bilibili:BV1TEST')
   }
 
   if (failures.length > 0) {

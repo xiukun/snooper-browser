@@ -1,3 +1,4 @@
+import { readVideoContext, type VideoContext } from './video-context'
 /**
  * Screenshot preview modal: show a captured frame, download it, save it as a
  * note entry, or cite it in the chat composer.
@@ -17,7 +18,7 @@ export interface ShotRefs {
 
 export interface ShotDeps {
   refs: ShotRefs
-  addNoteEntry: (entry: NoteEntry) => void
+  addNoteEntry: (entry: NoteEntry) => Promise<boolean>
   addImage: (url: string) => 'ok' | 'duplicate' | 'full'
   openDrawer: (tab: 'chat' | 'notes') => void
   toast: (message: string, tone?: 'info' | 'ok' | 'err') => void
@@ -26,9 +27,11 @@ export interface ShotDeps {
 export function createShotPreview(deps: ShotDeps) {
   const r = deps.refs
   let previewUrl = ''
+  let origin: VideoContext | null = null
 
-  function open(dataUrl: string, saved: boolean, insertable = false) {
+  function open(dataUrl: string, saved: boolean, insertable = false, source?: VideoContext) {
     previewUrl = dataUrl
+    origin = source || readVideoContext()
     r.image.src = dataUrl
     r.save.disabled = saved
     r.save.textContent = saved ? '已存入笔记' : '存入笔记'
@@ -55,15 +58,19 @@ export function createShotPreview(deps: ShotDeps) {
   r.modal.addEventListener('click', (event) => {
     if (event.target === r.modal) close()
   })
-  r.save.addEventListener('click', () => {
+  r.save.addEventListener('click', async () => {
     if (!previewUrl) return
-    deps.addNoteEntry({
+    const saved = await deps.addNoteEntry({
       id: `screenshot_${Date.now()}`,
       type: 'screenshot',
+      sourceRef: origin?.sourceRef,
+      videoUrl: origin?.videoUrl,
+      videoTime: origin?.videoTime,
       at: Date.now(),
       imageUrl: previewUrl,
       text: '视频截图',
     })
+    if (!saved) return
     r.save.disabled = true
     r.save.textContent = '已存入笔记'
     deps.toast('截图已存入笔记', 'ok')

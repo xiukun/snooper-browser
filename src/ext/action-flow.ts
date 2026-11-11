@@ -1,6 +1,7 @@
 export interface PageMessage {
   type: string
   /** ADR-034 SEEK_VIDEO payload: target position in seconds. */
+  expectedSourceKey?: string
   seconds?: number
 }
 

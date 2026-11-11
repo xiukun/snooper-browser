@@ -7,6 +7,7 @@
  * and playback pauses while scrubbing so the user can read in place.
  */
 
+import { videoKeyForUrl } from '../../lib/video-key'
 import { findBestVideoCandidate } from '../screenshot'
 
 /** Start slightly before the line so its first words are still audible. */
@@ -14,7 +15,7 @@ export const SEEK_LEAD_SECONDS = 0.25
 
 export type SeekResult =
   | { ok: true; time: number }
-  | { ok: false; reason: 'no-video' | 'no-progress' }
+  | { ok: false; reason: 'no-video' | 'seek-failed' | 'mismatched-source' }
 
 /**
  * ADR-037 (F5): a seek changes the mapping between wall clock and playback
@@ -28,7 +29,9 @@ export function onAfterSeek(hook: (() => void) | null): void {
   afterSeekHook = hook
 }
 
-export function seekTo(seconds: number): SeekResult {
+export function seekTo(seconds: number, expectedSourceKey?: string): SeekResult {
+  if (!Number.isFinite(seconds) || seconds < 0) return { ok: false, reason: 'seek-failed' }
+  if (!expectedSourceKey || expectedSourceKey !== videoKeyForUrl(location.href)) return { ok: false, reason: 'mismatched-source' }
   let video: HTMLVideoElement | null = null
   try {
     video = findBestVideoCandidate()?.video ?? null
@@ -45,10 +48,10 @@ export function seekTo(seconds: number): SeekResult {
     // re-orientation needs the precise position.
     video.currentTime = target
   } catch {
-    return { ok: false, reason: 'no-progress' }
+    return { ok: false, reason: 'seek-failed' }
   }
   if (Math.abs(video.currentTime - before) < 1e-6 && Math.abs(target - before) > 1e-6) {
-    return { ok: false, reason: 'no-progress' }
+    return { ok: false, reason: 'seek-failed' }
   }
   video.pause()
   afterSeekHook?.()

@@ -261,6 +261,463 @@ async function forceResetOffscreenCapture() {
   return true;
 }
 
+// src/lib/video-key.ts
+var TRACKING_PARAMS = /* @__PURE__ */ new Set([
+  "t",
+  "si",
+  "feature",
+  "index",
+  "list",
+  "start_radio",
+  "spm_id_from",
+  "vd_source",
+  "share_source",
+  "share_medium",
+  "share_plat",
+  "share_session_id",
+  "share_tag",
+  "timestamp",
+  "unique_k",
+  "from",
+  "ref",
+  "ref_src",
+  "fbclid",
+  "gclid"
+]);
+function stripWww(host) {
+  return host.replace(/^www\./, "");
+}
+function youtubeId(url) {
+  const host = stripWww(url.hostname);
+  if (host === "youtu.be") {
+    const id = url.pathname.split("/").filter(Boolean)[0];
+    return id || null;
+  }
+  if (host !== "youtube.com" && !host.endsWith(".youtube.com")) return null;
+  const direct = url.searchParams.get("v");
+  if (direct) return direct;
+  const match = url.pathname.match(/^\/(?:shorts|embed|live)\/([^/?#]+)/);
+  return match?.[1] ?? null;
+}
+function bilibiliKey(url) {
+  const host = stripWww(url.hostname);
+  if (host !== "bilibili.com" && !host.endsWith(".bilibili.com")) return null;
+  const bv = url.pathname.match(/\/(BV[0-9A-Za-z]+)/);
+  if (bv?.[1]) return `bilibili:${bv[1]}`;
+  const av = url.pathname.match(/\/av(\d+)/i);
+  if (av?.[1]) return `bilibili:av${av[1]}`;
+  const episode = url.pathname.match(/^\/(bangumi|cheese)\/play\/(ep\d+)(?:\/|$)/);
+  if (episode) return `bilibili:${episode[1]}/play/${episode[2]}`;
+  return null;
+}
+function videoKeyForUrl(rawUrl) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return `page:${(rawUrl || "unknown").slice(0, 160)}`;
+  }
+  const yt = youtubeId(url);
+  if (yt) return `youtube:${yt}`;
+  const bili = bilibiliKey(url);
+  if (bili) {
+    const part = bilibiliPart(url);
+    if (part !== null) return `${bili}:p${part}`;
+    for (const key of [...url.searchParams.keys()]) if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) url.searchParams.delete(key);
+    url.searchParams.sort();
+    return `unknown:${bili}:${url.search}`;
+  }
+  const normalized = new URL(url.toString());
+  normalized.hash = "";
+  for (const key of [...normalized.searchParams.keys()]) {
+    if (TRACKING_PARAMS.has(key) || key.startsWith("utm_")) {
+      normalized.searchParams.delete(key);
+    }
+  }
+  return `page:${normalized.toString()}`;
+}
+function bilibiliPart(url) {
+  if (!url.searchParams.has("p")) return 1;
+  const parts = url.searchParams.getAll("p");
+  if (parts.length !== 1 || !/^[1-9]\d*$/.test(parts[0])) return null;
+  const n = Number(parts[0]);
+  return Number.isSafeInteger(n) ? n : null;
+}
+function sourceRefForUrl(rawUrl, title = "", scope = "page") {
+  let exact = false;
+  try {
+    const url = new URL(rawUrl);
+    exact = !!youtubeId(url) || !!bilibiliKey(url) && bilibiliPart(url) !== null;
+  } catch {
+  }
+  return { key: exact ? videoKeyForUrl(rawUrl) : `unknown:${scope}`, url: rawUrl, title, confidence: exact ? "exact" : "unknown" };
+}
+function legacySourceRef(url, title, scope) {
+  return { key: `legacy:${scope}`, url, title, confidence: url ? "legacy" : "unknown" };
+}
+
+// src/lib/subtitle-order.ts
+function startOf(item) {
+  return typeof item.at === "number" && Number.isFinite(item.at) && item.at > 0 ? item.at : 0;
+}
+function compareStart(a, b) {
+  return startOf(a) - startOf(b);
+}
+function sortByStart(items) {
+  return items.slice().sort(compareStart);
+}
+function insertByStart(items, item) {
+  let index = items.length;
+  while (index > 0 && startOf(items[index - 1]) > startOf(item)) {
+    index -= 1;
+  }
+  items.splice(index, 0, item);
+  return items;
+}
+
+// src/ext/background/transcript-store.ts
+var TRANSCRIPT_INDEX_KEY = "snooper.extension.transcripts.v1";
+var TRANSCRIPT_CHUNK_PREFIX = "snooper.extension.transcript.v1.";
+var LEGACY_HISTORY_KEY = "snooper.extension.history.v1";
+var TRANSCRIPT_CHUNK_SIZE = 200;
+var MAX_PENDING_TRANSCRIPT_LINES = 200;
+function toNumber(value, fallback = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+function normalizeLine(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const source = typeof raw.source === "string" ? raw.source : "";
+  const target = typeof raw.target === "string" ? raw.target : "";
+  if (!source && !target) return null;
+  const videoTime = typeof raw.videoTime === "number" && Number.isFinite(raw.videoTime) && raw.videoTime >= 0 ? raw.videoTime : null;
+  return {
+    ...raw.kind === "screen" ? { kind: "screen" } : {},
+    ...raw.sourceRef && typeof raw.sourceRef === "object" ? { sourceRef: raw.sourceRef } : {},
+    ...typeof raw.id === "string" && raw.id ? { id: raw.id } : {},
+    at: toNumber(raw.at),
+    endedAt: raw.endedAt == null ? null : toNumber(raw.endedAt),
+    videoTime,
+    source,
+    target,
+    latency: toNumber(raw.latency)
+  };
+}
+function normalizeRecord(raw) {
+  if (!raw || typeof raw.id !== "string" || !raw.id) return null;
+  const startedAt = toNumber(raw.startedAt, Date.now());
+  const status = raw.status === "recording" ? "recording" : "completed";
+  return {
+    id: raw.id,
+    sourceEpoch: typeof raw.sourceEpoch === "string" ? raw.sourceEpoch : void 0,
+    sourceRef: raw.sourceRef || legacySourceRef(raw.url || "", raw.pageTitle || "", raw.id),
+    tabId: toNumber(raw.tabId, -1),
+    generation: toNumber(raw.generation, 0),
+    pageTitle: typeof raw.pageTitle === "string" ? raw.pageTitle.slice(0, 300) : "",
+    url: typeof raw.url === "string" ? raw.url.slice(0, 2048) : "",
+    startedAt,
+    endedAt: raw.endedAt == null ? null : toNumber(raw.endedAt),
+    sourceLang: typeof raw.sourceLang === "string" ? raw.sourceLang : "auto",
+    targetLang: typeof raw.targetLang === "string" ? raw.targetLang : "zh",
+    subtitleCount: Math.max(0, Math.floor(toNumber(raw.subtitleCount))),
+    chunkCount: Math.max(0, Math.floor(toNumber(raw.chunkCount))),
+    status,
+    lastAt: toNumber(raw.lastAt, startedAt)
+  };
+}
+function normalizeIndex(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = /* @__PURE__ */ new Set();
+  const records = [];
+  for (const item of raw) {
+    const record = normalizeRecord(item);
+    if (!record || seen.has(record.id)) continue;
+    seen.add(record.id);
+    records.push(record);
+  }
+  return records.sort((a, b) => b.startedAt - a.startedAt);
+}
+function toSummary(record) {
+  return {
+    id: record.id,
+    sourceEpoch: record.sourceEpoch,
+    sourceRef: record.sourceRef,
+    pageTitle: record.pageTitle,
+    url: record.url,
+    startedAt: record.startedAt,
+    endedAt: record.endedAt,
+    sourceLang: record.sourceLang,
+    targetLang: record.targetLang,
+    subtitleCount: record.subtitleCount,
+    status: record.status,
+    lastAt: record.lastAt
+  };
+}
+var DELETE_JOURNAL_KEY = "snooper.extension.transcript-deletions.v1";
+var pending = /* @__PURE__ */ new Map();
+var knownIds = /* @__PURE__ */ new Map();
+var queue = Promise.resolve();
+function serial(operation) {
+  const run = queue.catch(() => {
+  }).then(operation);
+  queue = run.catch(() => {
+  });
+  return run;
+}
+function chunkKey(id, index) {
+  return `${TRANSCRIPT_CHUNK_PREFIX}${id}.${index}`;
+}
+function chunkKeys(record) {
+  return Array.from({ length: record.chunkCount }, (_, i) => chunkKey(record.id, i));
+}
+function normalizeChunk(raw, id, index, sourceRef) {
+  if (!Array.isArray(raw)) throw new Error(`\u8F6C\u5199\u6B63\u6587\u7F3A\u5757\uFF1A${id} / ${index}\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9`);
+  return raw.flatMap((value, offset) => {
+    const line = normalizeLine(value);
+    return line ? [{ ...line, sourceRef: line.sourceRef || sourceRef || legacySourceRef("", "", id), id: line.id || `${id}:${index}:${offset}` }] : [];
+  });
+}
+async function writeIndex(records) {
+  await chrome.storage.local.set({ [TRANSCRIPT_INDEX_KEY]: records });
+}
+async function loadIndex() {
+  const got = await chrome.storage.local.get([TRANSCRIPT_INDEX_KEY, LEGACY_HISTORY_KEY, DELETE_JOURNAL_KEY]);
+  let records = normalizeIndex(got[TRANSCRIPT_INDEX_KEY]);
+  const deleting = normalizeIndex(got[DELETE_JOURNAL_KEY]);
+  if (deleting.length) {
+    await chrome.storage.local.remove(deleting.flatMap(chunkKeys));
+    records = records.filter((r) => !deleting.some((d) => d.id === r.id));
+    await writeIndex(records);
+    await chrome.storage.local.remove(DELETE_JOURNAL_KEY);
+  }
+  const legacy = got[LEGACY_HISTORY_KEY];
+  if (Array.isArray(legacy)) {
+    for (const raw of legacy) {
+      if (!raw?.id || records.some((r) => r.id === raw.id)) continue;
+      const lines = Array.isArray(raw.subtitles) ? raw.subtitles.map(normalizeLine).filter(Boolean) : [];
+      const count = lines.length || (Array.isArray(raw.subtitles) ? 0 : Math.max(0, toNumber(raw.subtitleCount)));
+      const record = normalizeRecord({ ...raw, tabId: -1, status: "completed", subtitleCount: count, chunkCount: Math.ceil(count / TRANSCRIPT_CHUNK_SIZE) });
+      for (let i = 0; i < Math.ceil(lines.length / TRANSCRIPT_CHUNK_SIZE); i++) {
+        await chrome.storage.local.set({ [chunkKey(record.id, i)]: lines.slice(i * TRANSCRIPT_CHUNK_SIZE, (i + 1) * TRANSCRIPT_CHUNK_SIZE) });
+      }
+      records.push(record);
+    }
+    await writeIndex(records);
+    await chrome.storage.local.remove(LEGACY_HISTORY_KEY);
+  }
+  return records.sort((a, b) => b.startedAt - a.startedAt);
+}
+async function repair(record, records) {
+  if (record.status !== "recording") return;
+  const keys = Array.from({ length: Math.max(1, record.chunkCount) + 1 }, (_, i) => chunkKey(record.id, i));
+  const got = await chrome.storage.local.get(keys);
+  let count = 0;
+  let chunks = 0;
+  let lastAt = record.lastAt;
+  for (let i = 0; i < keys.length; i++) {
+    if (got[keys[i]] === void 0 && i >= record.chunkCount) break;
+    const lines = normalizeChunk(got[keys[i]], record.id, i, record.sourceRef);
+    if (!lines.length) break;
+    count += lines.length;
+    chunks++;
+    for (const line of lines) lastAt = Math.max(lastAt, line.at);
+  }
+  if (count !== record.subtitleCount || chunks !== record.chunkCount) {
+    Object.assign(record, { subtitleCount: count, chunkCount: chunks, lastAt });
+    await writeIndex(records);
+  }
+}
+async function readBody(record) {
+  const got = await chrome.storage.local.get(chunkKeys(record));
+  return chunkKeys(record).flatMap((key, i) => normalizeChunk(got[key], record.id, i, record.sourceRef));
+}
+async function flushNow(id) {
+  const waiting = pending.get(id);
+  if (!waiting?.length) return;
+  const records = await loadIndex();
+  const record = records.find((r) => r.id === id);
+  if (!record) throw new Error("\u8F6C\u5199\u8BB0\u5F55\u4E0D\u5B58\u5728\uFF0C\u672A\u4FDD\u5B58\u5185\u5BB9\u4ECD\u53EF\u5BFC\u51FA");
+  if (record.status === "completed") {
+    pending.delete(id);
+    return;
+  }
+  let seen = knownIds.get(id);
+  if (!seen) {
+    await repair(record, records);
+    seen = new Set((await readBody(record)).map((l) => l.id));
+    knownIds.set(id, seen);
+  }
+  while (waiting.length) {
+    const line = waiting[0];
+    if (line.id && seen.has(line.id)) {
+      waiting.shift();
+      continue;
+    }
+    const chunkIndex = Math.floor(record.subtitleCount / TRANSCRIPT_CHUNK_SIZE);
+    const offset = record.subtitleCount % TRANSCRIPT_CHUNK_SIZE;
+    const key = chunkKey(id, chunkIndex);
+    const got = offset ? await chrome.storage.local.get(key) : {};
+    const lines = offset ? normalizeChunk(got[key], id, chunkIndex, record.sourceRef).slice(0, offset) : [];
+    const savedLine = { ...line, id: line.id || `${id}:${chunkIndex}:${offset}` };
+    await chrome.storage.local.set({ [key]: [...lines, savedLine] });
+    const next = { ...record, subtitleCount: record.subtitleCount + 1, chunkCount: chunkIndex + 1, lastAt: Math.max(record.lastAt, line.at) };
+    await writeIndex(records.map((r) => r.id === id ? next : r));
+    Object.assign(record, next);
+    seen.add(savedLine.id);
+    waiting.shift();
+  }
+  pending.delete(id);
+}
+async function deleteNow(ids) {
+  const records = await loadIndex();
+  const selected = records.filter((r) => ids.includes(r.id));
+  const removable = selected.filter((r) => r.status !== "recording" || r.subtitleCount === 0);
+  if (removable.length) {
+    await chrome.storage.local.set({ [DELETE_JOURNAL_KEY]: removable });
+    await chrome.storage.local.remove(removable.flatMap(chunkKeys));
+    await writeIndex(records.filter((r) => !removable.some((d) => d.id === r.id)));
+    await chrome.storage.local.remove(DELETE_JOURNAL_KEY);
+    removable.forEach((r) => {
+      pending.delete(r.id);
+      knownIds.delete(r.id);
+    });
+  }
+  return { deleted: removable.length, skipped: selected.length - removable.length };
+}
+async function finalizeNow(id) {
+  await flushNow(id);
+  const records = await loadIndex();
+  const record = records.find((r) => r.id === id);
+  if (!record) return false;
+  if (record.status === "completed") return record.subtitleCount > 0;
+  await repair(record, records);
+  if (!record.subtitleCount) {
+    await deleteNow([id]);
+    return false;
+  }
+  await writeIndex(records.map((r) => r.id === id ? { ...r, status: "completed", endedAt: Date.now() } : r));
+  knownIds.delete(id);
+  return true;
+}
+function beginTranscript(input) {
+  return serial(async () => {
+    let records = await loadIndex();
+    const existing = records.find((r) => r.status === "recording" && r.tabId === input.tabId && r.generation === input.generation && r.sourceEpoch === input.sourceEpoch);
+    if (existing) return existing;
+    for (const stale of records.filter((r) => r.status === "recording" && r.tabId === input.tabId && r.generation !== input.generation)) await finalizeNow(stale.id);
+    records = await loadIndex();
+    const now = input.startedAt ?? Date.now();
+    const record = normalizeRecord({ ...input, id: `tr_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`, startedAt: now, status: "recording" });
+    await writeIndex([record, ...records]);
+    return record;
+  });
+}
+async function ensureTranscript(session, meta = {}) {
+  if (session.transcriptId) return session.transcriptId;
+  const record = await beginTranscript({ ...session, pageTitle: session.sourceRef?.title, url: session.sourceRef?.url, ...meta });
+  session.transcriptId = record.id;
+  return record.id;
+}
+function appendTranscriptLine(id, line) {
+  if (!id) return Promise.reject(new Error("\u7F3A\u5C11\u8F6C\u5199\u8BB0\u5F55 ID"));
+  const waiting = pending.get(id) || [];
+  if (!line.id || !waiting.some((l) => l.id === line.id)) {
+    if (waiting.length >= MAX_PENDING_TRANSCRIPT_LINES) return Promise.reject(new Error("\u672A\u4FDD\u5B58\u5185\u5BB9\u5DF2\u8FBE\u5230\u7F13\u5B58\u4E0A\u9650\uFF0C\u8BF7\u505C\u6B62\u91C7\u96C6\u5E76\u91CD\u8BD5\u6216\u5BFC\u51FA"));
+    waiting.push(structuredClone(line));
+    pending.set(id, waiting);
+  }
+  return serial(() => flushNow(id));
+}
+function flushTranscript(id) {
+  return serial(() => flushNow(id));
+}
+function finalizeTranscript(id) {
+  return serial(() => finalizeNow(id));
+}
+async function finalizeSessionTranscript(session) {
+  if (!session.transcriptId) {
+    if (!session.subtitles.length) return false;
+    await ensureTranscript(session);
+    for (const line of session.subtitles) await appendTranscriptLine(session.transcriptId, line);
+  }
+  const kept = await finalizeTranscript(session.transcriptId);
+  if (!kept) session.transcriptId = null;
+  return kept;
+}
+function listTranscripts() {
+  return serial(async () => (await loadIndex()).map(toSummary));
+}
+function getTranscriptRecord(id) {
+  return serial(async () => (await loadIndex()).find((r) => r.id === id) ?? null);
+}
+async function findLatestTranscriptIdForTab(tabId) {
+  return serial(async () => (await loadIndex()).find((r) => r.tabId === tabId)?.id ?? null);
+}
+function readTranscriptPage(id, chunkIndex) {
+  return serial(async () => {
+    const record = (await loadIndex()).find((r) => r.id === id);
+    if (!record) throw new Error("\u8F6C\u5199\u8BB0\u5F55\u4E0D\u5B58\u5728");
+    if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= Math.max(1, record.chunkCount)) throw new Error("\u65E0\u6548\u7684\u8F6C\u5199\u5757\u7D22\u5F15");
+    const key = chunkKey(id, chunkIndex);
+    const got = record.chunkCount ? await chrome.storage.local.get(key) : {};
+    return { record, chunkIndex, lines: record.chunkCount ? normalizeChunk(got[key], id, chunkIndex, record.sourceRef) : [], nextChunkIndex: chunkIndex + 1 < record.chunkCount ? chunkIndex + 1 : null };
+  });
+}
+function readTranscript(id) {
+  return serial(async () => {
+    await flushNow(id);
+    const record = (await loadIndex()).find((r) => r.id === id);
+    return record ? sortByStart(await readBody(record)) : [];
+  });
+}
+function readAvailableTranscript(id) {
+  return serial(async () => {
+    let lines = [];
+    let error = "";
+    try {
+      const record = (await loadIndex()).find((r) => r.id === id);
+      if (!record) throw new Error("\u8F6C\u5199\u8BB0\u5F55\u4E0D\u5B58\u5728\uFF0C\u4EC5\u80FD\u5BFC\u51FA\u5F53\u524D\u53EF\u7528\u5185\u5BB9");
+      if (record) {
+        for (let i = 0; i < record.chunkCount; i++) {
+          try {
+            const key = chunkKey(id, i);
+            const got = await chrome.storage.local.get(key);
+            lines.push(...normalizeChunk(got[key], id, i, record.sourceRef));
+          } catch (err) {
+            error = String(err);
+          }
+        }
+      }
+    } catch (err) {
+      error = String(err);
+    }
+    const seen = new Set(lines.map((l) => l.id));
+    lines.push(...(pending.get(id) || []).filter((l) => !l.id || !seen.has(l.id)));
+    return { lines: sortByStart(lines), complete: !error, ...error ? { error } : {} };
+  });
+}
+function deleteTranscripts(ids) {
+  return serial(async () => {
+    const records = await loadIndex();
+    const protectedIds = new Set(records.filter((r) => r.status === "recording").map((r) => r.id));
+    const result = await deleteNow(ids.filter((id) => !protectedIds.has(id)));
+    return { ...result, skipped: ids.filter((id) => protectedIds.has(id)).length };
+  });
+}
+function recoverTranscripts(liveGenerations = {}, pendingRecordIds = []) {
+  return serial(async () => {
+    const records = await loadIndex();
+    const live = /* @__PURE__ */ new Map();
+    for (const record of records.filter((r) => r.status === "recording")) {
+      if (liveGenerations[String(record.tabId)] === record.generation || pendingRecordIds.includes(record.id)) {
+        const current = await loadIndex();
+        await repair(current.find((r) => r.id === record.id), current);
+        live.set(record.tabId, record.id);
+      } else await finalizeNow(record.id);
+    }
+    return live;
+  });
+}
+
 // src/ext/session-state.ts
 function reconcileSessionWithCapture(session, liveGeneration) {
   if (typeof liveGeneration !== "number" || session.state === "stopping") return session;
@@ -277,6 +734,9 @@ var SESSION_RECOVERY_KEY = "snooper.extension.sessions.v1";
 var LIVE_SUBTITLE_WINDOW = 200;
 var sessions = /* @__PURE__ */ new Map();
 var recoveryReady = Promise.resolve();
+function waitForRecovery() {
+  return recoveryReady;
+}
 function setRecoveryReady(promise) {
   recoveryReady = promise;
 }
@@ -303,7 +763,9 @@ function createSession(tabId) {
     audioSilent: false,
     lastScreenAt: 0,
     screenCaption: "off",
-    screenCaptionError: ""
+    screenCaptionError: "",
+    saveState: { status: "saved" },
+    pendingTranscriptLines: []
   };
   sessions.set(tabId, s);
   return s;
@@ -319,6 +781,10 @@ async function reconcileSessionState(tabId) {
   await recoveryReady;
   const session = getOrCreateSession(tabId);
   const liveGeneration = await getLiveCaptureGeneration(tabId);
+  if (session.transcriptFinalizationPending && session.pendingCaptureStopGeneration === void 0 && typeof liveGeneration === "number") {
+    session.pendingCaptureStopGeneration = liveGeneration;
+    persistSessionsThrottled();
+  }
   const reconciled = reconcileSessionWithCapture(session, liveGeneration);
   if (reconciled !== session) {
     Object.assign(session, reconciled);
@@ -328,17 +794,23 @@ async function reconcileSessionState(tabId) {
 }
 function safeSession(s) {
   return {
+    sourceEpoch: s.sourceEpoch,
+    sourceRef: s.sourceRef,
     state: s.state,
     sourceLang: s.sourceLang,
     targetLang: s.targetLang,
     subtitles: s.subtitles,
     messages: s.messages,
+    chatSourceRef: s.chatSourceRef,
     agentSessionId: s.agentSessionId ?? null,
     transcriptId: s.transcriptId ?? null,
     streamingSubtitle: s.streamingSubtitle,
     audioSilent: s.audioSilent,
     screenCaption: s.screenCaption,
-    screenCaptionError: s.screenCaptionError
+    screenCaptionError: s.screenCaptionError,
+    saveState: allSourceSessions(s).find((epoch) => epoch.saveState?.status === "error")?.saveState || s.saveState || { status: "saved" },
+    currentTranscriptSaveState: s.saveState || { status: "pending" },
+    pendingTranscriptCount: allSourceSessions(s).reduce((sum, epoch) => sum + (epoch.pendingTranscriptLines?.length || 0), 0)
   };
 }
 function hasActiveSession() {
@@ -373,6 +845,7 @@ function pushStreamingUpdate(tabId) {
   });
 }
 var lastPersistAt = 0;
+var snapshotWrite = Promise.resolve();
 function persistSessionsThrottled() {
   const now = Date.now();
   if (now - lastPersistAt < 3e3) return;
@@ -380,555 +853,241 @@ function persistSessionsThrottled() {
   persistSessions();
 }
 function persistSessions() {
+  void persistSessionsStrict().catch(() => {
+  });
+}
+function persistSessionsStrict() {
   const obj = {};
   for (const [tabId, s] of sessions.entries()) {
     obj[String(tabId)] = {
+      sourceEpoch: s.sourceEpoch,
+      sourceRef: s.sourceRef,
+      sourceIdentity: s.sourceIdentity,
+      retiringSources: s.retiringSources?.map((epoch) => ({ ...epoch, retiringSources: void 0, configSnapshot: null, streamId: "" })),
       tabId: s.tabId,
       state: s.state,
       sourceLang: s.sourceLang,
       targetLang: s.targetLang,
       generation: s.generation,
+      stoppedGeneration: s.stoppedGeneration,
       subtitles: s.subtitles,
       messages: s.messages,
+      chatSourceRef: s.chatSourceRef,
       agentSessionId: s.agentSessionId ?? null,
       transcriptId: s.transcriptId ?? null,
-      audioSilent: false
+      audioSilent: false,
+      saveState: s.saveState,
+      pendingTranscriptLines: s.pendingTranscriptLines,
+      transcriptFinalizationPending: s.transcriptFinalizationPending,
+      pendingCaptureStopGeneration: s.pendingCaptureStopGeneration
     };
   }
-  try {
-    chrome.storage.session.set({ [SESSION_RECOVERY_KEY]: JSON.stringify(obj) });
-  } catch {
+  const encoded = JSON.stringify(obj);
+  const write = snapshotWrite.catch(() => {
+  }).then(() => chrome.storage.session.set({ [SESSION_RECOVERY_KEY]: encoded }));
+  snapshotWrite = write;
+  return write;
+}
+var MAX_UNSAVED_SESSION_LINES = 180;
+var saveAttempts = /* @__PURE__ */ new WeakMap();
+var finishAttempts = /* @__PURE__ */ new WeakMap();
+var captureStops = /* @__PURE__ */ new Map();
+function markTranscriptSaveError(s, error) {
+  s.saveState = { status: "error", message: `\u6709\u5185\u5BB9\u672A\u4FDD\u5B58\uFF1A${error instanceof Error ? error.message : String(error)}\u3002\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA\uFF0C\u52FF\u5173\u95ED\u9875\u9762` };
+  pushSession(s.tabId);
+  persistSessions();
+}
+function allSourceSessions(s) {
+  return [...s.retiringSources || [], s];
+}
+function detachDeletedTranscript(s, binding) {
+  let changed = false;
+  for (const owner of allSourceSessions(s)) {
+    if (owner.transcriptId !== binding.recordId || owner.tabId !== binding.tabId || owner.sourceEpoch !== binding.sourceEpoch || owner.sourceRef?.key !== binding.sourceKey) continue;
+    if (owner.pendingCaptureStopGeneration !== void 0 || owner.pendingTranscriptLines?.length || owner.saveState?.status !== "saved" || saveAttempts.has(owner) || finishAttempts.has(owner)) continue;
+    const ended = owner.state === "idle" || owner.state === "error";
+    if (owner === s ? !ended : !ended && !owner.sourceDrained) continue;
+    owner.transcriptId = null;
+    owner.sourceEpoch = void 0;
+    owner.sourceRef = void 0;
+    owner.sourceIdentity = void 0;
+    owner.subtitles = [];
+    owner.streamingSubtitle = null;
+    owner.transcriptFinalizationPending = false;
+    changed = true;
   }
+  return changed;
 }
-
-// src/lib/subtitle-order.ts
-function startOf(item) {
-  return typeof item.at === "number" && Number.isFinite(item.at) && item.at > 0 ? item.at : 0;
+function pendingSessionStop(tabId) {
+  return captureStops.get(tabId)?.promise;
 }
-function compareStart(a, b) {
-  return startOf(a) - startOf(b);
-}
-function sortByStart(items) {
-  return items.slice().sort(compareStart);
-}
-function insertByStart(items, item) {
-  let index = items.length;
-  while (index > 0 && startOf(items[index - 1]) > startOf(item)) {
-    index -= 1;
-  }
-  items.splice(index, 0, item);
-  return items;
-}
-
-// src/ext/background/transcript-store.ts
-var TRANSCRIPT_INDEX_KEY = "snooper.extension.transcripts.v1";
-var TRANSCRIPT_CHUNK_PREFIX = "snooper.extension.transcript.v1.";
-var LEGACY_HISTORY_KEY = "snooper.extension.history.v1";
-var TRANSCRIPT_CHUNK_SIZE = 200;
-var MAX_COMPLETED_TRANSCRIPTS = 100;
-var active = /* @__PURE__ */ new Map();
-var appendQueues = /* @__PURE__ */ new Map();
-var beginAttempts = /* @__PURE__ */ new Map();
-var indexCache = null;
-var indexLoad = null;
-var indexWrite = Promise.resolve();
-function toNumber(value, fallback = 0) {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-function normalizeLine(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const source = typeof raw.source === "string" ? raw.source : "";
-  const target = typeof raw.target === "string" ? raw.target : "";
-  if (!source && !target) return null;
-  const videoTime = typeof raw.videoTime === "number" && Number.isFinite(raw.videoTime) && raw.videoTime >= 0 ? raw.videoTime : null;
-  return {
-    ...typeof raw.id === "string" && raw.id ? { id: raw.id } : {},
-    at: toNumber(raw.at),
-    endedAt: raw.endedAt == null ? null : toNumber(raw.endedAt),
-    videoTime,
-    source,
-    target,
-    latency: toNumber(raw.latency)
-  };
-}
-function normalizeRecord(raw) {
-  if (!raw || typeof raw.id !== "string" || !raw.id) return null;
-  const startedAt = toNumber(raw.startedAt, Date.now());
-  const status = raw.status === "recording" ? "recording" : "completed";
-  return {
-    id: raw.id,
-    tabId: toNumber(raw.tabId, -1),
-    generation: toNumber(raw.generation, 0),
-    pageTitle: typeof raw.pageTitle === "string" ? raw.pageTitle.slice(0, 300) : "",
-    url: typeof raw.url === "string" ? raw.url.slice(0, 2048) : "",
-    startedAt,
-    endedAt: raw.endedAt == null ? null : toNumber(raw.endedAt),
-    sourceLang: typeof raw.sourceLang === "string" ? raw.sourceLang : "auto",
-    targetLang: typeof raw.targetLang === "string" ? raw.targetLang : "zh",
-    subtitleCount: Math.max(0, Math.floor(toNumber(raw.subtitleCount))),
-    chunkCount: Math.max(0, Math.floor(toNumber(raw.chunkCount))),
-    status,
-    lastAt: toNumber(raw.lastAt, startedAt)
-  };
-}
-function normalizeIndex(raw) {
-  if (!Array.isArray(raw)) return [];
-  const seen = /* @__PURE__ */ new Set();
-  const records = [];
-  for (const item of raw) {
-    const record = normalizeRecord(item);
-    if (!record || seen.has(record.id)) continue;
-    seen.add(record.id);
-    records.push(record);
-  }
-  return records.sort((a, b) => b.startedAt - a.startedAt);
-}
-function toSummary(record) {
-  return {
-    id: record.id,
-    pageTitle: record.pageTitle,
-    url: record.url,
-    startedAt: record.startedAt,
-    endedAt: record.endedAt,
-    sourceLang: record.sourceLang,
-    targetLang: record.targetLang,
-    subtitleCount: record.subtitleCount,
-    status: record.status,
-    lastAt: record.lastAt
-  };
-}
-function chunkKey(id, chunkIndex) {
-  return `${TRANSCRIPT_CHUNK_PREFIX}${id}.${chunkIndex}`;
-}
-function chunkKeys(record) {
-  const count = Math.max(record.chunkCount, Math.ceil(record.subtitleCount / TRANSCRIPT_CHUNK_SIZE));
-  return Array.from({ length: count }, (_, index) => chunkKey(record.id, index));
-}
-async function loadIndexFromStorage() {
-  const got = await chrome.storage.local.get([TRANSCRIPT_INDEX_KEY, LEGACY_HISTORY_KEY]);
-  let records = normalizeIndex(got[TRANSCRIPT_INDEX_KEY]);
-  const legacy = got[LEGACY_HISTORY_KEY];
-  if (Array.isArray(legacy) && legacy.length > 0) {
-    const existing = new Set(records.map((record) => record.id));
-    const migrated = await migrateLegacy(legacy, existing);
-    if (migrated.length > 0) {
-      records = [...migrated, ...records].sort((a, b) => b.startedAt - a.startedAt);
-      await writeIndexNow(records);
-    }
-    await chrome.storage.local.remove(LEGACY_HISTORY_KEY);
-  }
-  indexCache = records;
-  return records;
-}
-async function getIndex() {
-  if (indexCache) return indexCache;
-  if (!indexLoad) {
-    indexLoad = loadIndexFromStorage().finally(() => {
-      indexLoad = null;
-    });
-  }
-  return indexLoad;
-}
-function writeIndexNow(records) {
-  const snapshot = records.map((record) => ({ ...record }));
-  indexWrite = indexWrite.then(() => chrome.storage.local.set({ [TRANSCRIPT_INDEX_KEY]: snapshot })).catch((err) => {
-    console.warn("[RTTS] transcript index write failed:", err);
-  });
-  return indexWrite;
-}
-async function persistRecord(record) {
-  const records = await getIndex();
-  if (!records.includes(record)) return;
-  await writeIndexNow(records);
-}
-async function removeChunks(records) {
-  const keys = records.flatMap(chunkKeys);
-  if (keys.length === 0) return;
-  try {
-    await chrome.storage.local.remove(keys);
-  } catch (err) {
-    console.warn("[RTTS] transcript chunk removal failed:", err);
-  }
-}
-async function migrateLegacy(legacy, existingIds) {
-  const records = [];
-  for (const raw of legacy) {
-    if (!raw || typeof raw.id !== "string" || !raw.id || existingIds.has(raw.id)) continue;
-    const lines = Array.isArray(raw.subtitles) ? raw.subtitles.map(normalizeLine).filter((line) => !!line) : [];
-    const startedAt = toNumber(raw.startedAt, Date.now());
-    const endedAt = toNumber(raw.endedAt, startedAt);
-    const record = {
-      id: raw.id,
-      tabId: -1,
-      generation: 0,
-      pageTitle: typeof raw.pageTitle === "string" ? raw.pageTitle.slice(0, 300) : "",
-      url: typeof raw.url === "string" ? raw.url.slice(0, 2048) : "",
-      startedAt,
-      endedAt,
-      sourceLang: typeof raw.sourceLang === "string" ? raw.sourceLang : "auto",
-      targetLang: typeof raw.targetLang === "string" ? raw.targetLang : "zh",
-      subtitleCount: Math.max(lines.length, Math.floor(toNumber(raw.subtitleCount, lines.length))),
-      chunkCount: Math.ceil(lines.length / TRANSCRIPT_CHUNK_SIZE),
-      status: "completed",
-      lastAt: lines.length > 0 ? lines[lines.length - 1].at : endedAt
-    };
-    for (let offset = 0; offset < lines.length; offset += TRANSCRIPT_CHUNK_SIZE) {
-      const chunkIndex = Math.floor(offset / TRANSCRIPT_CHUNK_SIZE);
-      await chrome.storage.local.set({
-        [chunkKey(record.id, chunkIndex)]: lines.slice(offset, offset + TRANSCRIPT_CHUNK_SIZE)
-      });
-    }
-    existingIds.add(record.id);
-    records.push(record);
-  }
-  return records;
-}
-async function hydrateActive(record) {
-  const chunkIndex = record.subtitleCount > 0 ? Math.floor((record.subtitleCount - 1) / TRANSCRIPT_CHUNK_SIZE) : 0;
-  const key = chunkKey(record.id, chunkIndex);
-  const got = await chrome.storage.local.get(key);
-  const lines = Array.isArray(got[key]) ? got[key].map(normalizeLine).filter((line) => !!line) : [];
-  const entry = {
-    record,
-    chunkIndex,
-    lines,
-    writing: false,
-    pending: false,
-    writePromise: null
-  };
-  active.set(record.id, entry);
-  return entry;
-}
-async function repairRecord(record) {
-  if (record.status !== "recording") return;
-  const expected = Math.max(
-    1,
-    record.chunkCount,
-    Math.ceil(record.subtitleCount / TRANSCRIPT_CHUNK_SIZE)
-  );
-  const maxChunk = expected + 1;
-  const keys = Array.from({ length: maxChunk }, (_, index) => chunkKey(record.id, index));
-  const got = await chrome.storage.local.get(keys);
-  let subtitleCount = 0;
-  let chunkCount = 0;
-  let lastAt = record.lastAt;
-  for (let index = 0; index < maxChunk; index += 1) {
-    const chunk = got[keys[index]];
-    if (!Array.isArray(chunk) || chunk.length === 0) continue;
-    subtitleCount += chunk.length;
-    chunkCount = index + 1;
-    const last = chunk[chunk.length - 1];
-    if (last && typeof last.at === "number" && Number.isFinite(last.at)) {
-      lastAt = Math.max(lastAt, last.at);
-    }
-  }
-  if (subtitleCount !== record.subtitleCount || chunkCount !== record.chunkCount) {
-    record.subtitleCount = subtitleCount;
-    record.chunkCount = chunkCount;
-    record.lastAt = lastAt;
-    await persistRecord(record);
-  }
-}
-async function flushActive(recordId) {
-  const entry = active.get(recordId);
-  if (!entry) return;
-  if (entry.writing) {
-    entry.pending = true;
-    if (entry.writePromise) await entry.writePromise;
-    return;
-  }
-  entry.writing = true;
+function stopSessionCapture(s) {
+  const existing = captureStops.get(s.tabId);
+  if (existing?.owner === s && existing.generation === s.generation) return existing.promise;
+  const stoppedGeneration = s.pendingCaptureStopGeneration ?? s.stoppedGeneration ?? s.generation;
+  s.pendingCaptureStopGeneration = stoppedGeneration;
+  s.state = "stopping";
+  s.stoppedGeneration = stoppedGeneration;
+  s.generation = nextGeneration();
+  const generation = s.generation;
+  const ownsStop = () => sessions.get(s.tabId) === s && s.generation === generation;
+  s.transcriptFinalizationPending = true;
+  pushSession(s.tabId);
   const run = (async () => {
     try {
-      do {
-        entry.pending = false;
-        const key = chunkKey(recordId, entry.chunkIndex);
-        const lines = entry.lines.slice();
-        if (lines.length > 0) {
-          await chrome.storage.local.set({ [key]: lines });
-          entry.record.chunkCount = Math.max(entry.record.chunkCount, entry.chunkIndex + 1);
-        }
-        await persistRecord(entry.record);
-      } while (entry.pending);
-    } catch (err) {
-      console.warn("[RTTS] transcript chunk write failed:", err);
+      const reply = await sendToOffscreen({ type: "STOP_CAPTURE", tabId: s.tabId, generation: stoppedGeneration, drain: true });
+      if (!ownsStop()) return;
+      if (!reply?.ok) throw new Error(reply?.error || "\u505C\u6B62\u91C7\u96C6\u672A\u786E\u8BA4\uFF0C\u8BF7\u91CD\u8BD5");
+      for (const owner of allSourceSessions(s)) {
+        if (owner.pendingCaptureStopGeneration === stoppedGeneration) owner.pendingCaptureStopGeneration = void 0;
+      }
+      s.state = "idle";
+      s.stoppedGeneration = void 0;
+      s.streamId = "";
+      s.configSnapshot = null;
+      s.streamingSubtitle = null;
+      s.audioSilent = false;
+      await finishSavedTranscript(s);
+    } catch (error) {
+      if (!ownsStop()) return;
+      if (s.state === "stopping") s.state = "error";
+      markTranscriptSaveError(s, error);
+      throw error;
+    } finally {
+      if (ownsStop()) {
+        pushSession(s.tabId);
+        persistSessions();
+        if (s.state === "idle") maybeCloseOffscreen();
+      }
     }
   })();
-  entry.writePromise = run;
-  await run;
-  entry.writing = false;
-  entry.writePromise = null;
-}
-async function appendNow(recordId, line) {
-  let entry = active.get(recordId);
-  if (!entry) {
-    const records = await getIndex();
-    const record = records.find((item) => item.id === recordId);
-    if (!record || record.status !== "recording") return;
-    entry = await hydrateActive(record);
-  }
-  const nextChunk = Math.floor(entry.record.subtitleCount / TRANSCRIPT_CHUNK_SIZE);
-  if (nextChunk !== entry.chunkIndex) {
-    await flushActive(recordId);
-    entry.chunkIndex = nextChunk;
-    entry.lines = [];
-  }
-  entry.lines.push(line);
-  entry.record.subtitleCount += 1;
-  entry.record.lastAt = line.at || Date.now();
-  entry.record.chunkCount = Math.max(entry.record.chunkCount, entry.chunkIndex + 1);
-  void flushActive(recordId);
-}
-async function beginNow(input) {
-  const records = await getIndex();
-  const existing = records.find(
-    (record2) => record2.status === "recording" && record2.tabId === input.tabId && record2.generation === input.generation
-  );
-  if (existing) return existing;
-  for (const stale of records.filter(
-    (record2) => record2.status === "recording" && record2.tabId === input.tabId
-  )) {
-    await finalizeTranscript(stale.id);
-  }
-  const now = input.startedAt ?? Date.now();
-  const record = {
-    id: `tr_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-    tabId: input.tabId,
-    generation: input.generation,
-    pageTitle: (input.pageTitle || "").slice(0, 300),
-    url: (input.url || "").slice(0, 2048),
-    startedAt: now,
-    endedAt: null,
-    sourceLang: input.sourceLang || "auto",
-    targetLang: input.targetLang || "zh",
-    subtitleCount: 0,
-    chunkCount: 0,
-    status: "recording",
-    lastAt: now
-  };
-  records.unshift(record);
-  active.set(record.id, {
-    record,
-    chunkIndex: 0,
-    lines: [],
-    writing: false,
-    pending: false,
-    writePromise: null
+  const attempt = { owner: s, generation, promise: run };
+  captureStops.set(s.tabId, attempt);
+  void run.finally(() => {
+    if (captureStops.get(s.tabId) === attempt) captureStops.delete(s.tabId);
+  }).catch(() => {
   });
-  const evicted = pruneCompleted(records);
-  await writeIndexNow(records);
-  if (evicted.length > 0) await removeChunks(evicted);
-  return record;
-}
-function beginTranscript(input) {
-  const key = `${input.tabId}:${input.generation}`;
-  const pending = beginAttempts.get(key);
-  if (pending) return pending;
-  const run = beginNow(input).finally(() => {
-    if (beginAttempts.get(key) === run) beginAttempts.delete(key);
-  });
-  beginAttempts.set(key, run);
   return run;
 }
-async function ensureTranscript(session, meta = {}) {
-  if (session.transcriptId) return session.transcriptId;
-  try {
-    const record = await beginTranscript({
-      tabId: session.tabId,
-      generation: session.generation,
-      sourceLang: meta.sourceLang || session.sourceLang,
-      targetLang: meta.targetLang || session.targetLang,
-      pageTitle: meta.pageTitle,
-      url: meta.url,
-      startedAt: meta.startedAt
+async function validateSessionTranscriptOwnership(s) {
+  if (!s.sourceEpoch || !s.transcriptId) return;
+  if (!s.pendingTranscriptLines?.length && !s.subtitles?.length) return;
+  const record = await getTranscriptRecord(s.transcriptId);
+  if (!record || record.tabId !== s.tabId || record.sourceEpoch !== s.sourceEpoch || !s.sourceRef || record.sourceRef?.key !== s.sourceRef.key) {
+    throw new Error("\u8F6C\u5199\u8BFE\u8282\u7ED1\u5B9A\u65E0\u6CD5\u6838\u9A8C\uFF0C\u672A\u4FDD\u5B58\u5185\u5BB9\u5DF2\u4FDD\u7559\uFF0C\u8BF7\u5BFC\u51FA\u540E\u91CD\u65B0\u5F00\u59CB");
+  }
+  if (record.status === "completed" && s.pendingTranscriptLines?.length) {
+    const savedIds = new Set((await readTranscript(record.id)).map((line) => line.id));
+    if (s.pendingTranscriptLines.some((line) => !savedIds.has(line.id))) {
+      throw new Error("\u8F6C\u5199\u8BB0\u5F55\u5DF2\u7ED3\u675F\u4F46\u4ECD\u6709\u672A\u4FDD\u5B58\u5185\u5BB9\uFF0C\u8BF7\u5BFC\u51FA\u540E\u91CD\u65B0\u5F00\u59CB");
+    }
+  }
+}
+async function retrySessionTranscript(s) {
+  const stopping = captureStops.get(s.tabId);
+  if (stopping?.owner === s && stopping.generation === s.generation) return stopping.promise;
+  if (s.pendingCaptureStopGeneration !== void 0) return stopSessionCapture(s);
+  if (s.transcriptFinalizationPending) {
+    await finishSessionTranscript(s);
+    return;
+  }
+  for (const epoch of s.retiringSources || []) {
+    await retryOneTranscript(epoch);
+    if (epoch.sourceDrained) await finalizeSessionTranscript(epoch).catch((error) => {
+      markTranscriptSaveError(epoch, error);
+      throw error;
     });
-    session.transcriptId = record.id;
-    return record.id;
-  } catch (err) {
-    console.warn("[RTTS] transcript creation failed:", err);
-    return null;
   }
+  await retryOneTranscript(s);
 }
-function appendTranscriptLine(recordId, line) {
-  if (!recordId) return Promise.resolve();
-  const previous = appendQueues.get(recordId) || Promise.resolve();
-  const next = previous.then(() => appendNow(recordId, line)).catch((err) => {
-    console.warn("[RTTS] transcript append failed:", err);
+function retryOneTranscript(s) {
+  const existing = saveAttempts.get(s);
+  if (existing) return existing;
+  const run = (async () => {
+    s.pendingTranscriptLines ||= [];
+    if (!s.transcriptId && !s.pendingTranscriptLines.length && !s.subtitles.length) return;
+    await validateSessionTranscriptOwnership(s);
+    const id = await ensureTranscript(s);
+    do {
+      while (s.pendingTranscriptLines.length) {
+        await appendTranscriptLine(id, s.pendingTranscriptLines[0]);
+        s.pendingTranscriptLines.shift();
+      }
+      await flushTranscript(id);
+    } while (s.pendingTranscriptLines.length);
+    if (s.pendingCaptureStopGeneration === void 0) s.saveState = { status: "saved" };
+    pushSession(s.tabId);
+    persistSessions();
+  })().catch((error) => {
+    markTranscriptSaveError(s, error);
+    throw error;
   });
-  appendQueues.set(recordId, next);
-  void next.finally(() => {
-    if (appendQueues.get(recordId) === next) appendQueues.delete(recordId);
+  saveAttempts.set(s, run);
+  void run.finally(() => {
+    if (saveAttempts.get(s) === run) saveAttempts.delete(s);
+  }).catch(() => {
   });
-  return next;
+  return run;
 }
-function pruneCompleted(records) {
-  const completed = records.filter((record) => record.status === "completed");
-  if (completed.length <= MAX_COMPLETED_TRANSCRIPTS) return [];
-  const keep = new Set(
-    [...completed].sort((a, b) => b.startedAt - a.startedAt).slice(0, MAX_COMPLETED_TRANSCRIPTS).map((record) => record.id)
-  );
-  const evicted = completed.filter((record) => !keep.has(record.id));
-  for (const record of evicted) {
-    const index = records.indexOf(record);
-    if (index >= 0) records.splice(index, 1);
-  }
-  return evicted;
-}
-async function deleteRecord(record) {
-  active.delete(record.id);
-  const records = await getIndex();
-  const index = records.indexOf(record);
-  if (index >= 0) records.splice(index, 1);
-  await removeChunks([record]);
-  await writeIndexNow(records);
-}
-async function finalizeTranscript(recordId) {
-  if (!recordId) return false;
-  const pending = appendQueues.get(recordId);
-  if (pending) await pending.catch(() => {
-  });
-  const records = await getIndex();
-  const record = records.find((item) => item.id === recordId);
-  if (!record) {
-    active.delete(recordId);
-    return false;
-  }
-  if (record.status === "completed") return record.subtitleCount > 0;
-  const entry = active.get(recordId);
-  if (entry) {
-    await flushActive(recordId);
-    active.delete(recordId);
-  } else {
-    await repairRecord(record);
-  }
-  if (record.subtitleCount === 0) {
-    await deleteRecord(record);
-    return false;
-  }
-  record.status = "completed";
-  record.endedAt = Date.now();
-  record.lastAt = record.lastAt || record.endedAt;
-  const evicted = pruneCompleted(records);
-  await writeIndexNow(records);
-  if (evicted.length > 0) await removeChunks(evicted);
-  return true;
-}
-async function finalizeSessionTranscript(session) {
-  let recordId = session.transcriptId;
-  if (!recordId) {
-    if (!Array.isArray(session.subtitles) || session.subtitles.length === 0) return false;
-    const record = await beginTranscript({
-      tabId: session.tabId,
-      generation: session.generation,
-      sourceLang: session.sourceLang,
-      targetLang: session.targetLang
+function saveSessionSubtitle(s, entry) {
+  s.pendingTranscriptLines ||= [];
+  if (!s.pendingTranscriptLines.some((line) => line.id === entry.id)) s.pendingTranscriptLines.push(entry);
+  if (s.saveState?.status !== "error") s.saveState = { status: "pending" };
+  const owner = sessions.get(s.tabId) || s;
+  if (allSourceSessions(owner).reduce((sum, epoch) => sum + epoch.pendingTranscriptLines.length, 0) >= MAX_UNSAVED_SESSION_LINES && (owner.state === "running" || owner.state === "starting")) {
+    markTranscriptSaveError(owner, "\u672A\u4FDD\u5B58\u7F13\u5B58\u5DF2\u6EE1\uFF0C\u5DF2\u505C\u6B62\u65B0\u91C7\u96C6");
+    void stopSessionCapture(owner).catch(() => {
     });
-    recordId = record.id;
-    session.transcriptId = recordId;
-    for (const subtitle of session.subtitles) {
-      await appendTranscriptLine(recordId, subtitle);
-    }
   }
-  const kept = await finalizeTranscript(recordId);
-  if (!kept) session.transcriptId = null;
-  return kept;
-}
-async function listTranscripts() {
-  const records = await getIndex();
-  return records.map(toSummary);
-}
-async function getTranscriptRecord(id) {
-  const records = await getIndex();
-  return records.find((record) => record.id === id) ?? null;
-}
-async function findLatestTranscriptIdForTab(tabId) {
-  const records = await getIndex();
-  const record = [...records].sort((a, b) => b.startedAt - a.startedAt).find((item) => item.tabId === tabId);
-  return record?.id ?? null;
-}
-async function readTranscript(id) {
-  if (!id) return [];
-  const pending = appendQueues.get(id);
-  if (pending) await pending.catch(() => {
+  void retryOneTranscript(s).catch(() => {
   });
-  await flushActive(id);
-  const record = await getTranscriptRecord(id);
-  if (!record) return [];
-  const keys = chunkKeys(record);
-  if (keys.length === 0) return [];
-  const got = await chrome.storage.local.get(keys);
-  const lines = [];
-  for (const key of keys) {
-    const chunk = got[key];
-    if (!Array.isArray(chunk)) continue;
-    for (const raw of chunk) {
-      const line = normalizeLine(raw);
-      if (line) lines.push(line);
-    }
-  }
-  return sortByStart(lines);
 }
-async function deleteTranscripts(ids) {
-  const records = await getIndex();
-  const wanted = new Set(ids.filter(Boolean));
-  const removable = records.filter(
-    (record) => wanted.has(record.id) && record.status !== "recording"
-  );
-  const skipped = records.filter(
-    (record) => wanted.has(record.id) && record.status === "recording"
-  ).length;
-  if (removable.length === 0) return { deleted: 0, skipped };
-  await removeChunks(removable);
-  for (const record of removable) {
-    active.delete(record.id);
-    const index = records.indexOf(record);
-    if (index >= 0) records.splice(index, 1);
-  }
-  await writeIndexNow(records);
-  return { deleted: removable.length, skipped };
+function finishSessionTranscript(s) {
+  const stopping = captureStops.get(s.tabId);
+  if (stopping?.owner === s && stopping.generation === s.generation) return stopping.promise.then(() => !!s.transcriptId);
+  if (s.pendingCaptureStopGeneration !== void 0) return stopSessionCapture(s).then(() => !!s.transcriptId);
+  return finishSavedTranscript(s);
 }
-async function clearTranscripts() {
-  const records = await getIndex();
-  const removable = records.filter((record) => record.status !== "recording");
-  const skipped = records.length - removable.length;
-  if (removable.length === 0) return { deleted: 0, skipped };
-  await removeChunks(removable);
-  for (const record of removable) {
-    active.delete(record.id);
-    const index = records.indexOf(record);
-    if (index >= 0) records.splice(index, 1);
-  }
-  await writeIndexNow(records);
-  return { deleted: removable.length, skipped };
-}
-async function recoverTranscripts(liveGenerations = {}) {
-  const records = await getIndex();
-  const liveByTab = /* @__PURE__ */ new Map();
-  const now = Date.now();
-  for (const record of [...records]) {
-    if (record.status !== "recording") continue;
-    const live = liveGenerations[String(record.tabId)];
-    if (typeof live === "number" && live === record.generation) {
-      await repairRecord(record);
-      await hydrateActive(record);
-      liveByTab.set(record.tabId, record.id);
-      continue;
+function finishSavedTranscript(s) {
+  const existing = finishAttempts.get(s);
+  if (existing) return existing;
+  const generation = s.generation;
+  const transcriptId = s.transcriptId;
+  const unchanged = () => s.generation === generation && (!transcriptId || s.transcriptId === transcriptId);
+  const run = (async () => {
+    try {
+      for (const epoch of s.retiringSources || []) {
+        if (s.state === "idle" || s.state === "error" || epoch.sourceDrained) {
+          epoch.sourceDrained = true;
+          await finishSessionTranscript(epoch);
+          if (!unchanged()) return false;
+        }
+      }
+      if (saveAttempts.has(s) || s.pendingTranscriptLines?.length) await retryOneTranscript(s);
+      if (!unchanged()) return false;
+      await validateSessionTranscriptOwnership(s);
+      if (!unchanged()) return false;
+      const finalizing = { ...s };
+      const finalizingId = s.transcriptId;
+      const kept = await finalizeSessionTranscript(finalizing);
+      if (s.generation !== generation || s.transcriptId !== finalizingId) return false;
+      s.transcriptId = finalizing.transcriptId;
+      s.saveState = { status: "saved" };
+      s.transcriptFinalizationPending = false;
+      return kept;
+    } catch (error) {
+      if (!unchanged()) return false;
+      s.transcriptFinalizationPending = true;
+      markTranscriptSaveError(s, error);
+      throw error;
     }
-    await repairRecord(record);
-    if (record.subtitleCount === 0) {
-      await deleteRecord(record);
-      continue;
-    }
-    record.status = "completed";
-    record.endedAt = record.lastAt || now;
-    await persistRecord(record);
-  }
-  const evicted = pruneCompleted(records);
-  if (evicted.length > 0) {
-    await writeIndexNow(records);
-    await removeChunks(evicted);
-  }
-  return liveByTab;
+  })();
+  finishAttempts.set(s, run);
+  void run.finally(() => {
+    if (finishAttempts.get(s) === run) finishAttempts.delete(s);
+  }).catch(() => {
+  });
+  return run;
 }
 
 // src/lib/video-clock.ts
@@ -1015,12 +1174,16 @@ function formatVideoTime(seconds) {
 var MAX_SAMPLES = 300;
 var timelines = /* @__PURE__ */ new Map();
 function resetVideoClock(tabId) {
-  timelines.delete(tabId);
+  for (const key of timelines.keys()) if (key.startsWith(`${tabId}:`)) timelines.delete(key);
 }
-function recordVideoClock(tabId, sample) {
-  const list = timelines.get(tabId);
+function resetSourceVideoClock(tabId, sourceEpoch) {
+  timelines.delete(`${tabId}:${sourceEpoch}`);
+}
+function recordVideoClock(tabId, sample, sourceEpoch = "") {
+  const key = `${tabId}:${sourceEpoch}`;
+  const list = timelines.get(key);
   if (!list) {
-    timelines.set(tabId, [sample]);
+    timelines.set(key, [sample]);
     return;
   }
   const last = list[list.length - 1];
@@ -1029,8 +1192,8 @@ function recordVideoClock(tabId, sample) {
   else list.push(sample);
   if (list.length > MAX_SAMPLES) list.splice(0, list.length - MAX_SAMPLES);
 }
-function resolveVideoTimeAt2(tabId, at) {
-  const list = timelines.get(tabId);
+function resolveVideoTimeAt2(tabId, at, sourceEpoch = "") {
+  const list = timelines.get(`${tabId}:${sourceEpoch}`);
   if (!list || list.length === 0) return null;
   return resolveVideoTimeAt(list, at);
 }
@@ -1043,13 +1206,16 @@ function closeOffscreenAfterStop(stop) {
 }
 function removeSession(tabId) {
   const s = sessions.get(tabId);
-  sessions.delete(tabId);
   resetVideoClock(tabId);
   if (s) {
-    const stop = sendToOffscreen({ type: "STOP_CAPTURE", tabId, generation: s.generation }).catch(() => {
-    });
+    const stop = stopSessionCapture(s);
+    const endingGeneration = s.generation;
     closeOffscreenAfterStop(stop);
-    void finalizeSessionTranscript(s).catch(() => {
+    void stop.then(() => {
+      if (sessions.get(tabId) !== s || s.generation !== endingGeneration) return;
+      sessions.delete(tabId);
+      persistSessions();
+    }).catch(() => {
     });
   } else {
     closeOffscreenAfterStop(sendToOffscreen({ type: "STOP_CAPTURE", tabId }).catch(() => {
@@ -1065,16 +1231,19 @@ function stopSessionForTab(tabId) {
   });
   s.state = "idle";
   s.generation = nextGeneration();
+  const endingGeneration = s.generation;
   s.stoppedGeneration = void 0;
   s.streamId = "";
   s.configSnapshot = null;
   s.streamingSubtitle = null;
   s.audioSilent = false;
   pushSession(tabId);
-  void finalizeSessionTranscript(s).finally(() => {
+  void finishSessionTranscript(s).then(() => {
+    if (s.generation !== endingGeneration) return;
     s.transcriptId = null;
     s.subtitles = [];
     pushSession(tabId);
+  }).catch(() => {
   });
   closeOffscreenAfterStop(stop);
 }
@@ -1126,53 +1295,650 @@ function registerLifecycleListeners() {
   });
 }
 
+// src/lib/knowledge-search.ts
+function fold(text) {
+  return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+function matchRanges(text, query) {
+  const needle = fold(query.trim());
+  if (!needle) return [];
+  const haystack = fold(text);
+  const ranges = [];
+  let from = 0;
+  while (from <= haystack.length - needle.length) {
+    const at = haystack.indexOf(needle, from);
+    if (at < 0) break;
+    ranges.push([at, at + needle.length]);
+    from = at + needle.length;
+  }
+  return ranges;
+}
+function matchesQuery(entry, query) {
+  return !!query.trim() && [entry.source, entry.target, entry.text].some((value) => value && fold(value).includes(fold(query.trim())));
+}
+function refKey(ref) {
+  return ref.kind === "transcript" ? JSON.stringify(["transcript", ref.recordId, ref.lineId]) : JSON.stringify(["note", ref.noteId, ref.entryId]);
+}
+function highlightEntry(entry, query) {
+  return { ...entry, highlights: { source: matchRanges(entry.source, query), target: matchRanges(entry.target, query), text: matchRanges(entry.text, query) } };
+}
+
+// src/ext/background/library-queue.ts
+var queue2 = Promise.resolve();
+function withLibraryOperation(operation) {
+  const run = queue2.catch(() => {
+  }).then(operation);
+  queue2 = run.catch(() => {
+  });
+  return run;
+}
+
+// src/ext/background/notes-store.ts
+var NOTES_STORAGE_KEY = "snooper.notes.v1";
+var INITIALIZED_KEY = "snooper.notes.initialized.v1";
+var MIGRATION_KEY = "snooper.notes.migration.v1";
+function validDocuments(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((note) => !!note && typeof note.id === "string" && Array.isArray(note.entries));
+}
+async function read(legacy) {
+  const got = await chrome.storage.local.get([NOTES_STORAGE_KEY, INITIALIZED_KEY, MIGRATION_KEY]);
+  if (got[INITIALIZED_KEY]) {
+    if (got[MIGRATION_KEY]) await chrome.storage.local.remove(MIGRATION_KEY);
+    return validDocuments(got[NOTES_STORAGE_KEY]);
+  }
+  const notes = Array.isArray(got[NOTES_STORAGE_KEY]) ? validDocuments(got[NOTES_STORAGE_KEY]) : validDocuments(got[MIGRATION_KEY] ?? legacy);
+  if (!Array.isArray(got[NOTES_STORAGE_KEY]) && notes.length === 0) return [];
+  if (notes.length) await chrome.storage.local.set({ [MIGRATION_KEY]: notes });
+  await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
+  if (notes.length) await chrome.storage.local.remove(MIGRATION_KEY);
+  return notes;
+}
+function withProvenance(notes) {
+  return notes.map((note) => ({ ...note, entries: note.entries.map((entry) => ({ ...entry, sourceRef: entry.sourceRef || legacySourceRef(entry.videoUrl || "", note.title, note.id) })) }));
+}
+function includesLegacySnapshot(notes, legacy) {
+  if (!Array.isArray(legacy) || legacy.length === 0 || validDocuments(legacy).length !== legacy.length) return false;
+  return legacy.every((old) => {
+    const saved = notes.find((note) => note.id === old.id);
+    if (!saved) return false;
+    const sameMetadata = Object.entries(old).every(([key, value]) => key === "entries" || key === "updatedAt" || JSON.stringify(saved[key]) === JSON.stringify(value));
+    return sameMetadata && old.entries.every((entry) => saved.entries.some((current) => JSON.stringify(current) === JSON.stringify(entry)));
+  });
+}
+function listNotesWithMigration(legacy) {
+  return withLibraryOperation(async () => {
+    const notes = await read(legacy);
+    return { notes: withProvenance(notes), legacyAcknowledged: includesLegacySnapshot(notes, legacy) };
+  });
+}
+function addNoteEntry(input) {
+  return withLibraryOperation(async () => {
+    if (!input || typeof input.noteId !== "string" || !input.noteId || typeof input.entry?.id !== "string" || !input.entry.id) throw new Error("\u7B14\u8BB0\u7F3A\u5C11\u7A33\u5B9A ID");
+    const entry = input.entry;
+    if (!["subtitle", "image", "svg", "screenshot", "text", "summary"].includes(entry.type) || !Number.isFinite(entry.at)) throw new Error("\u7B14\u8BB0\u7C7B\u578B\u6216\u65F6\u95F4\u65E0\u6548");
+    for (const field of ["source", "target", "text", "imageUrl", "svg", "speaker", "sourceLang", "targetLang", "videoUrl"]) {
+      if (entry[field] !== void 0 && typeof entry[field] !== "string") throw new Error("\u7B14\u8BB0\u6B63\u6587\u683C\u5F0F\u65E0\u6548");
+    }
+    if (entry.videoTime != null && (!Number.isFinite(entry.videoTime) || entry.videoTime < 0)) throw new Error("\u7B14\u8BB0\u89C6\u9891\u65F6\u95F4\u65E0\u6548");
+    const notes = await read();
+    let note = notes.find((n) => n.id === input.noteId);
+    if (!note) {
+      const now = Date.now();
+      note = { id: input.noteId, title: input.title || "\u7B14\u8BB0", createdAt: input.createdAt ?? now, updatedAt: now, entries: [], sessionInfo: input.sessionInfo };
+      notes.push(note);
+    }
+    if (note.entries.some((e) => e.id === input.entry.id)) return withProvenance(notes);
+    note.entries.push(structuredClone(input.entry));
+    note.updatedAt = Date.now();
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: notes, [INITIALIZED_KEY]: true });
+    return withProvenance(notes);
+  });
+}
+var notesUnderLibraryLock = {
+  async list() {
+    return withProvenance(await read());
+  },
+  async deleteSelection(noteId, entryIds, wholeDocument) {
+    const notes = await read();
+    const selected = notes.find((note) => note.id === noteId);
+    if (!selected) return;
+    selected.entries = selected.entries.filter((entry) => !entryIds.includes(entry.id));
+    selected.updatedAt = Date.now();
+    const next = wholeDocument && !selected.entries.length ? notes.filter((note) => note.id !== noteId) : notes;
+    await chrome.storage.local.set({ [NOTES_STORAGE_KEY]: next, [INITIALIZED_KEY]: true });
+  }
+};
+
+// src/lib/deep-link.ts
+function floorSeconds(seconds) {
+  return Math.max(0, Math.floor(seconds));
+}
+function videoDeepLink(url, seconds) {
+  if (!url || typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const t = floorSeconds(seconds);
+  if (bilibiliKey(parsed)) {
+    const part = bilibiliPart(parsed);
+    if (part === null) return null;
+    return `https://www.bilibili.com${parsed.pathname}?${parsed.searchParams.has("p") ? `p=${part}&` : ""}t=${t}`;
+  }
+  const yt = youtubeId(parsed);
+  if (yt) {
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") return `https://youtu.be/${yt}?t=${t}s`;
+    if (parsed.pathname.startsWith("/shorts/")) return `https://www.youtube.com/shorts/${yt}?t=${t}s`;
+    return `https://www.youtube.com/watch?v=${yt}&t=${t}s`;
+  }
+  return null;
+}
+
+// src/ext/background/source-opening.ts
+async function openSource(source, videoTime, tabId) {
+  let url;
+  try {
+    url = new URL(source?.url);
+  } catch {
+    return { ok: false, error: "\u6CA1\u6709\u53EF\u6253\u5F00\u7684\u6765\u6E90\u5730\u5740" };
+  }
+  if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: "\u6765\u6E90\u5730\u5740\u4EC5\u652F\u6301\u7F51\u9875\u94FE\u63A5" };
+  const exact = source.confidence === "exact" && sourceRefForUrl(source.url).key === source.key;
+  const anchored = exact && typeof videoTime === "number" && Number.isFinite(videoTime) && videoTime >= 0;
+  if (anchored && typeof tabId === "number") {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, { type: "SEEK_VIDEO", expectedSourceKey: source.key, seconds: videoTime });
+      if (response?.seek?.ok === true) return { ok: true, action: "seeked", time: response.seek.time };
+    } catch {
+    }
+  }
+  await chrome.tabs.create({ url: anchored ? videoDeepLink(source.url, videoTime) || source.url : source.url });
+  return { ok: true, action: "opened" };
+}
+
+// src/ext/background/library-store.ts
+var FAVORITES_KEY = "snooper.library.favorites.v1";
+var DELETIONS_KEY = "snooper.library.deletions.v1";
+var PREVIEW_PREFIX = "snooper.library.delete-preview.v1.";
+var LibraryError = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+  code;
+};
+function validId(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 1024;
+}
+function validateRef(value) {
+  if (!value || typeof value !== "object") throw new LibraryError("INVALID_INPUT", "\u6761\u76EE\u5F15\u7528\u65E0\u6548");
+  const ref = value;
+  if (ref.kind === "transcript" && validId(ref.recordId) && validId(ref.lineId)) return { kind: "transcript", recordId: ref.recordId, lineId: ref.lineId };
+  if (ref.kind === "note" && validId(ref.noteId) && validId(ref.entryId)) return { kind: "note", noteId: ref.noteId, entryId: ref.entryId };
+  throw new LibraryError("INVALID_INPUT", "\u6761\u76EE\u5F15\u7528\u65E0\u6548");
+}
+function validateSelection(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new LibraryError("INVALID_INPUT", "\u5220\u9664\u8303\u56F4\u65E0\u6548");
+  for (const values of [input.transcriptIds, input.noteIds]) if (values !== void 0 && (!Array.isArray(values) || !values.every(validId))) throw new LibraryError("INVALID_INPUT", "\u5220\u9664 ID \u65E0\u6548");
+  if (input.noteEntries !== void 0 && (!Array.isArray(input.noteEntries) || !input.noteEntries.every((e) => e && validId(e.noteId) && validId(e.entryId)))) throw new LibraryError("INVALID_INPUT", "\u7B14\u8BB0\u6761\u76EE ID \u65E0\u6548");
+  return { transcriptIds: [...new Set(input.transcriptIds || [])].sort(), noteIds: [...new Set(input.noteIds || [])].sort(), noteEntries: [...new Map((input.noteEntries || []).map((e) => [JSON.stringify([e.noteId, e.entryId]), { noteId: e.noteId, entryId: e.entryId }])).values()].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) };
+}
+function safeSource(source, url, title, fallback) {
+  if (source && typeof source.key === "string" && typeof source.url === "string" && typeof source.title === "string" && ["exact", "legacy", "unknown"].includes(source.confidence)) return { key: source.key, url: source.url, title: source.title, confidence: source.confidence };
+  return legacySourceRef(url, title, fallback);
+}
+function transcriptEntry(record, line) {
+  return { ref: { kind: "transcript", recordId: record.id, lineId: line.id }, sourceRef: safeSource(line.sourceRef || record.sourceRef, record.url, record.pageTitle, record.id), sourceEpoch: record.sourceEpoch, title: record.pageTitle, at: line.at, videoTime: line.videoTime ?? null, source: line.source, target: line.target, text: "", type: line.kind || "subtitle" };
+}
+function noteEntry(note, entry) {
+  return { ref: { kind: "note", noteId: note.id, entryId: entry.id }, sourceRef: safeSource(entry.sourceRef, entry.videoUrl || "", note.title, note.id), title: note.title, at: entry.at, videoTime: entry.videoTime ?? null, source: entry.source || "", target: entry.target || "", text: entry.text || "", type: entry.type };
+}
+async function favoritesUnderLibraryLock() {
+  const raw = (await chrome.storage.local.get(FAVORITES_KEY))[FAVORITES_KEY];
+  if (raw === void 0) return [];
+  if (!Array.isArray(raw)) throw new LibraryError("STORAGE_ERROR", "\u6536\u85CF\u6570\u636E\u65E0\u6CD5\u8BFB\u53D6\uFF0C\u8BF7\u91CD\u8BD5");
+  return raw.map((item) => ({ ref: validateRef(item.ref), createdAt: Number(item.createdAt) || 0 }));
+}
+async function operations() {
+  const value = (await chrome.storage.local.get(DELETIONS_KEY))[DELETIONS_KEY];
+  if (value !== void 0 && !Array.isArray(value)) throw new LibraryError("STORAGE_ERROR", "\u5220\u9664\u65E5\u5FD7\u65E0\u6CD5\u8BFB\u53D6\uFF0C\u8BF7\u91CD\u8BD5");
+  return value || [];
+}
+function affected(ref, target) {
+  return target.kind === "transcript" ? ref.kind === "transcript" && ref.recordId === target.recordId : ref.kind === "note" && ref.noteId === target.noteId && target.entryIds.includes(ref.entryId);
+}
+async function assertAvailable(ref) {
+  if ((await operations()).some((op) => op.pending.some((p) => affected(ref, p.target)))) throw new LibraryError("DELETE_PENDING", "\u6761\u76EE\u6B63\u5728\u5220\u9664\uFF0C\u8BF7\u5B8C\u6210\u6216\u91CD\u8BD5\u5220\u9664");
+}
+function listFavorites() {
+  return withLibraryOperation(favoritesUnderLibraryLock);
+}
+async function resolveEntry(ref) {
+  await assertAvailable(ref);
+  if (ref.kind === "note") {
+    const note = (await notesUnderLibraryLock.list()).find((n) => n.id === ref.noteId);
+    const index2 = note?.entries.findIndex((e) => e.id === ref.entryId) ?? -1;
+    if (!note || index2 < 0) throw new LibraryError("NOT_FOUND", "\u7B14\u8BB0\u6761\u76EE\u4E0D\u5B58\u5728\uFF0C\u8BF7\u5237\u65B0\u8D44\u6599\u5E93");
+    return { entry: noteEntry(note, note.entries[index2]), before: note.entries.slice(Math.max(0, index2 - 2), index2).map((e) => noteEntry(note, e)), after: note.entries.slice(index2 + 1, index2 + 3).map((e) => noteEntry(note, e)) };
+  }
+  const record = await getTranscriptRecord(ref.recordId);
+  if (!record) throw new LibraryError("NOT_FOUND", "\u8F6C\u5199\u6761\u76EE\u4E0D\u5B58\u5728\uFF0C\u8BF7\u5237\u65B0\u8D44\u6599\u5E93");
+  const entries = [];
+  for (let i = 0; i < record.chunkCount; i++) entries.push(...(await readTranscriptPage(record.id, i)).lines.map((line) => transcriptEntry(record, line)));
+  entries.sort((a, b) => a.at - b.at);
+  const index = entries.findIndex((e) => refKey(e.ref) === refKey(ref));
+  if (index < 0) throw new LibraryError("NOT_FOUND", "\u8F6C\u5199\u6761\u76EE\u4E0D\u5B58\u5728\uFF0C\u8BF7\u5237\u65B0\u8D44\u6599\u5E93");
+  return { entry: entries[index], before: entries.slice(Math.max(0, index - 2), index), after: entries.slice(index + 1, index + 3) };
+}
+function libraryContext(input) {
+  return withLibraryOperation(async () => {
+    const ref = validateRef(input);
+    const result = await resolveEntry(ref);
+    return { ...result, source: result.entry.sourceRef, favorite: (await favoritesUnderLibraryLock()).some((f) => refKey(f.ref) === refKey(ref)) };
+  });
+}
+function setFavorite(input, favorite) {
+  return withLibraryOperation(async () => {
+    const ref = validateRef(input);
+    if (typeof favorite !== "boolean") throw new LibraryError("INVALID_INPUT", "\u6536\u85CF\u72B6\u6001\u65E0\u6548");
+    await resolveEntry(ref);
+    const old = await favoritesUnderLibraryLock();
+    const next = old.filter((f) => refKey(f.ref) !== refKey(ref));
+    if (favorite) next.push(old.find((f) => refKey(f.ref) === refKey(ref)) || { ref, createdAt: Date.now() });
+    await chrome.storage.local.set({ [FAVORITES_KEY]: next });
+    return { ref, favorite };
+  });
+}
+async function preview(selection) {
+  const records = await listTranscripts(), notes = await notesUnderLibraryLock.list();
+  const targets = [], skipped = [];
+  for (const id of selection.transcriptIds || []) {
+    const record = records.find((r) => r.id === id);
+    if (!record || record.status === "recording") skipped.push({ kind: "transcript", id, reason: record ? "\u6B63\u5728\u5F55\u5236\uFF0C\u5DF2\u8DF3\u8FC7" : "\u8BB0\u5F55\u4E0D\u5B58\u5728" });
+    else targets.push({ kind: "transcript", recordId: id });
+  }
+  const noteIds = [.../* @__PURE__ */ new Set([...selection.noteIds || [], ...(selection.noteEntries || []).map((e) => e.noteId)])].sort();
+  for (const id of noteIds) {
+    const note = notes.find((n) => n.id === id);
+    if (!note) {
+      skipped.push({ kind: "note", id, reason: "\u7B14\u8BB0\u4E0D\u5B58\u5728" });
+      continue;
+    }
+    const wholeDocument = !!selection.noteIds?.includes(id);
+    const requested = selection.noteEntries?.filter((e) => e.noteId === id).map((e) => e.entryId) || [];
+    const entryIds = note.entries.filter((e) => wholeDocument || requested.includes(e.id)).map((e) => e.id).sort();
+    for (const missing of requested.filter((e) => !entryIds.includes(e))) skipped.push({ kind: "note", id: missing, reason: "\u7B14\u8BB0\u6761\u76EE\u4E0D\u5B58\u5728" });
+    if (wholeDocument || entryIds.length) targets.push({ kind: "note", noteId: id, entryIds, wholeDocument });
+  }
+  const favorites = (await favoritesUnderLibraryLock()).filter((f) => targets.some((t) => affected(f.ref, t))).sort((a, b) => refKey(a.ref).localeCompare(refKey(b.ref)));
+  return { selection, targets, skipped, favorites, signature: JSON.stringify({ targets, skipped, favorites }), expiresAt: Date.now() + 10 * 6e4 };
+}
+async function saveLibrarySessionCache(prefix, id, value) {
+  const registryKey = `${prefix}index`;
+  const raw = (await chrome.storage.session.get(registryKey))[registryKey];
+  const previous = Array.isArray(raw) ? raw.filter((item) => item && typeof item.id === "string" && /^[a-f\d-]{36}$/.test(item.id) && Number.isFinite(item.expiresAt)) : [];
+  const retained = previous.filter((item) => item.id !== id && item.expiresAt > Date.now()).slice(-15);
+  const expired = previous.filter((item) => item.id !== id && !retained.some((kept) => kept.id === item.id));
+  if (expired.length) await chrome.storage.session.remove(expired.map((item) => prefix + item.id));
+  await chrome.storage.session.set({ [prefix + id]: value, [registryKey]: [...retained, { id, expiresAt: value.expiresAt }] });
+}
+function prepareDelete(input) {
+  return withLibraryOperation(async () => {
+    const value = await preview(validateSelection(input)), token = crypto.randomUUID();
+    await saveLibrarySessionCache(PREVIEW_PREFIX, token, value);
+    return { token, targets: value.targets, favoriteCount: value.favorites.length, skipped: value.skipped, expiresAt: value.expiresAt };
+  });
+}
+async function saveOperation(operation) {
+  const all = await operations();
+  await chrome.storage.local.set({ [DELETIONS_KEY]: [...all.filter((o) => o.operationId !== operation.operationId), operation] });
+}
+async function reconcileDeletedOwners(operation, owners) {
+  let changed = false;
+  for (const binding of operation.transcriptBindings || []) {
+    if (!operation.targets.some((target) => target.kind === "transcript" && target.recordId === binding.recordId)) continue;
+    const candidates = owners.filter((owner) => allSourceSessions(owner).some((epoch) => epoch.transcriptId === binding.recordId));
+    if (!candidates.length) continue;
+    if (await getTranscriptRecord(binding.recordId)) continue;
+    for (const owner of candidates) {
+      if (detachDeletedTranscript(owner, binding)) {
+        changed = true;
+        pushSession(owner.tabId);
+      }
+    }
+  }
+  if (changed) await persistSessionsStrict();
+}
+function reconcileDeletedTranscriptOwners(owner) {
+  return withLibraryOperation(async () => {
+    for (const operation of await operations()) await reconcileDeletedOwners(operation, [owner]);
+  });
+}
+async function execute(operation) {
+  for (const target of [...operation.pending.map((p) => p.target)]) {
+    try {
+      if (target.kind === "transcript") {
+        const result = await deleteTranscripts([target.recordId]);
+        if (result.skipped) throw new Error("\u8BB0\u5F55\u6B63\u5728\u5F55\u5236\uFF0C\u5C1A\u672A\u5220\u9664");
+        if (await getTranscriptRecord(target.recordId)) throw new Error("\u8F6C\u5199\u5220\u9664\u5C1A\u672A\u5B8C\u6210");
+      } else await notesUnderLibraryLock.deleteSelection(target.noteId, target.entryIds, target.wholeDocument);
+      const favorites = await favoritesUnderLibraryLock();
+      await chrome.storage.local.set({ [FAVORITES_KEY]: favorites.filter((f) => !affected(f.ref, target)) });
+      if (target.kind === "transcript") await reconcileDeletedOwners(operation, [...sessions.values()]);
+      operation.pending = operation.pending.filter((p) => JSON.stringify(p.target) !== JSON.stringify(target));
+      operation.completed.push(target);
+    } catch (error) {
+      const item = operation.pending.find((p) => JSON.stringify(p.target) === JSON.stringify(target));
+      if (item) item.error = error instanceof Error ? error.message : String(error);
+    }
+    try {
+      await saveOperation(operation);
+    } catch (error) {
+      const durable = (await operations()).find((o) => o.operationId === operation.operationId);
+      if (!durable) throw error;
+      return { operationId: durable.operationId, completed: durable.completed, pending: durable.pending.map((p) => ({ ...p, error: "\u5220\u9664\u8FDB\u5EA6\u672A\u80FD\u4FDD\u5B58\uFF0C\u8BF7\u91CD\u8BD5" })), skipped: durable.skipped };
+    }
+  }
+  return { operationId: operation.operationId, completed: operation.completed, pending: operation.pending, skipped: operation.skipped };
+}
+function confirmDelete(token) {
+  return withLibraryOperation(async () => {
+    if (!validId(token)) throw new LibraryError("INVALID_INPUT", "\u5220\u9664\u786E\u8BA4\u65E0\u6548");
+    const existing = (await operations()).find((o) => o.operationId === token);
+    if (existing) return execute(existing);
+    const saved = (await chrome.storage.session.get(PREVIEW_PREFIX + token))[PREVIEW_PREFIX + token];
+    if (!saved || saved.expiresAt < Date.now()) throw new LibraryError("CONFIRMATION_STALE", "\u5220\u9664\u786E\u8BA4\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u786E\u8BA4");
+    if ((await preview(saved.selection)).signature !== saved.signature) throw new LibraryError("CONFIRMATION_STALE", "\u8D44\u6599\u6216\u6536\u85CF\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u786E\u8BA4\u5220\u9664\u8303\u56F4");
+    const operation = { operationId: token, targets: saved.targets, createdAt: Date.now(), completed: [], pending: saved.targets.map((target) => ({ target, error: "" })), skipped: saved.skipped };
+    operation.transcriptBindings = [];
+    for (const target of operation.targets) {
+      if (target.kind !== "transcript") continue;
+      const record = await getTranscriptRecord(target.recordId);
+      if (record?.sourceEpoch && record.sourceRef) operation.transcriptBindings.push({ recordId: record.id, tabId: record.tabId, sourceEpoch: record.sourceEpoch, sourceKey: record.sourceRef.key });
+    }
+    await saveOperation(operation);
+    await chrome.storage.session.remove(PREVIEW_PREFIX + token);
+    return execute(operation);
+  });
+}
+function retryDelete(operationId) {
+  return withLibraryOperation(async () => {
+    if (!validId(operationId)) throw new LibraryError("INVALID_INPUT", "\u5220\u9664\u64CD\u4F5C ID \u65E0\u6548");
+    const operation = (await operations()).find((o) => o.operationId === operationId);
+    if (!operation) throw new LibraryError("NOT_FOUND", "\u5220\u9664\u64CD\u4F5C\u4E0D\u5B58\u5728\uFF0C\u8BF7\u5237\u65B0\u8D44\u6599\u5E93");
+    return execute(operation);
+  });
+}
+function recoverLibraryDeletions() {
+  return withLibraryOperation(async () => {
+    for (const operation of await operations()) if (operation.pending.length) await execute(operation);
+  });
+}
+function libraryUsage() {
+  return withLibraryOperation(async () => {
+    const errors = [];
+    async function stat(area, read2) {
+      try {
+        return await read2();
+      } catch (error) {
+        errors.push({ area, message: error instanceof Error ? error.message : String(error) });
+        return null;
+      }
+    }
+    const deletions = await stat("deletions", operations);
+    const transcripts = await stat("transcripts", listTranscripts);
+    const notes = await stat("notes", notesUnderLibraryLock.list);
+    const favorites = await stat("favorites", favoritesUnderLibraryLock);
+    const migration = await stat("noteMigration", async () => !!(await chrome.storage.local.get("snooper.notes.migration.v1"))["snooper.notes.migration.v1"]);
+    const pending2 = [...sessions.values()].flatMap(allSourceSessions).filter((s) => s.pendingTranscriptLines?.length);
+    const bytes = await stat("bytes", () => chrome.storage.local.getBytesInUse(null));
+    return {
+      complete: errors.length === 0,
+      errors,
+      bytes,
+      transcriptCount: transcripts?.length ?? null,
+      noteCount: notes?.length ?? null,
+      noteEntryCount: notes ? notes.reduce((sum, note) => sum + note.entries.length, 0) : null,
+      favoriteCount: favorites?.length ?? null,
+      pendingWrites: { transcriptLines: pending2.reduce((sum, s) => sum + s.pendingTranscriptLines.length, 0), sessions: pending2.length, noteMigration: migration },
+      pendingDeletes: deletions ? deletions.filter((o) => o.pending.length).map(({ operationId, completed, pending: pending3, skipped }) => ({ operationId, completed, pending: pending3, skipped })) : null
+    };
+  });
+}
+function openLibrarySource(input, tabId) {
+  return withLibraryOperation(async () => {
+    let source, seconds;
+    if (input.ref) {
+      const result2 = await resolveEntry(validateRef(input.ref));
+      source = result2.entry.sourceRef;
+      seconds = result2.entry.videoTime;
+    } else {
+      if (!validId(input.recordId)) throw new LibraryError("INVALID_INPUT", "\u7F3A\u5C11\u5DF2\u4FDD\u5B58\u7684\u6765\u6E90\u5F15\u7528");
+      const record = await getTranscriptRecord(input.recordId);
+      if (!record) throw new LibraryError("NOT_FOUND", "\u6765\u6E90\u8BB0\u5F55\u4E0D\u5B58\u5728");
+      source = safeSource(record.sourceRef, record.url, record.pageTitle, record.id);
+      if (input.seconds != null && (typeof input.seconds !== "number" || !Number.isFinite(input.seconds) || input.seconds < 0)) throw new LibraryError("INVALID_INPUT", "\u6765\u6E90\u65F6\u95F4\u65E0\u6548");
+      seconds = input.seconds ?? null;
+    }
+    const result = await openSource(source, seconds, tabId);
+    return { ...result, ...source.confidence !== "exact" || seconds === null ? { degraded: "\u672A\u4FDD\u5B58\u53EF\u9760\u64AD\u653E\u4F4D\u7F6E\uFF0C\u5DF2\u6253\u5F00\u6765\u6E90\u9875\u9762" } : {} };
+  });
+}
+async function deletingTargetsUnderLibraryLock() {
+  return (await operations()).flatMap((operation) => operation.pending.map((item) => item.target));
+}
+function entryIsDeleting(ref, targets) {
+  return targets.some((target) => affected(ref, target));
+}
+
+// src/lib/keyed-task.ts
+function runKeyedTask(tasks, key, mode, task) {
+  const previous = tasks.get(key);
+  if (mode === "share" && previous) return previous;
+  const run = mode === "queue" && previous ? previous.catch(() => void 0).then(task) : task();
+  tasks.set(key, run);
+  const settle = () => {
+    if (tasks.get(key) === run) tasks.delete(key);
+  };
+  run.then(settle, settle);
+  return run;
+}
+
+// src/ext/background/source-sessions.ts
+var transitions = /* @__PURE__ */ new Map();
+function bindInitialSource(s, url, title) {
+  s.sourceEpoch = crypto.randomUUID();
+  s.sourceIdentity = videoKeyForUrl(url);
+  s.sourceRef = sourceRefForUrl(url, title, s.sourceEpoch);
+  s.retiringSources = [];
+}
+function findSourceSession(s, epoch) {
+  if (typeof epoch !== "string") return void 0;
+  return allSourceSessions(s).find((item) => item.sourceEpoch === epoch && !item.sourceDrained);
+}
+async function failSourceBinding(s) {
+  s.state = "error";
+  s.streamingSubtitle = null;
+  markTranscriptSaveError(s, "\u8BFE\u8282\u6765\u6E90\u65E0\u6CD5\u6838\u9A8C\uFF0C\u5DF2\u505C\u6B62\u91C7\u96C6\u3002\u8BF7\u91CD\u65B0\u5F00\u59CB\u5F55\u97F3");
+  await sendToOffscreen({ type: "STOP_CAPTURE", tabId: s.tabId, generation: s.generation }).catch(() => {
+  });
+}
+function transitionSource(tabId, source) {
+  return runKeyedTask(transitions, tabId, "queue", async () => {
+    const previous = sessions.get(tabId);
+    if (!previous || previous.state !== "running") return previous;
+    const identity = videoKeyForUrl(source.url);
+    if (previous.sourceIdentity === identity) return previous;
+    if (!previous.sourceEpoch || !previous.sourceRef) {
+      await failSourceBinding(previous);
+      throw new Error("\u7F3A\u5C11\u65E7\u8BFE\u8282\u7ED1\u5B9A\uFF0C\u8BF7\u91CD\u65B0\u5F00\u59CB\u5F55\u97F3");
+    }
+    const generation = previous.generation;
+    const previousSourceEpoch = previous.sourceEpoch;
+    const sourceEpoch = crypto.randomUUID();
+    const ownsTransition = (owner, epoch) => sessions.get(tabId) === owner && owner.state === "running" && owner.generation === generation && owner.sourceEpoch === epoch;
+    const next = {
+      ...previous,
+      sourceEpoch,
+      sourceIdentity: identity,
+      sourceRef: sourceRefForUrl(source.url, source.title, sourceEpoch),
+      sourceDrained: false,
+      retiringSources: [...previous.retiringSources || [], previous],
+      transcriptId: null,
+      subtitles: [],
+      pendingTranscriptLines: [],
+      streamingSubtitle: null,
+      saveState: { status: "saved" },
+      lastScreenAt: 0,
+      messages: [],
+      agentSessionId: null,
+      chatSourceRef: void 0,
+      pendingAskRequestId: null
+    };
+    previous.pendingAskRequestId = null;
+    let installed = false;
+    try {
+      const paused = await sendToOffscreen({ type: "PREPARE_CAPTURE_SOURCE", tabId, generation, sourceEpoch: previousSourceEpoch });
+      if (!ownsTransition(previous, previousSourceEpoch)) return sessions.get(tabId);
+      if (!paused?.ok) throw new Error(paused?.error || "\u65E0\u6CD5\u6682\u505C\u8BFE\u8282\u8FB9\u754C\u91C7\u96C6");
+      await ensureTranscript(next);
+      if (!ownsTransition(previous, previousSourceEpoch)) {
+        await finishSessionTranscript({ ...next, retiringSources: [] });
+        return sessions.get(tabId);
+      }
+      previous.retiringSources = [];
+      sessions.set(tabId, next);
+      installed = true;
+      await persistSessionsStrict();
+      if (!ownsTransition(next, sourceEpoch)) return sessions.get(tabId);
+      const reply = await sendToOffscreen({ type: "SET_CAPTURE_SOURCE", tabId, generation, previousSourceEpoch, sourceEpoch, sourceRef: next.sourceRef });
+      if (!ownsTransition(next, sourceEpoch)) return sessions.get(tabId);
+      if (!reply?.ok) throw new Error(reply?.error || "\u8BFE\u8282\u5207\u6362\u672A\u786E\u8BA4");
+      pushSession(tabId);
+      return next;
+    } catch (error) {
+      if (!ownsTransition(installed ? next : previous, installed ? sourceEpoch : previousSourceEpoch)) return sessions.get(tabId);
+      sessions.set(tabId, next);
+      markTranscriptSaveError(next, error);
+      await failSourceBinding(next);
+      throw error;
+    }
+  });
+}
+async function drainSource(s, sourceEpoch) {
+  const retired = (s.retiringSources || []).find((item) => item.sourceEpoch === sourceEpoch);
+  if (!retired) return;
+  retired.sourceDrained = true;
+  await finishSessionTranscript(retired);
+  if (retired.sourceEpoch) resetSourceVideoClock(s.tabId, retired.sourceEpoch);
+  retired.subtitles = [];
+  retired.messages = [];
+  retired.configSnapshot = null;
+  retired.streamId = "";
+  await persistSessionsStrict();
+  pushSession(s.tabId);
+}
+
 // src/ext/background/recovery.ts
-async function readLiveGenerations() {
-  if (!await hasOffscreenDocument()) return {};
+async function readLiveCapture() {
+  if (!await hasOffscreenDocument()) return { sessions: {} };
   try {
     const live = await chrome.runtime.sendMessage({
       target: "offscreen",
       type: "GET_CAPTURE_SESSIONS"
     });
     if (live?.ok && live.sessions && typeof live.sessions === "object") {
-      return live.sessions;
+      return live;
     }
   } catch {
   }
-  return {};
+  return { sessions: {} };
 }
 async function recoverSessions() {
+  await recoverLibraryDeletions().catch((error) => console.warn("[RTTS] library deletion recovery pending:", error));
   try {
-    const liveGenerations = await readLiveGenerations();
-    const liveTranscripts = await recoverTranscripts(liveGenerations);
+    const live = await readLiveCapture();
+    const liveGenerations = live.sessions;
     const result = await chrome.storage.session.get(SESSION_RECOVERY_KEY);
-    if (!result[SESSION_RECOVERY_KEY]) return;
-    const recovered = JSON.parse(result[SESSION_RECOVERY_KEY]);
+    const recovered = result[SESSION_RECOVERY_KEY] ? JSON.parse(result[SESSION_RECOVERY_KEY]) : {};
+    const recoveryGenerations = { ...liveGenerations };
+    for (const [tab, stored] of Object.entries(recovered)) {
+      const s = stored;
+      if (s.transcriptFinalizationPending) s.pendingCaptureStopGeneration ??= s.stoppedGeneration;
+      if (s.pendingCaptureStopGeneration !== void 0 || allSourceSessions(s).some((epoch) => epoch.pendingTranscriptLines?.length)) recoveryGenerations[tab] = s.pendingCaptureStopGeneration ?? s.stoppedGeneration ?? s.generation;
+    }
+    let recoveryError;
+    const liveTranscripts = await recoverTranscripts(recoveryGenerations, Object.values(recovered).flatMap((stored) => {
+      const s = stored;
+      return allSourceSessions(s).flatMap((epoch) => (s.pendingCaptureStopGeneration !== void 0 || epoch.pendingTranscriptLines?.length) && epoch.transcriptId ? [epoch.transcriptId] : []);
+    })).catch((error) => {
+      recoveryError = error;
+      return /* @__PURE__ */ new Map();
+    });
+    for (const [tab, stored] of Object.entries(recovered)) sessions.set(Number(tab), stored);
     for (const [tabIdStr, stored] of Object.entries(recovered)) {
       const tabId = Number(tabIdStr);
       const s = stored;
       const liveGeneration = liveGenerations[String(tabId)];
       const liveTranscriptId = liveTranscripts.get(tabId) || null;
       if (typeof liveGeneration === "number") {
+        if (s.transcriptFinalizationPending) s.pendingCaptureStopGeneration ??= liveGeneration;
         s.state = "running";
         s.generation = liveGeneration;
         s.stoppedGeneration = void 0;
         s.streamId = "";
-        s.transcriptId = liveTranscriptId;
+        if (!s.sourceEpoch) s.transcriptId = liveTranscriptId || s.transcriptId;
       } else if (s.state === "running" || s.state === "starting" || s.state === "stopping") {
         s.state = "idle";
         s.stoppedGeneration = void 0;
         s.streamId = "";
         s.configSnapshot = null;
         s.streamingSubtitle = null;
-        s.transcriptId = null;
-      } else if (liveTranscriptId) {
+        if (!s.sourceEpoch && !recoveryError && !s.pendingTranscriptLines?.length) s.transcriptId = null;
+      } else if (!s.sourceEpoch && liveTranscriptId) {
         s.transcriptId = liveTranscriptId;
       }
+      s.pendingTranscriptLines ||= [];
+      s.saveState ||= { status: "saved" };
       sessions.set(tabId, s);
+      await reconcileDeletedTranscriptOwners(s).catch((error) => markTranscriptSaveError(s, error));
+      if (recoveryError) markTranscriptSaveError(s, recoveryError);
+      else if (s.pendingCaptureStopGeneration !== void 0) markTranscriptSaveError(s, "\u4E0A\u6B21\u505C\u6B62\u91C7\u96C6\u672A\u786E\u8BA4");
+      else if (allSourceSessions(s).some((epoch) => epoch.pendingTranscriptLines?.length)) markTranscriptSaveError(s, "\u4E0A\u6B21\u4FDD\u5B58\u4E2D\u65AD");
+      for (const owner of allSourceSessions(s)) {
+        await validateSessionTranscriptOwnership(owner).catch((error) => markTranscriptSaveError(owner, error));
+      }
+      if (typeof liveGeneration === "number" && !s.sourceEpoch) await failSourceBinding(s);
+      if (typeof liveGeneration === "number" && s.sourceEpoch) {
+        const provenance = live.sources?.[tabIdStr];
+        let valid = provenance?.sourceEpoch === s.sourceEpoch && s.generation === liveGeneration;
+        for (const [epoch, binding] of Object.entries(provenance?.bindings || {})) {
+          const owner = allSourceSessions(s).find((item) => item.sourceEpoch === epoch);
+          const record = owner?.transcriptId ? await getTranscriptRecord(owner.transcriptId) : null;
+          if (!owner || !record || record.sourceEpoch !== epoch || record.generation !== liveGeneration || record.sourceRef?.key !== binding.sourceRef?.key || owner.sourceRef?.key !== binding.sourceRef?.key || (binding.pending > 0 || epoch === s.sourceEpoch) && record.status !== "recording") valid = false;
+        }
+        if (!provenance?.bindings?.[s.sourceEpoch]) valid = false;
+        if (!valid) await failSourceBinding(s);
+        else if (s.pendingCaptureStopGeneration === void 0) {
+          for (const epoch of s.retiringSources || []) {
+            if (epoch.sourceEpoch && provenance?.bindings?.[epoch.sourceEpoch]?.pending === 0) await drainSource(s, epoch.sourceEpoch).catch((error) => markTranscriptSaveError(epoch, error));
+          }
+        }
+      }
       pushSession(tabId);
     }
-  } catch {
+    for (const tab of Object.keys(liveGenerations)) {
+      if (sessions.has(Number(tab))) continue;
+      const orphan = createSession(Number(tab));
+      orphan.generation = liveGenerations[tab];
+      await failSourceBinding(orphan);
+    }
+  } catch (error) {
+    console.warn("[RTTS] session recovery failed:", error);
   }
 }
 
@@ -1193,170 +1959,184 @@ function registerOffscreenEventRouter() {
     if (sender.url !== chrome.runtime.getURL(OFFSCREEN_PATH)) {
       return false;
     }
-    switch (message.type) {
-      case "CAPTURE_AUDIO_STATE": {
-        const s = sessions.get(message.tabId);
-        if (s && s.generation === message.generation) {
-          const next = !!message.silent;
-          if (s.audioSilent !== next) {
-            s.audioSilent = next;
-            pushSession(message.tabId);
-          }
-        }
-        sendResponse({ ok: true });
-        return false;
-      }
-      case "CAPTURE_KEEPALIVE": {
-        const s = sessions.get(message.tabId);
-        if (s && s.state === "starting" && s.generation === message.generation) {
-          s.state = "running";
+    void waitForRecovery().then(() => {
+      if (handleEvent(message, sendResponse) !== true) sendResponse({ ok: true });
+    }).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  });
+}
+function handleEvent(message, sendResponse) {
+  switch (message.type) {
+    case "CAPTURE_SOURCE_DRAINED": {
+      const s = sessions.get(message.tabId);
+      if (!s || s.generation !== message.generation && !isStoppingGeneration(s, message.generation)) return false;
+      void drainSource(s, message.sourceEpoch).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+    }
+    case "CAPTURE_AUDIO_STATE": {
+      const s = sessions.get(message.tabId);
+      if (s && s.generation === message.generation && (!s.sourceEpoch || s.sourceEpoch === message.sourceEpoch)) {
+        const next = !!message.silent;
+        if (s.audioSilent !== next) {
+          s.audioSilent = next;
           pushSession(message.tabId);
         }
-        sendResponse({ ok: true });
+      }
+      return false;
+    }
+    case "CAPTURE_KEEPALIVE": {
+      const s = sessions.get(message.tabId);
+      if (s && s.state === "starting" && s.generation === message.generation) {
+        s.state = "running";
+        pushSession(message.tabId);
+      }
+      return false;
+    }
+    case "CAPTURE_ENDED": {
+      const s = sessions.get(message.tabId);
+      if (s && s.generation === message.generation && (s.state === "running" || s.state === "starting")) {
+        s.state = "idle";
+        s.streamId = "";
+        s.configSnapshot = null;
+        s.streamingSubtitle = null;
+        s.audioSilent = false;
+        s.screenCaption = "off";
+        s.screenCaptionError = "";
+        if (s.transcriptId || s.subtitles.length > 0) {
+          void finishSessionTranscript(s).catch(() => {
+          });
+        }
+        pushSession(message.tabId);
+        maybeCloseOffscreen();
+      }
+      return false;
+    }
+    case "CAPTURE_SUBTITLE_STREAMING": {
+      const s = sessions.get(message.tabId);
+      if (!s || s.generation !== message.generation || s.sourceEpoch && s.sourceEpoch !== message.sourceEpoch) {
         return false;
       }
-      case "CAPTURE_ENDED": {
-        const s = sessions.get(message.tabId);
-        if (s && s.generation === message.generation && (s.state === "running" || s.state === "starting")) {
-          s.state = "idle";
-          s.streamId = "";
-          s.configSnapshot = null;
-          s.streamingSubtitle = null;
-          s.audioSilent = false;
-          s.screenCaption = "off";
-          s.screenCaptionError = "";
-          if (s.transcriptId || s.subtitles.length > 0) {
-            void finalizeSessionTranscript(s);
-          }
-          pushSession(message.tabId);
-          maybeCloseOffscreen();
-        }
-        sendResponse({ ok: true });
+      if (s.state !== "running" && s.state !== "starting") {
         return false;
       }
-      case "CAPTURE_SUBTITLE_STREAMING": {
-        const s = sessions.get(message.tabId);
-        if (!s || s.generation !== message.generation) {
-          return false;
-        }
-        if (s.state !== "running" && s.state !== "starting") {
-          return false;
-        }
-        if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
-          return false;
-        }
-        if (!message.source && !message.partialTarget) {
-          if (!s.streamingSubtitle || s.streamingSubtitle.at === message.at) {
-            s.streamingSubtitle = null;
-          }
-        } else {
-          s.streamingSubtitle = {
-            at: message.at || Date.now(),
-            source: message.source || "",
-            partialTarget: message.partialTarget || "",
-            latency: message.latency || 0
-          };
-        }
-        pushStreamingUpdate(message.tabId);
+      if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
         return false;
       }
-      case "CAPTURE_SUBTITLE": {
-        const s = sessions.get(message.tabId);
-        if (!s || s.generation !== message.generation && !isStoppingGeneration(s, message.generation)) {
-          return false;
-        }
-        if (shouldYieldAudio(s.lastScreenAt, Date.now())) {
-          return false;
-        }
-        const tail = s.generation !== message.generation;
-        const at = message.at || Date.now();
-        if (s.streamingSubtitle && s.streamingSubtitle.at === at) {
+      if (!message.source && !message.partialTarget) {
+        if (!s.streamingSubtitle || s.streamingSubtitle.at === message.at) {
           s.streamingSubtitle = null;
         }
-        const entry = {
-          id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-          at,
-          endedAt: message.endedAt || null,
-          videoTime: resolveVideoTimeAt2(message.tabId, at),
+      } else {
+        s.streamingSubtitle = {
+          at: message.at || Date.now(),
           source: message.source || "",
-          target: message.target || "",
+          partialTarget: message.partialTarget || "",
           latency: message.latency || 0
         };
-        insertByStart(s.subtitles, entry);
-        if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
-          s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
-        }
-        if (s.transcriptId) {
-          void appendTranscriptLine(s.transcriptId, entry);
-        } else if (!tail) {
-          void ensureTranscript(s).then((id) => {
-            if (id) void appendTranscriptLine(id, entry);
-          });
-        }
-        if (!tail) pushSession(message.tabId);
-        return false;
       }
-      case "CAPTURE_SCREEN_SUBTITLE": {
-        const s = sessions.get(message.tabId);
-        if (!s || s.generation !== message.generation) return false;
-        if (s.state !== "running" && s.state !== "starting") return false;
-        s.lastScreenAt = Date.now();
-        s.streamingSubtitle = null;
-        if (!message.source || message.duplicate) {
-          pushStreamingUpdate(message.tabId);
-          return false;
-        }
-        const at = message.at || Date.now();
-        const entry = {
-          id: `scr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-          at,
-          endedAt: null,
-          videoTime: resolveVideoTimeAt2(message.tabId, at),
-          source: message.source || "",
-          target: message.target || "",
-          latency: message.latency || 0,
-          kind: "screen"
-        };
-        insertByStart(s.subtitles, entry);
-        if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
-          s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
-        }
-        if (s.transcriptId) {
-          void appendTranscriptLine(s.transcriptId, entry);
-        } else {
-          void ensureTranscript(s).then((id) => {
-            if (id) void appendTranscriptLine(id, entry);
-          });
-        }
-        pushSession(message.tabId);
-        return false;
-      }
-      case "CAPTURE_SCREEN_STATUS": {
-        const s = sessions.get(message.tabId);
-        if (!s || s.generation !== message.generation) return false;
-        s.screenCaption = message.status === "active" ? "on" : message.status === "error" ? "error" : "off";
-        s.screenCaptionError = message.error || "";
-        pushSession(message.tabId);
-        return false;
-      }
-      case "CAPTURE_ERROR": {
-        const s = sessions.get(message.tabId);
-        if (!s || s.generation !== message.generation) return false;
-        s.state = "error";
-        s.streamingSubtitle = null;
-        if (s.transcriptId || s.subtitles.length > 0) {
-          void finalizeSessionTranscript(s);
-        }
-        pushStreamingUpdate(message.tabId);
-        pushSession(message.tabId);
-        return false;
-      }
-      case "ASK_RESULT": {
-        return false;
-      }
+      pushStreamingUpdate(message.tabId);
+      return false;
     }
-    return false;
-  });
+    case "CAPTURE_SUBTITLE": {
+      const active = sessions.get(message.tabId);
+      if (active && active.state !== "running" && active.state !== "starting" && active.state !== "stopping") return false;
+      const s = active ? findSourceSession(active, message.sourceEpoch) : void 0;
+      if (active && !s && active.generation === message.generation) {
+        void failSourceBinding(active);
+        return false;
+      }
+      if (!s || s.generation !== message.generation && !isStoppingGeneration(active, message.generation)) {
+        return false;
+      }
+      if (s.state !== "running" && s.state !== "starting" && s.state !== "stopping") return false;
+      if (s === active && shouldYieldAudio(s.lastScreenAt, Date.now())) {
+        return false;
+      }
+      const tail = s !== active || active.generation !== message.generation;
+      const at = message.at || Date.now();
+      if (s.streamingSubtitle && s.streamingSubtitle.at === at) {
+        s.streamingSubtitle = null;
+      }
+      const entry = {
+        id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        at,
+        endedAt: message.endedAt || null,
+        videoTime: resolveVideoTimeAt2(message.tabId, at, s.sourceEpoch),
+        sourceRef: s.sourceRef,
+        source: message.source || "",
+        target: message.target || "",
+        latency: message.latency || 0
+      };
+      insertByStart(s.subtitles, entry);
+      if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
+        s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
+      }
+      saveSessionSubtitle(s, entry);
+      if (!tail) pushSession(message.tabId);
+      return false;
+    }
+    case "CAPTURE_SCREEN_SUBTITLE": {
+      const active = sessions.get(message.tabId);
+      if (active && active.state !== "running" && active.state !== "starting" && active.state !== "stopping") return false;
+      const s = active ? findSourceSession(active, message.sourceEpoch) : void 0;
+      if (active && !s && active.generation === message.generation) {
+        void failSourceBinding(active);
+        return false;
+      }
+      if (!s || s.generation !== message.generation) return false;
+      if (s.state !== "running" && s.state !== "starting") return false;
+      s.lastScreenAt = Date.now();
+      s.streamingSubtitle = null;
+      if (!message.source || message.duplicate) {
+        if (s === active) pushStreamingUpdate(message.tabId);
+        return false;
+      }
+      const at = message.at || Date.now();
+      const entry = {
+        id: `scr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        at,
+        endedAt: null,
+        videoTime: resolveVideoTimeAt2(message.tabId, at, s.sourceEpoch),
+        sourceRef: s.sourceRef,
+        source: message.source || "",
+        target: message.target || "",
+        latency: message.latency || 0,
+        kind: "screen"
+      };
+      insertByStart(s.subtitles, entry);
+      if (s.subtitles.length > LIVE_SUBTITLE_WINDOW) {
+        s.subtitles = s.subtitles.slice(-LIVE_SUBTITLE_WINDOW);
+      }
+      saveSessionSubtitle(s, entry);
+      if (s === active) pushSession(message.tabId);
+      return false;
+    }
+    case "CAPTURE_SCREEN_STATUS": {
+      const s = sessions.get(message.tabId);
+      if (!s || s.generation !== message.generation) return false;
+      s.screenCaption = message.status === "active" ? "on" : message.status === "error" ? "error" : "off";
+      s.screenCaptionError = message.error || "";
+      pushSession(message.tabId);
+      return false;
+    }
+    case "CAPTURE_ERROR": {
+      const s = sessions.get(message.tabId);
+      if (!s || s.generation !== message.generation || message.sourceEpoch && s.sourceEpoch !== message.sourceEpoch) return false;
+      s.state = "error";
+      s.streamingSubtitle = null;
+      if (s.transcriptId || s.subtitles.length > 0) {
+        void finishSessionTranscript(s).catch(() => {
+        });
+      }
+      pushStreamingUpdate(message.tabId);
+      pushSession(message.tabId);
+      return false;
+    }
+    case "ASK_RESULT": {
+      return false;
+    }
+  }
+  return false;
 }
 
 // src/ext/background/router/capture.ts
@@ -1459,8 +2239,175 @@ var configHandlers = {
   }
 };
 
+// src/ext/background/library-search.ts
+var PREFIX = "snooper.library.search.v1.";
+var WORK_UNITS = 4;
+function scopeSignature(scopes) {
+  return JSON.stringify(scopes.map((scope) => scope.kind === "note" ? [scope.kind, scope.id, scope.title, scope.count, scope.entryIds, scope.updatedAt] : [scope.kind, scope.id, scope.title, scope.count]));
+}
+function parseCursor(cursor) {
+  if (typeof cursor !== "string") throw new LibraryError("INVALID_INPUT", "\u67E5\u8BE2\u6E38\u6807\u5FC5\u987B\u662F\u6587\u672C");
+  const match = /^([a-f\d-]{36}):(\d+)$/.exec(cursor);
+  if (!match) throw new LibraryError("CURSOR_EXPIRED", "\u67E5\u8BE2\u6E38\u6807\u65E0\u6548\u6216\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u67E5\u8BE2");
+  return { id: match[1], step: Number(match[2]) };
+}
+function cancelSearch(cursor) {
+  return withLibraryOperation(async () => {
+    const { id } = parseCursor(cursor);
+    await chrome.storage.session.remove(PREFIX + id);
+  });
+}
+function searchLibrary(input) {
+  return withLibraryOperation(async () => {
+    if (!input || typeof input.query !== "string" || typeof input.favoritesOnly !== "boolean" || input.cursor !== void 0 && typeof input.cursor !== "string") throw new LibraryError("INVALID_INPUT", "\u67E5\u8BE2\u53C2\u6570\u65E0\u6548");
+    const query = input.query.trim();
+    const records = await listTranscripts(), notes = await notesUnderLibraryLock.list();
+    const favorites = (await favoritesUnderLibraryLock()).map((f) => refKey(f.ref)).sort();
+    const deleting = await deletingTargetsUnderLibraryLock();
+    const scopes = [...records.map((r) => ({ kind: "transcript", id: r.id, title: r.pageTitle, count: r.subtitleCount })), ...notes.map((n) => ({ kind: "note", id: n.id, title: n.title, count: n.entries.length, entryIds: n.entries.map((e) => e.id), updatedAt: n.updatedAt }))];
+    let id, state;
+    if (input.cursor) {
+      const parsed = parseCursor(input.cursor);
+      id = parsed.id;
+      state = (await chrome.storage.session.get(PREFIX + id))[PREFIX + id];
+      if (!state || state.step !== parsed.step || state.expiresAt < Date.now()) throw new LibraryError("CURSOR_EXPIRED", "\u67E5\u8BE2\u5DF2\u53D6\u6D88\u6216\u6E38\u6807\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u67E5\u8BE2");
+      if (state.query !== query || state.favoritesOnly !== input.favoritesOnly) throw new LibraryError("CURSOR_MISMATCH", "\u67E5\u8BE2\u6761\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u67E5\u8BE2");
+      state.changed ||= scopeSignature(state.scopes) !== scopeSignature(scopes) || JSON.stringify(state.favorites) !== JSON.stringify(favorites);
+    } else {
+      id = crypto.randomUUID();
+      state = { query, favoritesOnly: input.favoritesOnly, favorites, scopes, scopeIndex: 0, offset: 0, scanned: 0, step: 0, changed: false, expiresAt: Date.now() + 30 * 6e4 };
+    }
+    const result = { hits: [], cursor: null, complete: false, scanned: state.scanned, errors: [], changed: state.changed, scopes: state.scopes.map(({ kind, id: id2, title, count }) => ({ kind, id: id2, title, count })) };
+    if (!query) return { ...result, complete: true };
+    const favoriteSet = new Set(state.favorites);
+    const include = (ref) => (!state.favoritesOnly || favoriteSet.has(refKey(ref))) && !entryIsDeleting(ref, deleting);
+    for (let work = 0; work < WORK_UNITS && state.scopeIndex < state.scopes.length; work++) {
+      const scope = state.scopes[state.scopeIndex];
+      try {
+        if (scope.kind === "transcript") {
+          const current = records.find((r) => r.id === scope.id);
+          if (!current || deleting.some((t) => t.kind === "transcript" && t.recordId === scope.id)) {
+            state.changed = true;
+            state.scopeIndex++;
+            state.offset = 0;
+            continue;
+          }
+          if (!scope.count) {
+            state.scopeIndex++;
+            state.offset = 0;
+            continue;
+          }
+          const page = await readTranscriptPage(scope.id, Math.floor(state.offset / TRANSCRIPT_CHUNK_SIZE));
+          const expected = Math.min(TRANSCRIPT_CHUNK_SIZE, scope.count - state.offset);
+          if (page.lines.length < expected) throw new Error("\u8F6C\u5199\u6B63\u6587\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u91CD\u8BD5\u6216\u5BFC\u51FA\u53EF\u7528\u5185\u5BB9");
+          for (const line of page.lines.slice(0, expected)) {
+            const entry = transcriptEntry(page.record, line);
+            if (include(entry.ref) && matchesQuery(entry, query)) result.hits.push(highlightEntry({ ...entry, favorite: favoriteSet.has(refKey(entry.ref)) }, query));
+          }
+          state.scanned += expected;
+          state.offset += expected;
+        } else {
+          const note = notes.find((n) => n.id === scope.id);
+          if (!note) {
+            state.changed = true;
+            state.scopeIndex++;
+            state.offset = 0;
+            continue;
+          }
+          const wanted = scope.entryIds.slice(state.offset, state.offset + TRANSCRIPT_CHUNK_SIZE);
+          const byId = new Map(note.entries.map((e) => [e.id, e]));
+          for (const entryId of wanted) {
+            const value = byId.get(entryId);
+            if (!value) {
+              state.changed = true;
+              state.offset++;
+              continue;
+            }
+            const entry = noteEntry(note, value);
+            if (include(entry.ref) && matchesQuery(entry, query)) result.hits.push(highlightEntry({ ...entry, favorite: favoriteSet.has(refKey(entry.ref)) }, query));
+            state.scanned++;
+            state.offset++;
+          }
+        }
+        if (state.offset >= scope.count) {
+          state.scopeIndex++;
+          state.offset = 0;
+        }
+      } catch (error) {
+        result.errors.push({ kind: scope.kind, id: scope.id, message: error instanceof Error ? error.message : String(error) });
+        break;
+      }
+    }
+    result.scanned = state.scanned;
+    result.changed = state.changed;
+    result.complete = state.scopeIndex === state.scopes.length && !result.errors.length;
+    if (result.complete) await chrome.storage.session.remove(PREFIX + id);
+    else {
+      state.step++;
+      if (input.cursor) await chrome.storage.session.set({ [PREFIX + id]: state });
+      else await saveLibrarySessionCache(PREFIX, id, state);
+      result.cursor = `${id}:${state.step}`;
+    }
+    return result;
+  });
+}
+
+// src/ext/background/router/library.ts
+function handler(run) {
+  return (message, context) => {
+    void waitForRecovery().then(() => run(message, context)).then((result) => context.sendResponse({ ok: true, ...result })).catch((error) => context.sendResponse({ ok: false, code: error.code || "STORAGE_ERROR", error: error.message || String(error) }));
+    return true;
+  };
+}
+var libraryHandlers = {
+  LIBRARY_SEARCH: handler((message) => searchLibrary({ query: message.query, favoritesOnly: message.favoritesOnly, cursor: message.cursor })),
+  LIBRARY_CANCEL_SEARCH: handler(async (message) => {
+    await cancelSearch(message.cursor);
+    return { cancelled: true };
+  }),
+  LIBRARY_CONTEXT: handler((message) => libraryContext(message.ref)),
+  LIBRARY_FAVORITES: handler(async () => ({ refs: (await listFavorites()).map((item) => item.ref) })),
+  LIBRARY_FAVORITE: handler((message) => setFavorite(message.ref, message.favorite)),
+  LIBRARY_PREPARE_DELETE: handler((message) => prepareDelete({ transcriptIds: message.transcriptIds, noteIds: message.noteIds, noteEntries: message.noteEntries })),
+  LIBRARY_DELETE: handler((message) => confirmDelete(message.token)),
+  LIBRARY_RETRY_DELETE: handler((message) => retryDelete(message.operationId)),
+  LIBRARY_USAGE: handler(() => libraryUsage()),
+  LIBRARY_OPEN_SOURCE: handler((message, { tabId }) => {
+    if (message.tabId !== void 0 && (!Number.isInteger(message.tabId) || message.tabId < 0)) throw new LibraryError("INVALID_INPUT", "\u6807\u7B7E\u9875 ID \u65E0\u6548");
+    return openLibrarySource({ ref: message.ref, recordId: message.recordId, seconds: message.seconds }, tabId ?? message.tabId);
+  })
+};
+
+// src/ext/background/router/notes.ts
+var notesHandlers = {
+  NOTES_LIST: (message, { sendResponse }) => {
+    listNotesWithMigration(message.legacy).then((result) => sendResponse({ ok: true, ...result })).catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
+    return true;
+  },
+  NOTES_ADD_ENTRY: (message, { sendResponse }) => {
+    addNoteEntry(message.input).then((notes) => sendResponse({ ok: true, notes })).catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
+    return true;
+  },
+  NOTES_DELETE_ENTRY: (_message, { sendResponse }) => {
+    sendResponse({ ok: false, code: "CONFIRMATION_REQUIRED", error: "\u8BF7\u5148\u9884\u89C8\u5220\u9664\u8303\u56F4\u548C\u53D7\u5F71\u54CD\u6536\u85CF\uFF0C\u518D\u786E\u8BA4\u5220\u9664" });
+    return false;
+  },
+  NOTES_DELETE_DOCUMENTS: (_message, { sendResponse }) => {
+    sendResponse({ ok: false, code: "CONFIRMATION_REQUIRED", error: "\u8BF7\u5148\u9884\u89C8\u5220\u9664\u8303\u56F4\u548C\u53D7\u5F71\u54CD\u6536\u85CF\uFF0C\u518D\u786E\u8BA4\u5220\u9664" });
+    return false;
+  }
+};
+
 // src/ext/background/router/history.ts
 var historyHandlers = {
+  GET_SAVE_FAILURES: (_message, { tabId, sendResponse }) => {
+    if (tabId != null) {
+      sendResponse({ ok: false, error: "\u8BF7\u5728\u4FA7\u680F\u67E5\u770B\u5168\u90E8\u4FDD\u5B58\u72B6\u6001" });
+      return false;
+    }
+    sendResponse({ ok: true, failures: [...sessions.values()].flatMap(allSourceSessions).filter((s) => s.saveState?.status === "error").map((s) => ({ tabId: s.tabId, transcriptId: s.transcriptId, pendingCount: s.pendingTranscriptLines?.length || 0, saveState: s.saveState })) });
+    return false;
+  },
   /** Summaries only; subtitle bodies stay on disk until requested. */
   GET_HISTORY: (_message, { sendResponse }) => {
     listTranscripts().then((history) => {
@@ -1480,38 +2427,57 @@ var historyHandlers = {
     });
     return true;
   },
-  /** Full body for the active tab's current transcript (copy/export). */
-  GET_TRANSCRIPT: (_message, { tabId, sendResponse }) => {
-    const s = sessions.get(tabId);
+  GET_TRANSCRIPT_PAGE: (message, { sendResponse }) => {
+    readTranscriptPage(String(message.id || ""), Number(message.chunkIndex)).then((page) => sendResponse({ ok: true, ...page })).catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  },
+  RETRY_TRANSCRIPT: (message, { tabId, sendResponse }) => {
+    const targetTab = tabId ?? Number(message.tabId);
+    const s = sessions.get(targetTab);
+    if (!s) {
+      sendResponse({ ok: false, error: "\u6CA1\u6709\u53EF\u91CD\u8BD5\u7684\u8F6C\u5199" });
+      return false;
+    }
+    void retrySessionTranscript(s).then(async () => {
+      if (s.state === "idle" || s.state === "error") await finishSessionTranscript(s);
+      sendResponse({ ok: true });
+    }).catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  },
+  /** Reads durable bodies and failed buffers; completeness is explicit. */
+  GET_TRANSCRIPT: (message, { tabId, sendResponse }) => {
+    const targetTab = tabId ?? Number(message.tabId);
+    const s = sessions.get(targetTab);
     void (async () => {
-      const id = s?.transcriptId || await findLatestTranscriptIdForTab(tabId);
-      if (!id) {
-        sendResponse({ ok: true, subtitles: [], record: null });
-        return;
+      const owners = s ? allSourceSessions(s) : [];
+      const ids = owners.flatMap((epoch) => epoch.transcriptId ? [epoch.transcriptId] : []);
+      if (!ids.length) {
+        const latest = await findLatestTranscriptIdForTab(targetTab);
+        if (latest) ids.push(latest);
       }
-      const [subtitles, record] = await Promise.all([readTranscript(id), getTranscriptRecord(id)]);
-      sendResponse({ ok: true, subtitles, record });
+      const results = await Promise.all(ids.map((id) => readAvailableTranscript(id)));
+      const lines = results.flatMap((result) => result.lines);
+      const seen = new Set(lines.map((l) => l.id));
+      for (const line of owners.flatMap((epoch) => epoch.pendingTranscriptLines || [])) {
+        if (!seen.has(line.id)) {
+          lines.push(line);
+          seen.add(line.id);
+        }
+      }
+      lines.sort((a, b) => a.at - b.at);
+      sendResponse({ ok: true, subtitles: lines, complete: results.every((result) => result.complete), error: results.find((result) => result.error)?.error, saveState: s?.saveState });
     })().catch((err) => {
-      sendResponse({ ok: false, error: err.message || "\u65E0\u6CD5\u8BFB\u53D6\u5B8C\u6574\u8F6C\u5199" });
+      sendResponse({ ok: false, error: err.message || "\u65E0\u6CD5\u8BFB\u53D6\u5B8C\u6574\u8F6C\u5199", subtitles: s ? allSourceSessions(s).flatMap((epoch) => epoch.pendingTranscriptLines || []) : [], complete: false });
     });
     return true;
   },
-  DELETE_HISTORY: (message, { sendResponse }) => {
-    const ids = Array.isArray(message.ids) ? message.ids.map((id) => String(id)) : [String(message.id || "")];
-    deleteTranscripts(ids).then((result) => {
-      sendResponse({ ok: true, ...result });
-    }).catch(() => {
-      sendResponse({ ok: false });
-    });
-    return true;
+  DELETE_HISTORY: (_message, { sendResponse }) => {
+    sendResponse({ ok: false, code: "CONFIRMATION_REQUIRED", error: "\u8BF7\u5148\u9884\u89C8\u5220\u9664\u8303\u56F4\u548C\u53D7\u5F71\u54CD\u6536\u85CF\uFF0C\u518D\u786E\u8BA4\u5220\u9664" });
+    return false;
   },
   DELETE_ALL_HISTORY: (_message, { sendResponse }) => {
-    clearTranscripts().then((result) => {
-      sendResponse({ ok: true, ...result });
-    }).catch(() => {
-      sendResponse({ ok: false });
-    });
-    return true;
+    sendResponse({ ok: false, code: "CONFIRMATION_REQUIRED", error: "\u8BF7\u5148\u9884\u89C8\u5220\u9664\u8303\u56F4\u548C\u53D7\u5F71\u54CD\u6536\u85CF\uFF0C\u518D\u786E\u8BA4\u5220\u9664" });
+    return false;
   }
 };
 
@@ -2233,23 +3199,14 @@ async function saveAgentStoreInternal(store) {
 async function resolveCurrentSession(store, video, preferNew = false) {
   const videoKey = video.videoKey || "page:unknown";
   const activeId = store.activeByVideo[videoKey];
-  const active2 = activeId ? store.sessions.find((s) => s.id === activeId) : void 0;
-  if (active2 && !preferNew) {
-    syncVideoMeta(active2, video);
-    return active2;
+  const active = activeId ? store.sessions.find((s) => s.id === activeId) : void 0;
+  if (active && !preferNew) {
+    syncVideoMeta(active, video);
+    return active;
   }
-  if (active2 && preferNew && active2.turns.length === 0) {
-    syncVideoMeta(active2, video);
-    return active2;
-  }
-  if (!active2 && !preferNew) {
-    const legacy = store.sessions.filter((s) => !s.videoKey && s.turns.length > 0).sort((a, b) => b.updatedAt - a.updatedAt)[0];
-    if (legacy) {
-      legacy.videoKey = videoKey;
-      syncVideoMeta(legacy, video);
-      store.activeByVideo[videoKey] = legacy.id;
-      return legacy;
-    }
+  if (active && preferNew && active.turns.length === 0) {
+    syncVideoMeta(active, video);
+    return active;
   }
   const created = newSession(video);
   store.sessions.unshift(created);
@@ -2405,7 +3362,7 @@ async function recordExchange(store, session, userTurn, assistantTurn) {
   return store;
 }
 function listSessions(store, videoKey) {
-  return [...store.sessions].filter((session) => !videoKey || session.videoKey === videoKey).sort((a, b) => b.updatedAt - a.updatedAt).map(({ id, title, videoKey: key, videoTitle, turns, createdAt, updatedAt }) => ({
+  return [...store.sessions].filter((session) => !videoKey || session.videoKey === videoKey || !session.videoKey || /^bilibili:/.test(videoKey) && session.videoKey === videoKey.replace(/:p\d+$/, "")).sort((a, b) => b.updatedAt - a.updatedAt).map(({ id, title, videoKey: key, videoTitle, turns, createdAt, updatedAt }) => ({
     id,
     title,
     videoKey: key,
@@ -2418,7 +3375,7 @@ function listSessions(store, videoKey) {
 function switchSession(store, id, videoKey) {
   const target = store.sessions.find((s) => s.id === id);
   if (!target) return null;
-  if (videoKey && target.videoKey && target.videoKey !== videoKey) return null;
+  if (videoKey && target.videoKey && target.videoKey !== videoKey && target.videoKey !== videoKey.replace(/:p\d+$/, "")) return null;
   store.activeByVideo[target.videoKey || "page:unknown"] = id;
   return target;
 }
@@ -2498,6 +3455,8 @@ function videoKeyFromMessage(message) {
 function showSessionInTab(tabId, session) {
   const s = getOrCreateSession(tabId);
   s.agentSessionId = session?.id ?? null;
+  const source = session ? sourceRefForUrl(session.videoUrl, session.videoTitle, session.id) : void 0;
+  s.chatSourceRef = source && source.key === session?.videoKey ? source : session ? legacySourceRef(session.videoUrl, session.videoTitle, session.id) : void 0;
   s.messages = session ? messagesFromTurns(session.turns) : [];
   pushSession(tabId);
 }
@@ -2534,6 +3493,14 @@ async function runStart(message, tabId, startVersion) {
     s.streamingSubtitle = null;
     pushSession(tabId);
   }
+  if (allSourceSessions(s).some((epoch) => epoch.saveState?.status === "error" || epoch.pendingTranscriptLines?.length)) {
+    try {
+      await retrySessionTranscript(s);
+      await finishSessionTranscript(s);
+    } catch {
+      return { ok: false, error: "\u4E0A\u4E00\u573A\u6709\u5185\u5BB9\u672A\u4FDD\u5B58\uFF0C\u8BF7\u5148\u91CD\u8BD5\u6216\u5BFC\u51FA" };
+    }
+  }
   const config = await loadConfig();
   if (currentStartVersion(tabId) !== startVersion) return { ok: true, cancelled: true };
   const hasKey = config.providers.some((p) => p.apiKey && p.apiKey.trim().length > 0);
@@ -2569,6 +3536,8 @@ async function runStart(message, tabId, startVersion) {
   s.generation = nextGeneration();
   s.stoppedGeneration = void 0;
   s.subtitles = [];
+  s.pendingTranscriptLines = [];
+  s.saveState = { status: "saved" };
   s.transcriptId = null;
   s.streamingSubtitle = null;
   s.audioSilent = false;
@@ -2580,7 +3549,10 @@ async function runStart(message, tabId, startVersion) {
   try {
     try {
       const tab = await chrome.tabs.get(tabId).catch(() => null);
+      bindInitialSource(s, message.pageUrl || message.videoUrl || tab?.url || "", message.pageTitle || tab?.title || "");
       const record = await beginTranscript({
+        sourceEpoch: s.sourceEpoch,
+        sourceRef: s.sourceRef,
         tabId,
         generation,
         pageTitle: typeof message.pageTitle === "string" && message.pageTitle ? message.pageTitle : tab?.title || "",
@@ -2589,13 +3561,13 @@ async function runStart(message, tabId, startVersion) {
         targetLang: s.targetLang
       });
       if (!isCurrent()) {
-        void finalizeTranscript(record.id);
+        void finalizeTranscript(record.id).catch((error) => markTranscriptSaveError(s, error));
         return { ok: true, cancelled: true };
       }
       s.transcriptId = record.id;
       pushSession(tabId);
     } catch (err) {
-      console.warn("[RTTS] transcript begin failed:", err);
+      markTranscriptSaveError(s, err);
     }
     console.log("[RTTS] START:", tabId, "gen:", generation, "lang:", s.sourceLang, "\u2192", s.targetLang);
     await stopOrphanCapture(tabId);
@@ -2619,8 +3591,12 @@ async function runStart(message, tabId, startVersion) {
     if (!isCurrent()) return { ok: true, cancelled: true };
     s.streamId = streamId;
     console.log("[RTTS] streamId obtained for tab", tabId);
+    await persistSessionsStrict();
+    if (!isCurrent()) return { ok: true, cancelled: true };
     const started = await sendToOffscreen({
       type: "START_CAPTURE",
+      sourceEpoch: s.sourceEpoch,
+      sourceRef: s.sourceRef,
       tabId,
       streamId,
       sourceLang: s.sourceLang,
@@ -2643,7 +3619,7 @@ async function runStart(message, tabId, startVersion) {
     if (!isCurrent()) {
       console.info("[RTTS] START cancelled during startup");
       try {
-        await finalizeSessionTranscript(s);
+        await finishSessionTranscript(s);
       } catch {
       }
       return { ok: true, cancelled: true };
@@ -2655,7 +3631,7 @@ async function runStart(message, tabId, startVersion) {
     s.streamId = "";
     s.streamingSubtitle = null;
     try {
-      await finalizeSessionTranscript(s);
+      await finishSessionTranscript(s);
     } catch {
     }
     pushSession(tabId);
@@ -2720,7 +3696,7 @@ var sessionHandlers = {
     if (previous?.version === startVersion) {
       attempt = previous;
     } else {
-      const pendingStop = stopAttempts.get(tabId);
+      const pendingStop = pendingSessionStop(tabId) || stopAttempts.get(tabId);
       const afterPrevious = previous ? previous.promise.catch(() => void 0) : Promise.resolve();
       const afterStop = pendingStop ? pendingStop.catch(() => void 0) : Promise.resolve();
       const run = Promise.all([afterPrevious, afterStop]).then(() => runStart(message, tabId, startVersion));
@@ -2752,7 +3728,7 @@ var sessionHandlers = {
       stop2.then(() => sendResponse({ ok: true }), () => sendResponse({ ok: true }));
       return true;
     }
-    if (s.state === "idle" && s.generation !== 0) {
+    if (s.state === "idle" && s.generation !== 0 && !s.transcriptFinalizationPending && !pendingSessionStop(tabId)) {
       const stop2 = stopOrphanCapture(tabId).then(() => void 0).catch(() => void 0);
       stopAttempts.set(tabId, stop2);
       stop2.finally(() => {
@@ -2762,40 +3738,16 @@ var sessionHandlers = {
       stop2.then(() => sendResponse({ ok: true }), () => sendResponse({ ok: true }));
       return true;
     }
-    s.state = "stopping";
-    pushSession(tabId);
-    const stoppedGeneration = s.generation;
-    s.stoppedGeneration = stoppedGeneration;
-    s.generation = nextGeneration();
-    const stop = sendToOffscreen({
-      type: "STOP_CAPTURE",
-      tabId,
-      generation: stoppedGeneration,
-      // Bounded drain: let the in-flight segment finish so the last subtitle
-      // of the session reaches the transcript before it is finalized.
-      drain: true
-    }).catch(() => {
-    }).finally(async () => {
-      s.state = "idle";
-      s.stoppedGeneration = void 0;
-      s.streamId = "";
-      s.configSnapshot = null;
-      s.streamingSubtitle = null;
-      s.audioSilent = false;
-      try {
-        await finalizeSessionTranscript(s);
-      } catch (err) {
-        console.warn("[RTTS] transcript finalize failed:", err);
-      }
-      pushSession(tabId);
-      maybeCloseOffscreen();
-      sendResponse({ ok: true, session: safeSession(s) });
-    });
+    const stop = stopSessionCapture(s);
     stopAttempts.set(tabId, stop);
     stop.finally(() => {
       if (stopAttempts.get(tabId) === stop) stopAttempts.delete(tabId);
     }).catch(() => {
     });
+    stop.then(
+      () => sendResponse({ ok: true, session: safeSession(sessions.get(tabId) || s) }),
+      () => sendResponse({ ok: true, session: safeSession(sessions.get(tabId) || s) })
+    );
     return true;
   },
   ASK: (message, { tabId, sendResponse }) => {
@@ -2820,6 +3772,8 @@ var sessionHandlers = {
       const config = s.configSnapshot || await loadConfig();
       const store = await loadAgentStore();
       const session = await resolveCurrentSession(store, video, message.newSession === true);
+      const chatSource = sourceRefForUrl(session.videoUrl, session.videoTitle, session.id);
+      s.chatSourceRef = chatSource.key === session.videoKey ? chatSource : legacySourceRef(session.videoUrl, session.videoTitle, session.id);
       if (s.agentSessionId !== session.id) {
         s.agentSessionId = session.id;
         s.messages = [
@@ -2874,8 +3828,10 @@ var sessionHandlers = {
    */
   SUMMARIZE: (message, { tabId, sendResponse }) => {
     const s = getOrCreateSession(tabId);
-    const digest = buildSubtitleDigest(s.subtitles);
-    if (!digest.trim() || s.subtitles.length === 0) {
+    const evidence = structuredClone(s.subtitles);
+    const sourceRef = s.sourceRef || evidence[0]?.sourceRef || legacySourceRef("", "", s.transcriptId || "summary");
+    const digest = buildSubtitleDigest(evidence);
+    if (!digest.trim() || evidence.length === 0) {
       sendResponse({ ok: false, error: "\u8FD8\u6CA1\u6709\u53EF\u603B\u7ED3\u7684\u5B57\u5E55\uFF0C\u5148\u5F00\u542F\u5B9E\u65F6\u7FFB\u8BD1" });
       return false;
     }
@@ -2886,7 +3842,7 @@ var sessionHandlers = {
         const parts = buildSummaryParts({
           digest,
           videoTitle: video.videoTitle,
-          subtitleCount: s.subtitles.length
+          subtitleCount: evidence.length
         });
         const summary = await askLLM({
           parts,
@@ -2895,14 +3851,14 @@ var sessionHandlers = {
           targetLang: s.targetLang
         });
         let videoTime = null;
-        for (let i = s.subtitles.length - 1; i >= 0; i -= 1) {
-          const t = s.subtitles[i]?.videoTime;
+        for (let i = evidence.length - 1; i >= 0; i -= 1) {
+          const t = evidence[i]?.videoTime;
           if (typeof t === "number" && Number.isFinite(t)) {
             videoTime = t;
             break;
           }
         }
-        sendResponse({ ok: true, summary, videoTime, subtitleCount: s.subtitles.length });
+        sendResponse({ ok: true, summary, sourceRef, videoTime, subtitleCount: evidence.length });
       } catch (err) {
         sendResponse({ ok: false, error: err?.message || "\u751F\u6210\u7EAA\u8981\u5931\u8D25" });
       }
@@ -2964,12 +3920,12 @@ var sessionHandlers = {
     void loadAgentStore().then(async (store) => {
       await deleteSession(store, String(message.id || ""));
       const activeId = videoKey ? store.activeByVideo[videoKey] : void 0;
-      const active2 = activeId ? store.sessions.find((session) => session.id === activeId) ?? null : null;
-      showSessionInTab(tabId, active2);
+      const active = activeId ? store.sessions.find((session) => session.id === activeId) ?? null : null;
+      showSessionInTab(tabId, active);
       sendResponse({
         ok: true,
-        currentId: active2?.id ?? null,
-        turns: active2?.turns ?? [],
+        currentId: active?.id ?? null,
+        turns: active?.turns ?? [],
         session: safeSession(getOrCreateSession(tabId))
       });
     });
@@ -3000,21 +3956,25 @@ var sessionHandlers = {
 // src/ext/background/router/video-clock.ts
 var MAX_SAMPLE_SKEW_MS = 12e4;
 var videoClockHandlers = {
+  OPEN_SOURCE: (message, { tabId, sendResponse }) => {
+    void openSource(message.sourceRef, message.videoTime, tabId ?? message.tabId).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  },
   VIDEO_CLOCK: (message, { tabId, sendResponse }) => {
     const session = sessions.get(tabId);
-    const active2 = session && (session.state === "running" || session.state === "starting" || session.state === "stopping");
-    if (!active2) {
+    const active = session && (session.state === "running" || session.state === "starting" || session.state === "stopping");
+    if (!active) {
       sendResponse({ ok: true, ignored: true });
       return false;
     }
-    const sample = sanitizeVideoClockSample(message);
-    if (!sample || Math.abs(Date.now() - sample.at) > MAX_SAMPLE_SKEW_MS) {
-      sendResponse({ ok: true, ignored: true });
-      return false;
-    }
-    recordVideoClock(tabId, sample);
-    sendResponse({ ok: true });
-    return false;
+    void (async () => {
+      const bound = message.sourceRef && typeof message.sourceRef.url === "string" ? await transitionSource(tabId, message.sourceRef) : session;
+      if (!bound || bound.state !== "running" && bound.state !== "starting") return;
+      if (message.sourceRef?.url && bound.sourceIdentity !== videoKeyForUrl(message.sourceRef.url)) return;
+      const sample = sanitizeVideoClockSample(message);
+      if (sample && Math.abs(Date.now() - sample.at) <= MAX_SAMPLE_SKEW_MS) recordVideoClock(tabId, sample, bound.sourceEpoch);
+    })().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
   }
 };
 
@@ -3027,6 +3987,8 @@ var backgroundHandlers = {
   ...captureHandlers,
   ...obsidianHandlers,
   ...historyHandlers,
+  ...notesHandlers,
+  ...libraryHandlers,
   ...videoClockHandlers
 };
 function registerBackgroundRouters() {
@@ -3045,12 +4007,12 @@ function registerBackgroundRouters() {
       sendResponse({ ok: false, error: "\u672A\u7ECF\u6388\u6743\u7684\u6765\u6E90" });
       return false;
     }
-    const handler = backgroundHandlers[message.type];
-    if (!handler) {
+    const handler2 = backgroundHandlers[message.type];
+    if (!handler2) {
       sendResponse({ ok: false, error: `\u672A\u77E5\u6D88\u606F\u7C7B\u578B: ${message.type}` });
       return false;
     }
-    return handler(message, {
+    return handler2(message, {
       tabId,
       sender,
       sendResponse

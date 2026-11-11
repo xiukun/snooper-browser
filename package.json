@@ -1,7 +1,7 @@
 {
   "name": "snooper-browser",
   "private": true,
-  "version": "0.8.4",
+  "version": "0.9.0",
   "type": "module",
   "description": "Open-source multimodal workspace for real-time translation, conversations and visual understanding.",
   "license": "Apache-2.0",
@@ -30,7 +30,20 @@
     "test:markdown": "node scripts/test-markdown.mjs",
     "test:session-state": "node scripts/test-session-state.mjs",
     "test:image-material": "node scripts/test-image-material.mjs",
-    "test:ext-globals": "node scripts/check-ext-no-vite-globals.mjs"
+    "test:ext-globals": "node scripts/check-ext-no-vite-globals.mjs",
+    "test:notes-store": "node scripts/test-notes-store.mjs",
+    "test:session-persistence": "node scripts/test-session-persistence.mjs",
+    "test:course-lifecycle": "node scripts/test-course-lifecycle.mjs",
+    "test:transcript-export": "node scripts/test-transcript-export.mjs",
+    "test:source-identity": "node scripts/test-source-identity.mjs",
+    "test:source-transition": "node scripts/test-source-transition.mjs",
+    "test:source-recovery": "node scripts/test-source-recovery.mjs",
+    "test:knowledge-search": "node scripts/test-knowledge-search.mjs",
+    "test:library-store": "node scripts/test-library-store.mjs",
+    "test:library-search": "node scripts/test-library-search.mjs",
+    "test:library-router": "node scripts/test-library-router.mjs",
+    "test:library-ui": "node scripts/test-library-ui.mjs",
+    "test:library-ui-lifecycle": "node scripts/test-library-ui-lifecycle.mjs"
   },
   "dependencies": {
     "docx": "^9.15.2"

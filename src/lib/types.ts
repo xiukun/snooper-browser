@@ -1,3 +1,5 @@
+import type { SourceRef } from './knowledge-types'
+
 /**
  * Shared types used across lib, app, and extension.
  * Single source of truth for data structures that cross boundaries.
@@ -5,6 +7,7 @@
 
 export interface SubtitleLine {
   id: string
+  sourceRef?: SourceRef
   at: number
   /** End timestamp (seconds relative to session start). */
   endedAt: number
@@ -20,6 +23,7 @@ export interface SubtitleLine {
 
 export interface NoteEntry {
   id: string
+  sourceRef?: SourceRef
   type: 'subtitle' | 'image' | 'svg' | 'screenshot' | 'text' | 'summary'
   /** Source timestamp (epoch ms). */
   at: number
